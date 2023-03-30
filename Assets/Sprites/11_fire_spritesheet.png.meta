@@ -210,7 +210,7 @@ TextureImporter:
       213: -805014640968033987
     second: 11_fire_spritesheet_68
   externalObjects: {}
-  serializedVersion: 11
+  serializedVersion: 12
   mipmaps:
     mipMapMode: 0
     enableMipMap: 0
@@ -231,6 +231,7 @@ TextureImporter:
   streamingMipmaps: 0
   streamingMipmapsPriority: 0
   vTOnly: 0
+  ignoreMasterTextureLimit: 0
   grayScaleToAlpha: 0
   generateCubemap: 6
   cubemapConvolution: 0
@@ -269,6 +270,7 @@ TextureImporter:
   textureFormatSet: 0
   ignorePngGamma: 0
   applyGammaDecoding: 0
+  cookieLightType: 1
   platformSettings:
   - serializedVersion: 3
     buildTarget: DefaultTexturePlatform
@@ -296,6 +298,30 @@ TextureImporter:
     forceMaximumCompressionQuality_BC6H_BC7: 0
   - serializedVersion: 3
     buildTarget: WebGL
+    maxTextureSize: 2048
+    resizeAlgorithm: 0
+    textureFormat: -1
+    textureCompression: 0
+    compressionQuality: 50
+    crunchedCompression: 0
+    allowsAlphaSplitting: 0
+    overridden: 0
+    androidETC2FallbackOverride: 0
+    forceMaximumCompressionQuality_BC6H_BC7: 0
+  - serializedVersion: 3
+    buildTarget: Server
+    maxTextureSize: 2048
+    resizeAlgorithm: 0
+    textureFormat: -1
+    textureCompression: 0
+    compressionQuality: 50
+    crunchedCompression: 0
+    allowsAlphaSplitting: 0
+    overridden: 0
+    androidETC2FallbackOverride: 0
+    forceMaximumCompressionQuality_BC6H_BC7: 0
+  - serializedVersion: 3
+    buildTarget: iPhone
     maxTextureSize: 2048
     resizeAlgorithm: 0
     textureFormat: -1
@@ -1600,6 +1626,68 @@ TextureImporter:
     edges: []
     weights: []
     secondaryTextures: []
+    nameFileIdTable:
+      11_fire_spritesheet_31: -2250495334499548175
+      11_fire_spritesheet_25: 7943302003253556304
+      11_fire_spritesheet_46: 4096319387767184523
+      11_fire_spritesheet_14: -6692039996075941380
+      11_fire_spritesheet_47: -3153171327211830157
+      11_fire_spritesheet_40: 8509585990821903198
+      11_fire_spritesheet_16: -5251729850499383635
+      11_fire_spritesheet_29: -7034589974231683788
+      11_fire_spritesheet_30: -7526233594416036204
+      11_fire_spritesheet_24: -2529155709402582914
+      11_fire_spritesheet_2: -4911086383498779637
+      11_fire_spritesheet_49: -1220445083825875923
+      11_fire_spritesheet_33: -8877828484590270759
+      11_fire_spritesheet_56: 2252141156530530959
+      11_fire_spritesheet_22: -8626670653687255591
+      11_fire_spritesheet_37: -64298636389987911
+      11_fire_spritesheet_67: -1995428993286928898
+      11_fire_spritesheet_10: -3241490682645923649
+      11_fire_spritesheet_27: -7676989228781623867
+      11_fire_spritesheet_55: -1866688549861729395
+      11_fire_spritesheet_63: -2987593537580565592
+      11_fire_spritesheet_59: 6098497418827211521
+      11_fire_spritesheet_23: -3784282131390942677
+      11_fire_spritesheet_32: 6406943471615557071
+      11_fire_spritesheet_26: 2991958740887240573
+      11_fire_spritesheet_9: 4845468296927605761
+      11_fire_spritesheet_45: 9203910330760817290
+      11_fire_spritesheet_5: -1290985563892590388
+      11_fire_spritesheet_6: -1506460399340645616
+      11_fire_spritesheet_36: 5635059411817177072
+      11_fire_spritesheet_57: 2071253233217112690
+      11_fire_spritesheet_41: 6991973793118229658
+      11_fire_spritesheet_18: 6213910981568380422
+      11_fire_spritesheet_43: 7948302259620511780
+      11_fire_spritesheet_53: 1227831284632535924
+      11_fire_spritesheet_34: 1280757416840344761
+      11_fire_spritesheet_7: -6381828615892921256
+      11_fire_spritesheet_3: 2367710042800117702
+      11_fire_spritesheet_28: -1552540705549414009
+      11_fire_spritesheet_42: -5644698114030221839
+      11_fire_spritesheet_65: 2817566281238536793
+      11_fire_spritesheet_15: -2659840982382344100
+      11_fire_spritesheet_17: 4265739838856935063
+      11_fire_spritesheet_51: -6210243762705932378
+      11_fire_spritesheet_1: -1419493236054300103
+      11_fire_spritesheet_20: -1454545669872489815
+      11_fire_spritesheet_68: -805014640968033987
+      11_fire_spritesheet_50: 8370263328348187935
+      11_fire_spritesheet_44: -7101204329526436243
+      11_fire_spritesheet_64: 5720207724722599718
+      11_fire_spritesheet_66: -6286929174361158480
+      11_fire_spritesheet_12: -4907936131788834912
+      11_fire_spritesheet_8: 4193278859550803050
+      11_fire_spritesheet_38: 2456222554746829561
+      11_fire_spritesheet_0: 7867246230245463418
+      11_fire_spritesheet_61: -3672789554335569622
+      11_fire_spritesheet_58: 8649359144162520440
+      11_fire_spritesheet_39: 3102965471931748429
+      11_fire_spritesheet_4: 4471574937763840506
+      11_fire_spritesheet_11: -2076605027364668669
+      11_fire_spritesheet_54: -7837219778125675129
   spritePackingTag: 
   pSDRemoveMatte: 0
   pSDShowRemoveMatteOption: 0

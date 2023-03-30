@@ -165,7 +165,7 @@ TextureImporter:
       213: 4119701687023341957
     second: spritesheet (1)_53
   externalObjects: {}
-  serializedVersion: 11
+  serializedVersion: 12
   mipmaps:
     mipMapMode: 0
     enableMipMap: 0
@@ -186,6 +186,7 @@ TextureImporter:
   streamingMipmaps: 0
   streamingMipmapsPriority: 0
   vTOnly: 0
+  ignoreMasterTextureLimit: 0
   grayScaleToAlpha: 0
   generateCubemap: 6
   cubemapConvolution: 0
@@ -224,6 +225,7 @@ TextureImporter:
   textureFormatSet: 0
   ignorePngGamma: 0
   applyGammaDecoding: 0
+  cookieLightType: 1
   platformSettings:
   - serializedVersion: 3
     buildTarget: DefaultTexturePlatform
@@ -251,6 +253,30 @@ TextureImporter:
     forceMaximumCompressionQuality_BC6H_BC7: 0
   - serializedVersion: 3
     buildTarget: WebGL
+    maxTextureSize: 8192
+    resizeAlgorithm: 0
+    textureFormat: -1
+    textureCompression: 0
+    compressionQuality: 50
+    crunchedCompression: 0
+    allowsAlphaSplitting: 0
+    overridden: 0
+    androidETC2FallbackOverride: 0
+    forceMaximumCompressionQuality_BC6H_BC7: 0
+  - serializedVersion: 3
+    buildTarget: Server
+    maxTextureSize: 8192
+    resizeAlgorithm: 0
+    textureFormat: -1
+    textureCompression: 0
+    compressionQuality: 50
+    crunchedCompression: 0
+    allowsAlphaSplitting: 0
+    overridden: 0
+    androidETC2FallbackOverride: 0
+    forceMaximumCompressionQuality_BC6H_BC7: 0
+  - serializedVersion: 3
+    buildTarget: iPhone
     maxTextureSize: 8192
     resizeAlgorithm: 0
     textureFormat: -1
@@ -1408,6 +1434,61 @@ TextureImporter:
     edges: []
     weights: []
     secondaryTextures: []
+    nameFileIdTable:
+      spritesheet (1)_20: -1701637221346394236
+      spritesheet (1)_38: -1847469203337358328
+      spritesheet (1)_15: 7430003043986428848
+      spritesheet (1)_10: -5005915026814050071
+      spritesheet (1)_5: -822257751243665455
+      spritesheet (1)_32: -244775235659333248
+      spritesheet (1)_41: -2454944161147617631
+      spritesheet (1)_51: -5222331328346177075
+      spritesheet (1)_30: -8709141710863535202
+      spritesheet (1)_53: 4119701687023341957
+      spritesheet (1)_34: -6247548702931309968
+      spritesheet (1)_3: -7538735397198048313
+      spritesheet (1)_17: 7370447500187437021
+      spritesheet (1)_42: -99998168390021717
+      spritesheet (1)_14: -7159406873307353385
+      spritesheet (1)_26: -6086506676488200877
+      spritesheet (1)_28: -8486258515300768242
+      spritesheet (1)_22: -7087099171160971884
+      spritesheet (1)_48: 6475754728723312516
+      spritesheet (1)_11: 5801996715052244003
+      spritesheet (1)_4: 6868685725679776305
+      spritesheet (1)_19: 6370447814440472325
+      spritesheet (1)_35: 7913060569457478022
+      spritesheet (1)_43: -8060805976034104359
+      spritesheet (1)_52: 8172281286858524532
+      spritesheet (1)_1: 8598634611415830664
+      spritesheet (1)_23: 8003071271786819985
+      spritesheet (1)_27: -7343355811853711383
+      spritesheet (1)_6: -7499830104114247071
+      spritesheet (1)_0: -2902247422746666468
+      spritesheet (1)_40: -2397340181552774881
+      spritesheet (1)_47: 8503314150780252146
+      spritesheet (1)_13: -5341209596285442797
+      spritesheet (1)_45: 1646914584723976844
+      spritesheet (1)_31: -1205540359803039294
+      spritesheet (1)_21: 2664922840049701653
+      spritesheet (1)_7: -8225385953719469307
+      spritesheet (1)_12: -4692919018695937422
+      spritesheet (1)_2: -9082291248603447866
+      spritesheet (1)_39: 8301272872043440276
+      spritesheet (1)_29: -3242090435516308803
+      spritesheet (1)_49: 1357076489363068258
+      spritesheet (1)_37: -4619468560049441444
+      spritesheet (1)_46: -3198931567241164161
+      spritesheet (1)_33: -1796444520132523977
+      spritesheet (1)_9: -5391527602426915064
+      spritesheet (1)_18: 8953530282651511445
+      spritesheet (1)_16: 9107504565476232344
+      spritesheet (1)_8: 2256397638032506274
+      spritesheet (1)_44: -8613061773136491734
+      spritesheet (1)_24: 8610328548197131687
+      spritesheet (1)_50: -2674862333278303371
+      spritesheet (1)_36: -2017614644849774736
+      spritesheet (1)_25: 1433119012912688238
   spritePackingTag: 
   pSDRemoveMatte: 0
   pSDShowRemoveMatteOption: 0
