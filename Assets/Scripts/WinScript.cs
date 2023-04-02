@@ -1,18 +1,29 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 public class WinScript : MonoBehaviour
 {
-    // Start is called before the first frame update
-    void Start()
+    private TimeManager timeManager;
+    private void Start()
     {
-        
+        timeManager = FindObjectOfType<TimeManager>();
+    }
+    public void SaveResults()
+    {
+        if (PlayerPrefs.HasKey($"{SceneManager.GetActiveScene().name} time"))
+        {
+            if (PlayerPrefs.GetFloat($"{SceneManager.GetActiveScene().name} time") > timeManager.currentTime)
+            {
+                PlayerPrefs.SetFloat($"{SceneManager.GetActiveScene().name} time", timeManager.currentTime);
+            }
+        }
+        else
+        {
+            PlayerPrefs.SetFloat($"{SceneManager.GetActiveScene().name} time", timeManager.currentTime);
+        }
+        PlayerPrefs.SetInt("LastLevel", SceneManager.GetActiveScene().buildIndex);
     }
 
-    // Update is called once per frame
-    void Update()
-    {
-        
-    }
 }

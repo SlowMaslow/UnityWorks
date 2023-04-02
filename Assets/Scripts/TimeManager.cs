@@ -5,6 +5,7 @@ using UnityEngine.UI;
 public class TimeManager : MonoBehaviour
 {
     private Text UITimer;
+    private string cache;
     [HideInInspector] public float currentTime;
     [HideInInspector] public bool WinTrigger;
 
@@ -19,7 +20,8 @@ public class TimeManager : MonoBehaviour
         if (!WinTrigger)
         {
             currentTime += Time.deltaTime;
-            UITimer.text = Math.Round(currentTime, 2).ToString();
+            cache = currentTime.ToString("F2");
+            UITimer.text = $"{cache} sec";
         } 
     }
 }

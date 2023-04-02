@@ -7,13 +7,14 @@ public class EndLevelScript : MonoBehaviour
     [SerializeField] private GameObject FailWindow;
     [SerializeField] private Transform ParticlePoint;
     [SerializeField] private GameObject Particle;
+    private TimeManager timeManager;
+    private Rigidbody sphere;
     [HideInInspector] public bool Fail;
-    void Start()
+    private void Start()
     {
-        
+        sphere = FindObjectOfType<InputListener>().GetComponent<Rigidbody>();
+        timeManager = FindObjectOfType<TimeManager>();
     }
-
-    // Update is called once per frame
     void Update()
     {
         
@@ -21,7 +22,9 @@ public class EndLevelScript : MonoBehaviour
     public void EndLevel()
     {
         FailWindow.SetActive(true);
+        timeManager.WinTrigger = true;
         CreateParticles();
+        sphere.isKinematic = true;
     }
     private void CreateParticles()
     {

@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.SceneManagement;
 
 public class LevelLimits : MonoBehaviour
 {
@@ -16,6 +17,9 @@ public class LevelLimits : MonoBehaviour
         GameObject.Find("bronzeTime").GetComponent<Text>().text = $"{Bronze.ToString()} sec";
         GameObject.Find("silverTime").GetComponent<Text>().text = $"{Silver.ToString()} sec";
         GameObject.Find("goldTime").GetComponent<Text>().text = $"{Gold.ToString()} sec";
+        PlayerPrefs.SetFloat($"{SceneManager.GetActiveScene().name} bronze", Bronze);
+        PlayerPrefs.SetFloat($"{SceneManager.GetActiveScene().name} silver", Silver);
+        PlayerPrefs.SetFloat($"{SceneManager.GetActiveScene().name} gold", Gold);
         timeManager = FindObjectOfType<TimeManager>();
     }
 
