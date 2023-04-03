@@ -28,6 +28,7 @@ public class LevelLimits : MonoBehaviour
     {
         if (timeManager.currentTime > Bronze && !endLevelScript.Fail)
         {
+            timeManager.PausedChanger();
             endLevelScript.EndLevel();
             endLevelScript.Fail = true;
         }

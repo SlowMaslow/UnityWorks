@@ -6,17 +6,23 @@ public class InputListener : MonoBehaviour
     Vector2 startPos;
     Vector2 endPos;
     private Rigidbody rb;
+    private TimeManager timeManager;
     private void Start()
     {
         rb = GetComponent<Rigidbody>();
         Physics.gravity = new Vector3(0, -10, 0);
+        timeManager = FindObjectOfType<TimeManager>();
     }
 
     private void Update()
     {
-        if (Input.touchCount == 1)
+        if (!timeManager.Paused)
         {
-            swipeListener();
+            if (Input.touchCount == 1)
+            {
+                swipeListener();
+            }
+            buttonsListener();
         }
     }
 
@@ -56,10 +62,40 @@ public class InputListener : MonoBehaviour
                 }
                 if (differentPos.y < -100)
                 {
+                    //Debug.Log("Свайп вверх");
                     Physics.gravity = new Vector3(0, 0, 10);
                     rb.velocity = Vector3.zero;
                 }
             }
+        }
+    }
+
+    private void buttonsListener()
+    {
+
+        if (Input.GetKeyDown(KeyCode.LeftArrow))
+        {
+            Debug.Log("Свайп влево");
+            Physics.gravity = new Vector3(-10, 0, 0);
+            rb.velocity = Vector3.zero;
+        }
+        if (Input.GetKeyDown(KeyCode.RightArrow))
+        {
+            //Debug.Log("Свайп вправо");
+            Physics.gravity = new Vector3(10, 0, 0);
+            rb.velocity = Vector3.zero;
+        }
+        if (Input.GetKeyDown(KeyCode.DownArrow))
+        {
+            //Debug.Log("Свайп вниз");
+            Physics.gravity = new Vector3(0, 0, -10);
+            rb.velocity = Vector3.zero;
+        }
+        if (Input.GetKeyDown(KeyCode.UpArrow))
+        {
+            //Debug.Log("Свайп вверх");
+            Physics.gravity = new Vector3(0, 0, 10);
+            rb.velocity = Vector3.zero;
         }
     }
 }

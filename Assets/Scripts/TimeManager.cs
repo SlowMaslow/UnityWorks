@@ -1,27 +1,26 @@
-using System;
 using UnityEngine;
 using UnityEngine.UI;
 
 public class TimeManager : MonoBehaviour
 {
-    private Text UITimer;
-    private string cache;
+    [SerializeField] private Text UITimer;
+    [HideInInspector] public bool Paused;
     [HideInInspector] public float currentTime;
     [HideInInspector] public bool WinTrigger;
-
-    void Start()
+    private void Awake()
     {
-        UITimer = GetComponent<Text>();
+        Paused = false;
     }
-
-
     void FixedUpdate()
     {
-        if (!WinTrigger)
+        if (!WinTrigger && !Paused)
         {
             currentTime += Time.deltaTime;
-            cache = currentTime.ToString("F2");
-            UITimer.text = $"{cache} sec";
+            UITimer.text = $"{currentTime.ToString("0.00")} sec";
         } 
+    }
+    public void PausedChanger()
+    {
+        Paused = !Paused;
     }
 }

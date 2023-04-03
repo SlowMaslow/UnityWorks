@@ -1,5 +1,3 @@
-using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
 
 public class WinCollider : MonoBehaviour
@@ -15,6 +13,7 @@ public class WinCollider : MonoBehaviour
     }
     private void OnTriggerEnter(Collider other)
     {
+        timeManager.PausedChanger();
         endLevelScript.EndLevel();
         PlayerPrefs.SetInt("LastLevel", PlayerPrefs.GetInt("LastLevel") + 1);
         winScript.SaveResults();
