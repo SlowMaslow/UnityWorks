@@ -11,9 +11,11 @@ public class DragObject : MonoBehaviour
     [SerializeField] private Transform[] padsPositions;
     [SerializeField] private Transform head;
     private SoftJointLimit minSwing2Limit, maxSwing2Limit;
+    private TimeManager timeManager;
 
     private void Start()
     {
+        timeManager = FindObjectOfType<TimeManager>();
         rb = GetComponent<Rigidbody>();
         fixedZPosition = transform.position.z;
         int i;
@@ -27,8 +29,11 @@ public class DragObject : MonoBehaviour
 
     private void Update()
     {
-        transform.position = new Vector3(transform.position.x, transform.position.y, fixedZPosition);
-        BreakJointCheck();
+        if (padsJoints[0] != null)
+        {
+            transform.position = new Vector3(transform.position.x, transform.position.y, fixedZPosition);
+            BreakJointCheck();
+        }
     }
 
     private Vector3 GetMouseAsWorldPoint()
@@ -50,24 +55,26 @@ public class DragObject : MonoBehaviour
 
     void OnMouseDrag()
     {      
-        rb.isKinematic = false;
-        if(PadsDistanceCheck() > 1.3)
+        if (!timeManager.Paused)
         {
-            rb.velocity = (GetMouseAsWorldPoint() - transform.position) * (5 / PadsDistanceCheck());
+            rb.isKinematic = false;
+            if (PadsDistanceCheck() > 1.3)
+            {
+                rb.velocity = (GetMouseAsWorldPoint() - transform.position) * (5 / PadsDistanceCheck());
+            }
+            else
+            {
+                rb.velocity = (GetMouseAsWorldPoint() - transform.position) * 10;
+            }
+            LookerAtPad();
         }
-        else
-        {
-            rb.velocity = (GetMouseAsWorldPoint() - transform.position) * 10;
-        }
-        LookerAtPad();
     }
 
     private void BreakJointCheck()
     {
         if (PadsDistanceCheck() > 1.8f)
         {
-            int i;
-            for (i = 0; i < 2; i++)
+            for (int i = 0; i < 2; i++)
             {
                 padsJoints[i].breakForce = 0;
             }

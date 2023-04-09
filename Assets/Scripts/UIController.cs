@@ -14,7 +14,7 @@ public class UIController : MonoBehaviour
     private void Start()
     {
         sceneController = FindObjectOfType<SceneController>();
-        CoinsUI.text = $"COINS: { PlayerPrefs.GetInt("Coins") }";
+        CoinsUI.text = $"{ PlayerPrefs.GetInt("Coins") }";
         if (sceneController.GetCurrentScene() != 0)
         {
             LevelUI.text = $"LEVEL: { sceneController.GetCurrentScene() }";

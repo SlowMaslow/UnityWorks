@@ -1,15 +1,17 @@
-using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
 
 public class WinScript : MonoBehaviour
 {
     public int WinValue;
     private bool isWin;
+    private TimeManager timeManager;
+    private GameObject pausePrefab;
     [SerializeField] private GameObject WinWindow;
 
     private void Start()
     {
+        timeManager = FindObjectOfType<TimeManager>();
+        pausePrefab = GameObject.Find("Pause");
         isWin = false;
     }
 
@@ -19,6 +21,8 @@ public class WinScript : MonoBehaviour
         {
             if (WinValue == 2)
             {
+                pausePrefab.SetActive(false);
+                timeManager.PausedChanger();
                 WinWindowActive();
             }
         }
