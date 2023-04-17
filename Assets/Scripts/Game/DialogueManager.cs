@@ -17,10 +17,13 @@ public class DialogueManager : MonoBehaviour
     public Collider MainCharacter;
     private bool wordstrigger;
     private int lettercounter;
+
+    private MobileButtonsList mobileButtonList;
     // Start is called before the first frame update
     void Start()
     {
         wordstrigger = false;
+        mobileButtonList = FindObjectOfType<MobileButtonsList>();
     }
 
     // Update is called once per frame
@@ -28,7 +31,7 @@ public class DialogueManager : MonoBehaviour
     {
         if (PressEtrigger)
         {
-            if (Input.GetKeyDown(KeyCode.E))
+            if (Input.GetKeyDown(KeyCode.E) || mobileButtonList.InteractiveButton.GetComponent<CheckButtonScript>().isRealized)
             {
                 MainCharacter.gameObject.GetComponent<CharacterManager>()._dialogmanager = gameObject.GetComponent<DialogueManager>();
                 gameObject.GetComponent<AudioSource>().Play();
@@ -37,8 +40,9 @@ public class DialogueManager : MonoBehaviour
                 wordstrigger = true;
                 stringCounter = 0;
                 NextStringTrigger = true;
+                mobileButtonList.InteractiveButton.GetComponent<CheckButtonScript>().isRealized = false;
             }
-            if (Input.GetKeyDown(KeyCode.Space))
+            if (Input.GetKeyDown(KeyCode.Mouse0))
             {         
                 if (NextStringTrigger)
                 {

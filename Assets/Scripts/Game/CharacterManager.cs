@@ -21,12 +21,17 @@ public class CharacterManager : MonoBehaviour
     private Renderer rend;
     public DialogueManager _dialogmanager;
 
+    private MobileCheck mobileCheck;
+    private MobileButtonsList mobileButtonList;
+
     // Start is called before the first frame update
     void Start()
     {
         startRotate = selfRigid.rotation;
         lerpTime = 0.01f;
         Ball.GetComponent<Renderer>().sharedMaterial = MaterialChanger.GetComponent<MaterialScript>().MaterialArr[PlayerPrefs.GetInt("Element")];
+        mobileCheck = FindObjectOfType<MobileCheck>();
+        mobileButtonList = FindObjectOfType<MobileButtonsList>();
     }
 
     // Update is called once per frame
@@ -34,31 +39,64 @@ public class CharacterManager : MonoBehaviour
     {
         if(_dialogmanager == null)
         {
-            if (Input.GetKey(KeyCode.W))
+            if (mobileCheck.isMobile != 1)
             {
-                selfRigid.AddForce(MainCamera.transform.forward * speed * Time.deltaTime);
-            }
-            if (Input.GetKey(KeyCode.S))
-            {
-                selfRigid.AddForce(MainCamera.transform.forward * -speed * Time.deltaTime);
-            }
-            if (Input.GetKey(KeyCode.D))
-            {
-                selfRigid.AddForce(MainCamera.transform.right * speed * Time.deltaTime);
-            }
-            if (Input.GetKey(KeyCode.A))
-            {
-                selfRigid.AddForce(MainCamera.transform.right * -speed * Time.deltaTime);
-            }
-            if (Input.GetKeyDown(KeyCode.Space))
-            {
-                if (isGrounded)
+                if (Input.GetKey(KeyCode.W))
                 {
-                    jumpparticle.Play();
-                    jumpSound.Play();
-                    selfRigid.AddForce(direction.transform.up * jumpStrenght, ForceMode.Impulse);
+                    selfRigid.AddForce(MainCamera.transform.forward * speed * Time.deltaTime);
+                }
+                if (Input.GetKey(KeyCode.S))
+                {
+                    selfRigid.AddForce(MainCamera.transform.forward * -speed * Time.deltaTime);
+                }
+                if (Input.GetKey(KeyCode.D))
+                {
+                    selfRigid.AddForce(MainCamera.transform.right * speed * Time.deltaTime);
+                }
+                if (Input.GetKey(KeyCode.A))
+                {
+                    selfRigid.AddForce(MainCamera.transform.right * -speed * Time.deltaTime);
+                }
+                if (Input.GetKeyDown(KeyCode.Space))
+                {
+                    if (isGrounded)
+                    {
+                        jumpparticle.Play();
+                        jumpSound.Play();
+                        selfRigid.AddForce(direction.transform.up * jumpStrenght, ForceMode.Impulse);
+                    }
                 }
             }
+            else
+            {
+                if (mobileButtonList.MovementJoystick.Vertical > 0)
+                {
+                    selfRigid.AddForce(MainCamera.transform.forward * speed * Time.deltaTime);
+                }
+                if (mobileButtonList.MovementJoystick.Vertical < 0)
+                {
+                    selfRigid.AddForce(MainCamera.transform.forward * -speed * Time.deltaTime);
+                }
+                if (mobileButtonList.MovementJoystick.Horizontal > 0)
+                {
+                    selfRigid.AddForce(MainCamera.transform.right * speed * Time.deltaTime);
+                }
+                if (mobileButtonList.MovementJoystick.Horizontal < 0)
+                {
+                    selfRigid.AddForce(MainCamera.transform.right * -speed * Time.deltaTime);
+                }
+                if (mobileButtonList.JumpButton.GetComponent<CheckButtonScript>().isRealized)
+                {
+                    if (isGrounded)
+                    {
+                        jumpparticle.Play();
+                        jumpSound.Play();
+                        selfRigid.AddForce(direction.transform.up * jumpStrenght, ForceMode.Impulse);
+                    }
+                    mobileButtonList.JumpButton.GetComponent<CheckButtonScript>().isRealized = false;
+                }
+            }
+            
         }       
         if ((selfRigid.angularVelocity.x < -0.5 || selfRigid.angularVelocity.x > 0.5) || (selfRigid.angularVelocity.z < -0.5 || selfRigid.angularVelocity.z > 0.5))
         {

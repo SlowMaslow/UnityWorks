@@ -8,14 +8,19 @@ public class ReverseCamera : MonoBehaviour
     private Vector3 yRotation;
     public float Sens;
 
+    private MobileCheck mobileCheck;
+    private MobileButtonsList mobileButtonList;
+
     void Start()
     {
         yRotation = TargetObject.eulerAngles;
+        mobileCheck = FindObjectOfType<MobileCheck>();
+        mobileButtonList = FindObjectOfType<MobileButtonsList>();
     }
 
     void FixedUpdate()
     {
-        if (Input.GetKey(KeyCode.Mouse1))
+        if (mobileCheck.isMobile != 1)
         {
             if (Input.GetAxis("Mouse X") > 0)
             {
@@ -27,5 +32,17 @@ public class ReverseCamera : MonoBehaviour
             }
             TargetObject.localEulerAngles = Vector3.Lerp(TargetObject.eulerAngles, yRotation, 1);
         }
+        else
+        {
+            if (mobileButtonList.CameraJoystick.Horizontal > 0)
+            {
+                yRotation.y = yRotation.y + Sens;
+            }
+            if (mobileButtonList.CameraJoystick.Horizontal < 0)
+            {
+                yRotation.y = yRotation.y - Sens;
+            }
+            TargetObject.localEulerAngles = Vector3.Lerp(TargetObject.eulerAngles, yRotation, 1);
+        }   
     }
 }

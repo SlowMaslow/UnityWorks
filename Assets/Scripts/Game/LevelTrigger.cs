@@ -9,9 +9,11 @@ public class LevelTrigger : MonoBehaviour
     private bool triggerCheck;
     private Text PressText;
     public int level;
+    private MobileButtonsList mobileButtonList;
     void Start()
     {
-        PressText = GameObject.Find("Press").GetComponent<Text>();
+        PressText = GameObject.Find("InfoInteractionText").GetComponent<Text>();
+        mobileButtonList = FindObjectOfType<MobileButtonsList>();
     }
 
     // Update is called once per frame
@@ -21,9 +23,10 @@ public class LevelTrigger : MonoBehaviour
         {
             PressText.gameObject.SetActive(true);
             PressText.text = "Press <E> to Enter";
-            if (Input.GetKeyDown(KeyCode.E))
+            if (Input.GetKeyDown(KeyCode.E) || mobileButtonList.InteractiveButton.GetComponent<CheckButtonScript>().isRealized)
             {
                 triggerCheck = false;
+                mobileButtonList.InteractiveButton.GetComponent<CheckButtonScript>().isRealized = false;
                 SceneManager.LoadScene(level);
             }
         }
