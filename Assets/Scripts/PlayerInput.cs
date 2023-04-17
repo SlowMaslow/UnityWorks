@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.UI;
 
 [RequireComponent(typeof(PlayerMovement))]
 [RequireComponent(typeof(Shooter))]
@@ -12,8 +13,15 @@ public class PlayerInput : MonoBehaviour
     private SoundManager soundManager;
     private Health health;
     [SerializeField] private GameObject pausePanel;
+    [SerializeField] private FixedJoystick fixedJoystick;
+    [SerializeField] private Button bowButton;
+    [SerializeField] private Button hitButton;
+    [SerializeField] private Button jumpButton;
+    [SerializeField] private Button pauseButton;
+
     [HideInInspector] public bool dialogueStopper;
     private bool PauseSwitcher;
+    private MobileCheck mobileCheck;
 
     private void Awake()
     {
@@ -23,22 +31,61 @@ public class PlayerInput : MonoBehaviour
         playerHit = GetComponent<PlayerHit>();
         health = GetComponent<Health>();
         soundManager = GetComponent<SoundManager>();
+        mobileCheck = FindObjectOfType<MobileCheck>();
     }
+    private void Start()
+    {
+        if (mobileCheck.isMobile == 1)
+        {
+            fixedJoystick.gameObject.SetActive(true);
+            bowButton.gameObject.SetActive(true);
+            hitButton.gameObject.SetActive(true);
+            jumpButton.gameObject.SetActive(true);
+            pauseButton.gameObject.SetActive(true);
+        }
+        else
+        {
+            fixedJoystick.gameObject.SetActive(false);
+            bowButton.gameObject.SetActive(false);
+            hitButton.gameObject.SetActive(false);
+            jumpButton.gameObject.SetActive(false);
+            pauseButton.gameObject.SetActive(false);
+        }
+    }
+
     private void Update()
     {
-        float horizontalDirection = Input.GetAxis(GlobalStringVars.HORIZONTAL_AXIS);
-        bool isJumpButtonPressed = Input.GetButtonDown(GlobalStringVars.JUMP);
-        bool isFireButtonPressed = Input.GetButton(GlobalStringVars.FIRE_1);
-        bool isHitButtonPressed = Input.GetButtonDown(GlobalStringVars.FIRE_2);
-        bool isPauseButtonPressed = Input.GetButtonDown(GlobalStringVars.PAUSE);
+        float horizontalDirection;
+        bool isJumpButtonPressed;
+        bool isFireButtonPressed;
+        bool isHitButtonPressed;
+        bool isPauseButtonPressed;
+        if (mobileCheck.isMobile == 1)
+        {
+            horizontalDirection = fixedJoystick.Horizontal;
+            isJumpButtonPressed = jumpButton.GetComponent<CheckButtonScript>().isClicked;
+            isFireButtonPressed = bowButton.GetComponent<CheckButtonScript>().isClicked;
+            isHitButtonPressed = false;
+            isPauseButtonPressed = pauseButton.GetComponent<CheckButtonScript>().isRealized;
+        }
+        else
+        {
+            horizontalDirection = Input.GetAxis(GlobalStringVars.HORIZONTAL_AXIS);
+            isJumpButtonPressed = Input.GetButtonDown(GlobalStringVars.JUMP);
+            isFireButtonPressed = Input.GetButton(GlobalStringVars.FIRE_1);
+            isHitButtonPressed = Input.GetButtonDown(GlobalStringVars.FIRE_2);
+            isPauseButtonPressed = Input.GetButtonDown(GlobalStringVars.PAUSE);
+        }
+
 
         if (!pausePanel.activeSelf && health.isAlive && !dialogueStopper)
         {
-            if (Input.GetButtonUp(GlobalStringVars.FIRE_1))
+            if (bowButton.GetComponent<CheckButtonScript>().isRealized || (mobileCheck.isMobile != 1 && Input.GetButtonUp(GlobalStringVars.FIRE_1)))
             {
                 soundManager.StoppingSound("bow_stretch");
                 soundManager.PlayingSound("bow_fly");
                 shooter.Shoot(horizontalDirection);
+                bowButton.GetComponent<CheckButtonScript>().isRealized = false;
             }
             if (isHitButtonPressed)
             {
@@ -54,6 +101,7 @@ public class PlayerInput : MonoBehaviour
     {
         if (isPauseButtonPressed)
         {
+            pauseButton.GetComponent<CheckButtonScript>().isRealized = false;
             if (!PauseSwitcher)
             {
                 PauseSwitcher = true;
