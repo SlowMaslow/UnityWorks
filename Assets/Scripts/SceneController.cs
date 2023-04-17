@@ -11,14 +11,12 @@ public class SceneController : MonoBehaviour
     }
     public void LoadNextScene()
     {
-        if ((SceneManager.sceneCountInBuildSettings - 1)  > PlayerPrefs.GetInt("LastLevel"))
+        if ((SceneManager.sceneCountInBuildSettings) >= PlayerPrefs.GetInt("LastLevel"))
         {
-            SceneManager.LoadScene(GetCurrentScene() + 1);
+            SceneManager.LoadScene(PlayerPrefs.GetInt("LastLevel"));
         }
         else
         {
-            Debug.Log(SceneManager.sceneCountInBuildSettings);
-            Debug.Log(PlayerPrefs.GetInt("LastLevel"));
             SceneManager.LoadScene(1);
         }
     }
@@ -32,7 +30,7 @@ public class SceneController : MonoBehaviour
     }
     public void LoadLastLevel()
     {
-        if (PlayerPrefs.GetInt("LastLevel") != 0 && SceneManager.sceneCountInBuildSettings > PlayerPrefs.GetInt("LastLevel"))
+        if (PlayerPrefs.HasKey("LastLevel"))
         {
             SceneManager.LoadScene(PlayerPrefs.GetInt("LastLevel"));
         }
@@ -50,13 +48,11 @@ public class SceneController : MonoBehaviour
     {
         if (SceneManager.sceneCountInBuildSettings - 1 > PlayerPrefs.GetInt("LastLevel"))
         {
-            Debug.Log(SceneManager.sceneCountInBuildSettings);
-            Debug.Log(PlayerPrefs.GetInt("LastLevel"));
             PlayerPrefs.SetInt("LastLevel", GetCurrentScene() + 1);
         }
         else
         {
-            PlayerPrefs.SetInt("LastLevel", 0);
+            PlayerPrefs.SetInt("LastLevel", 1);
         }
     }
 }

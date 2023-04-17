@@ -649,6 +649,7 @@ Transform:
   - {fileID: 6648893149778385230}
   - {fileID: 878721111827167351}
   - {fileID: 5733976188062970310}
+  - {fileID: 8569605243622315719}
   m_Father: {fileID: 0}
   m_RootOrder: 0
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
@@ -3313,6 +3314,51 @@ Transform:
   m_Father: {fileID: 5594335442276191218}
   m_RootOrder: 4
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &8990666950934912245
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 8569605243622315719}
+  - component: {fileID: 4455131757817881425}
+  m_Layer: 6
+  m_Name: CollisionChecker
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &8569605243622315719
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 8990666950934912245}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1159061019123775962}
+  m_RootOrder: 5
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &4455131757817881425
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 8990666950934912245}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e0bd19b60113bdb47a1fc418c6c33b87, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  collideCheck: 0000
 --- !u!1 &8993703110640921550
 GameObject:
   m_ObjectHideFlags: 0
@@ -3568,6 +3614,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 905155c0d775b6a4bac0555d7d4cefda, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  padsRB:
+  - {fileID: 0}
+  - {fileID: 0}
   padsPositions:
   - {fileID: 5733976188062970310}
   - {fileID: 878721111827167351}
@@ -3729,6 +3778,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 905155c0d775b6a4bac0555d7d4cefda, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  padsRB:
+  - {fileID: 0}
+  - {fileID: 0}
   padsPositions:
   - {fileID: 5733976188062970310}
   - {fileID: 878721111827167351}

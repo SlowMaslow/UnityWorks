@@ -30,7 +30,6 @@ public class WinScript : MonoBehaviour
 
     private void WinWindowActive()
     {
-        PlayerPrefs.SetInt("LastLevel", PlayerPrefs.GetInt("LastLevel") + 1);
         WinWindow.SetActive(true);
         isWin = true;
     }
