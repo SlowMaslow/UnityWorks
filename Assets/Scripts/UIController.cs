@@ -34,7 +34,7 @@ public class UIController : MonoBehaviour
     }
     public void UpdateCoinUI()
     {
-        CoinsUI.text = $"COINS: { PlayerPrefs.GetInt("Coins") }";
+        CoinsUI.text = $"{ PlayerPrefs.GetInt("Coins") }";
     }
     public void UpdateUpgradeCostUI()
     {
