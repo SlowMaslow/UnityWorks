@@ -11,10 +11,6 @@ public class FirstRun : MonoBehaviour
             Instantiate(tutorial, FindObjectOfType<Canvas>().transform);
             PlayerPrefs.SetInt("FirstRun", 1);
         }
-        else
-        {
-            //PlayerPrefs.DeleteKey("FirstRun");
-        }
     }
     private void PausedChanger()
     {
