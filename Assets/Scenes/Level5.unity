@@ -2267,6 +2267,17 @@ Transform:
   m_Father: {fileID: 0}
   m_RootOrder: 14
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &934917444 stripped
+MonoBehaviour:
+  m_CorrespondingSourceObject: {fileID: 3617016327969779098, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+  m_PrefabInstance: {fileID: 2022746661}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 91f76bfa29b782642bde0167d3b170f9, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
 --- !u!114 &1227969574 stripped
 MonoBehaviour:
   m_CorrespondingSourceObject: {fileID: 403896509492052238, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
@@ -21536,6 +21547,10 @@ PrefabInstance:
       propertyPath: fixedJoystick
       value: 
       objectReference: {fileID: 2022746665}
+    - target: {fileID: 6650376071024830061, guid: da3320e233276f14baccfb3355f60216, type: 3}
+      propertyPath: jumpButton
+      value: 
+      objectReference: {fileID: 934917444}
     - target: {fileID: 7440674006737822038, guid: da3320e233276f14baccfb3355f60216, type: 3}
       propertyPath: m_Camera
       value: 
@@ -21547,6 +21562,28 @@ Transform:
   m_CorrespondingSourceObject: {fileID: 6650376071024830056, guid: da3320e233276f14baccfb3355f60216, type: 3}
   m_PrefabInstance: {fileID: 1697429281}
   m_PrefabAsset: {fileID: 0}
+--- !u!114 &1697429283 stripped
+MonoBehaviour:
+  m_CorrespondingSourceObject: {fileID: 6650376071024830061, guid: da3320e233276f14baccfb3355f60216, type: 3}
+  m_PrefabInstance: {fileID: 1697429281}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6320166230249fb4aa39cbf96ea0092e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+--- !u!114 &1697429284 stripped
+MonoBehaviour:
+  m_CorrespondingSourceObject: {fileID: 6650376071024830048, guid: da3320e233276f14baccfb3355f60216, type: 3}
+  m_PrefabInstance: {fileID: 1697429281}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: cd140060c229e03438e8e4590feb1845, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
 --- !u!1 &1701863208
 GameObject:
   m_ObjectHideFlags: 0
@@ -21840,6 +21877,50 @@ PrefabInstance:
   m_Modification:
     m_TransformParent: {fileID: 0}
     m_Modifications:
+    - target: {fileID: 4453886812920999872, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.size
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 4453886812920999872, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_Mode
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 4453886812920999872, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_Target
+      value: 
+      objectReference: {fileID: 1697429283}
+    - target: {fileID: 4453886812920999872, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_CallState
+      value: 2
+      objectReference: {fileID: 0}
+    - target: {fileID: 4453886812920999872, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_MethodName
+      value: Jump
+      objectReference: {fileID: 0}
+    - target: {fileID: 4453886812920999872, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_TargetAssemblyTypeName
+      value: PlayerMovement, Assembly-CSharp
+      objectReference: {fileID: 0}
+    - target: {fileID: 4453886812920999872, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_Arguments.m_ObjectArgumentAssemblyTypeName
+      value: UnityEngine.Object, UnityEngine
+      objectReference: {fileID: 0}
+    - target: {fileID: 5115630922874566208, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_Target
+      value: 
+      objectReference: {fileID: 1697429284}
+    - target: {fileID: 5115630922874566208, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_MethodName
+      value: Hit
+      objectReference: {fileID: 0}
+    - target: {fileID: 5115630922874566208, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_TargetAssemblyTypeName
+      value: PlayerHit, Assembly-CSharp
+      objectReference: {fileID: 0}
+    - target: {fileID: 5115630922874566208, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_Arguments.m_ObjectArgumentAssemblyTypeName
+      value: UnityEngine.Object, UnityEngine
+      objectReference: {fileID: 0}
     - target: {fileID: 6791118377765912131, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
       propertyPath: m_Text
       value: LEVEL  5 - HOME,  SWEET HOME

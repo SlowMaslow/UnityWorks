@@ -20,6 +20,7 @@ public class PlayerMovement : MonoBehaviour
     private Animator anim;
     private SpriteRenderer spriteRenderer;
 
+
     private void Awake()
     {
         rb = GetComponent<Rigidbody2D>();
@@ -56,7 +57,7 @@ public class PlayerMovement : MonoBehaviour
         }
     }
 
-    private void Jump()
+    public void Jump()
     {
         if (isGrounded)
         {

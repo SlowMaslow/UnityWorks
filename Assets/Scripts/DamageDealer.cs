@@ -25,6 +25,9 @@ public class DamageDealer : MonoBehaviour
                 collision.GetComponent<Animator>().SetBool("isDamage", true);
             }
         }
-        Destroy(gameObject);
+        if (gameObject.layer != 16)
+        {
+            Destroy(gameObject);
+        }          
     }
 }

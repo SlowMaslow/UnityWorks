@@ -63,7 +63,7 @@ public class PlayerInput : MonoBehaviour
         if (mobileCheck.isMobile == 1)
         {
             horizontalDirection = fixedJoystick.Horizontal;
-            isJumpButtonPressed = jumpButton.GetComponent<CheckButtonScript>().isClicked;
+            isJumpButtonPressed = false;
             isFireButtonPressed = bowButton.GetComponent<CheckButtonScript>().isClicked;
             isHitButtonPressed = false;
             isPauseButtonPressed = pauseButton.GetComponent<CheckButtonScript>().isRealized;

@@ -5346,15 +5346,10 @@ MonoBehaviour:
     \u0411\u0430\u0431\u043A\u0430 \u043C\u0435\u043D\u044F \u043F\u0440\u0438\u0431\u044C\u0435\u0442,
     \u0435\u0441\u043B\u0438 \u044F \u0432\u0435\u0440\u043D\u0443\u0441\u044C \u0431\u0435\u0437
     \u043F\u0438\u0440\u043E\u0436\u043A\u043E\u0432..."
-  - "\u0418 \u0447\u0442\u043E \u044D\u0442\u043E \u0437\u0430 \u0442\u0443\u043F\u044B\u0435
-    \u0442\u0430\u0431\u043B\u0438\u0447\u043A\u0438? \u0411\u0435\u0433\u0430\u0442\u044C
-    \u0438 \u043F\u0440\u044B\u0433\u0430\u0442\u044C, \u044F \u0438 \u0431\u0435\u0437
-    \u043D\u0438\u0445 \u0437\u043D\u0430\u044E \u043A\u0430\u043A..."
   audioClips:
   - {fileID: 8300000, guid: a8b6d335567a7af46a2c5f2248322648, type: 3}
-  - {fileID: 8300000, guid: 9b2870f830170b54ca3ba1082633786f, type: 3}
   audioClipsLength: []
-  dialogueStopper: 1
+  dialogueStopper: 0
 --- !u!61 &392536982
 BoxCollider2D:
   m_ObjectHideFlags: 0
@@ -35851,6 +35846,17 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: cd140060c229e03438e8e4590feb1845, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+--- !u!114 &1872348277 stripped
+MonoBehaviour:
+  m_CorrespondingSourceObject: {fileID: 6650376071024830061, guid: da3320e233276f14baccfb3355f60216, type: 3}
+  m_PrefabInstance: {fileID: 8319518159863605612}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6320166230249fb4aa39cbf96ea0092e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
 --- !u!1 &1885825691
 GameObject:
   m_ObjectHideFlags: 0
@@ -41367,6 +41373,34 @@ PrefabInstance:
   m_Modification:
     m_TransformParent: {fileID: 0}
     m_Modifications:
+    - target: {fileID: 4453886812920999872, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.size
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 4453886812920999872, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_Mode
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 4453886812920999872, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_Target
+      value: 
+      objectReference: {fileID: 1872348277}
+    - target: {fileID: 4453886812920999872, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_CallState
+      value: 2
+      objectReference: {fileID: 0}
+    - target: {fileID: 4453886812920999872, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_MethodName
+      value: Jump
+      objectReference: {fileID: 0}
+    - target: {fileID: 4453886812920999872, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_TargetAssemblyTypeName
+      value: PlayerMovement, Assembly-CSharp
+      objectReference: {fileID: 0}
+    - target: {fileID: 4453886812920999872, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_Arguments.m_ObjectArgumentAssemblyTypeName
+      value: UnityEngine.Object, UnityEngine
+      objectReference: {fileID: 0}
     - target: {fileID: 5115630922874566208, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
       propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_Target
       value: 
@@ -41526,6 +41560,17 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4e29b1a8efbd4b44bb3f3716e73f07ff, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+--- !u!114 &6791118379685280362 stripped
+MonoBehaviour:
+  m_CorrespondingSourceObject: {fileID: 3617016327969779098, guid: bd82ee0458e95c24ea42c3f7721c2462, type: 3}
+  m_PrefabInstance: {fileID: 6791118379685280353}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 91f76bfa29b782642bde0167d3b170f9, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
 --- !u!1001 &8319518159863605612
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -41617,6 +41662,10 @@ PrefabInstance:
       propertyPath: floatingJoystick
       value: 
       objectReference: {fileID: 0}
+    - target: {fileID: 6650376071024830061, guid: da3320e233276f14baccfb3355f60216, type: 3}
+      propertyPath: jumpButton
+      value: 
+      objectReference: {fileID: 6791118379685280362}
     - target: {fileID: 7440674006737822038, guid: da3320e233276f14baccfb3355f60216, type: 3}
       propertyPath: m_Camera
       value: 
