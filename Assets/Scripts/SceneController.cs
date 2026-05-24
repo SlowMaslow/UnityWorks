@@ -1,58 +1,72 @@
-using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
+/// <summary>
+/// Управляет переходами между сценами.
+/// Все игровые уровни загружаются через единую GameScene (buildIndex 1).
+/// LevelLoader.PendingLevel задаёт какой prefab инстанциировать.
+/// </summary>
 public class SceneController : MonoBehaviour
 {
-    public int GetCurrentScene() 
-    {
-        return SceneManager.GetActiveScene().buildIndex;
-    }
+    private const int MENU_INDEX  = 0;
+    private const int GAME_INDEX  = 1; // GameScene — единственная игровая сцена
+
+    // ─── Текущий уровень ─────────────────────────────────────────────────────
+    /// <summary>Индекс текущего уровня (1-based). В меню возвращает 0.</summary>
+    public int GetCurrentScene()
+        => SceneManager.GetActiveScene().buildIndex == MENU_INDEX
+            ? 0
+            : LevelLoader.PendingLevel;
+
+    // ─── Навигация ───────────────────────────────────────────────────────────
+    public void LoadMainMenu()
+        => LoadScene(MENU_INDEX);
+
+    /// <summary>Перезапустить текущий уровень.</summary>
+    public void ReloadCurrentScene()
+        => LoadGameScene(LevelLoader.PendingLevel);
+
+    /// <summary>Алиас для кнопок Inspector.</summary>
+    public void LoadCurrentScene()
+        => ReloadCurrentScene();
+
+    /// <summary>Загрузить следующий уровень. Если уровней нет — вернуться к первому.</summary>
     public void LoadNextScene()
     {
-        if ((SceneManager.sceneCountInBuildSettings) >= PlayerPrefs.GetInt("LastLevel"))
-        {
-            SceneManager.LoadScene(PlayerPrefs.GetInt("LastLevel"));
-        }
-        else
-        {
-            SceneManager.LoadScene(1);
-        }
+        int next  = LevelLoader.PendingLevel + 1;
+        int total = LevelLoader.TotalLevels;
+        LoadGameScene(next <= total ? next : 1);
     }
-    public void LoadMainMenu()
-    {
-        SceneManager.LoadScene(0);
-    }
-    public void LoadCurrentScene()
-    {
-        SceneManager.LoadScene(GetCurrentScene());
-    }
+
+    /// <summary>Загрузить последний открытый уровень (кнопка Play в меню).</summary>
     public void LoadLastLevel()
-    {
-        if (PlayerPrefs.HasKey("LastLevel"))
-        {
-            SceneManager.LoadScene(PlayerPrefs.GetInt("LastLevel"));
-        }
-        else
-        {
-            PlayerPrefs.SetInt("LastLevel", 1);
-            SceneManager.LoadScene(1);
-        }
-    }
+        => LoadGameScene(SaveSystem.LastLevel);
+
+    // ─── Обратная совместимость с Inspector-кнопками ─────────────────────────
     public void SaveLastLevel()
     {
-        PlayerPrefs.SetInt("LastLevel", GetCurrentScene());
+        int current = GetCurrentScene();
+        if (current > SaveSystem.LastLevel) SaveSystem.LastLevel = current;
     }
+
     public void SaveLastLevelOnNext()
+        => SaveSystem.UnlockNextLevel(GetCurrentScene(), LevelLoader.TotalLevels);
+
+    // ─── Private ─────────────────────────────────────────────────────────────
+    private void LoadGameScene(int levelIndex)
     {
-        if (SceneManager.sceneCountInBuildSettings - 1 > PlayerPrefs.GetInt("LastLevel"))
-        {
-            PlayerPrefs.SetInt("LastLevel", GetCurrentScene() + 1);
-        }
+        LevelLoader.PendingLevel = levelIndex;
+        LoadScene(GAME_INDEX);
+    }
+
+    private static void LoadScene(int index)
+    {
+        if (ScreenFader.Instance != null)
+            ScreenFader.Instance.FadeToScene(index);
         else
         {
-            PlayerPrefs.SetInt("LastLevel", 1);
+            Time.timeScale = 1f;
+            SceneManager.LoadScene(index);
         }
     }
 }

@@ -1,35 +1,21 @@
-using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
 
+/// <summary>
+/// Монета собирается в LevelManager.CoinsThisRun.
+/// В SaveSystem монеты попадают ТОЛЬКО при завершении уровня (LevelManager.CompleteLevel).
+/// Это исключает фарм монет без прохождения уровня.
+/// </summary>
 public class CoinCollision : MonoBehaviour
 {
-    private PlayerStats playerStats;
-    private UIController uiController;
-    private bool isCollided;
-    private void Start()
-    {
-        uiController = FindObjectOfType<UIController>();
-        playerStats = FindObjectOfType<PlayerStats>();
-    }
+    private bool isCollected;
+
     private void OnTriggerEnter(Collider other)
     {
-        if (!isCollided)
-        {
-            CollectCoin();
-            DestroyCoin();
-        }
-    }
-    public void DestroyCoin()
-    {
-        Destroy(transform.parent.gameObject);
-    }
+        if (isCollected) return;
+        isCollected = true;
 
-    private void CollectCoin()
-    {
-        isCollided = true;
-        PlayerPrefs.SetInt("Coins", PlayerPrefs.GetInt("Coins") + 1);
-        playerStats.Coins = PlayerPrefs.GetInt("Coins");
-        uiController.UpdateCoinUI();
+        VFXManager.Instance?.PlayCoinVFX(transform.position);
+        LevelManager.Instance?.RegisterCoin();
+        Destroy(transform.parent.gameObject);
     }
 }

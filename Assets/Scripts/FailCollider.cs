@@ -1,19 +1,31 @@
 using UnityEngine;
 
+/// <summary>
+/// Зона провала внизу уровня. Живёт в level prefab.
+/// Находит ragdoll rigidbodies по DragObject в сцене —
+/// не нужны serialized ссылки на объекты из другой иерархии.
+/// </summary>
 public class FailCollider : MonoBehaviour
 {
-    [SerializeField] private GameObject FallWindow;
-    [SerializeField] private GameObject PauseButton;
-    [SerializeField] private Rigidbody[] dolling;
+    private Rigidbody[] _ragdollBodies;
+
     private void Start()
     {
-        PauseButton = GameObject.Find("Pause");
+        // DragObject есть на каждом пэде (LeftHockeyPad, RightHockeyPad)
+        var drags = FindObjectsByType<DragObject>(
+            FindObjectsInactive.Include, FindObjectsSortMode.None);
+
+        _ragdollBodies = new Rigidbody[drags.Length];
+        for (int i = 0; i < drags.Length; i++)
+            _ragdollBodies[i] = drags[i].GetComponent<Rigidbody>();
     }
+
     private void OnCollisionEnter(Collision collision)
     {
-        FallWindow.SetActive(true);
-        PauseButton.SetActive(false);
-        dolling[0].constraints = RigidbodyConstraints.None;
-        dolling[1].constraints = RigidbodyConstraints.None;
+        // Освобождаем рагдолл
+        foreach (var rb in _ragdollBodies)
+            if (rb != null) rb.constraints = RigidbodyConstraints.None;
+
+        GameManager.Instance?.SetState(GameState.Fail);
     }
 }

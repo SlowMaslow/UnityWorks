@@ -1,43 +1,95 @@
-using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.SceneManagement;
+using System.Collections;
 
+/// <summary>
+/// Отвечает ТОЛЬКО за отображение UI. Не содержит игровой логики.
+/// Реагирует на события GameManager и LevelManager через подписки.
+/// </summary>
 public class UIController : MonoBehaviour
 {
-    [SerializeField] private GameObject WinWindow;
-    [SerializeField] private GameObject FailWindow;
-    [SerializeField] private Text CoinsUI;
-    [SerializeField] private Text LevelUI;
+    // ─── Inspector ───────────────────────────────────────────────────────────
+    [Header("Auto-restart on fail")]
+    [SerializeField] private float failRestartDelay = 1.5f; // задержка перед авторестартом
+
+    [Header("HUD")]
+    [SerializeField] private Text       CoinsUI;
+    [SerializeField] private Text       LevelUI;
+    [SerializeField] private Text       TimerUI;     // Опционально: отображение таймера
+
+    [Header("Menu only")]
     [SerializeField] private Text UpgradeUI;
-    private SceneController sceneController;
+
+    // ─── Unity ───────────────────────────────────────────────────────────────
+    private void OnEnable()
+    {
+        GameManager.OnGameStateChanged += HandleStateChanged;
+        GameManager.OnCoinsChanged     += UpdateCoinsUI;
+        LevelManager.OnLevelCompleted  += HandleLevelCompleted;
+        LevelManager.OnTimerTick       += UpdateTimerUI;
+        LevelManager.OnCoinCollected   += UpdateCoinsUI;
+    }
+
+    private void OnDisable()
+    {
+        GameManager.OnGameStateChanged -= HandleStateChanged;
+        GameManager.OnCoinsChanged     -= UpdateCoinsUI;
+        LevelManager.OnLevelCompleted  -= HandleLevelCompleted;
+        LevelManager.OnTimerTick       -= UpdateTimerUI;
+        LevelManager.OnCoinCollected   -= UpdateCoinsUI;
+    }
+
     private void Start()
     {
-        sceneController = FindObjectOfType<SceneController>();
-        CoinsUI.text = $"{ PlayerPrefs.GetInt("Coins") }";
-        if (sceneController.GetCurrentScene() != 0)
-        {
-            LevelUI.text = $"LEVEL: { sceneController.GetCurrentScene() }";
-        }
+        // Инициализируем HUD начальными данными
+        UpdateCoinsUI(SaveSystem.Coins);
+
+        bool isMenuScene = SceneManager.GetActiveScene().buildIndex == 0;
+        if (!isMenuScene)
+            SetText(LevelUI,   $"LEVEL: {LevelLoader.PendingLevel}");
         else
-        {
-            UpgradeUI.text = $"COST: { PlayerPrefs.GetInt("UpgradeCost") }";
-        }
+            SetText(UpgradeUI, $"COST: {SaveSystem.UpgradeCost}");
     }
-    public void ShowWinWindow()
+
+    // ─── Обработчики событий ─────────────────────────────────────────────────
+    private void HandleStateChanged(GameState state)
     {
-        WinWindow.SetActive(true);
+        if (state == GameState.Fail)
+            StartCoroutine(AutoRestart());
     }
-    public void ShowFailWindow()
+
+    private IEnumerator AutoRestart()
     {
-        FailWindow.SetActive(true);
+        // Даём рагдоллу упасть — пауза для "драматического эффекта"
+        yield return new WaitForSecondsRealtime(failRestartDelay);
+
+        var sc = FindFirstObjectByType<SceneController>();
+        sc?.ReloadCurrentScene();
     }
-    public void UpdateCoinUI()
+
+    private void HandleLevelCompleted(LevelResult result)
     {
-        CoinsUI.text = $"{ PlayerPrefs.GetInt("Coins") }";
+        // Win-экран теперь обрабатывается WinScreenController (с анимацией)
     }
+
+    // ─── Обновление элементов ────────────────────────────────────────────────
+    private void UpdateCoinsUI(int coins)
+        => SetText(CoinsUI, coins.ToString());
+
+    private void UpdateTimerUI(float seconds)
+    {
+        int m = (int)(seconds / 60f);
+        int s = (int)(seconds % 60f);
+        SetText(TimerUI, $"{m:00}:{s:00}");
+    }
+
     public void UpdateUpgradeCostUI()
+        => SetText(UpgradeUI, $"COST: {SaveSystem.UpgradeCost}");
+
+    // ─── Вспомогательное ─────────────────────────────────────────────────────
+    private static void SetText(Text label, string value)
     {
-        UpgradeUI.text = $"COST: { PlayerPrefs.GetInt("UpgradeCost") }";
+        if (label != null) label.text = value;
     }
 }

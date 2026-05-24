@@ -1,0 +1,243 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6296d446b5c35a84e83ff228317dfe20, type: 3}
+  m_Name: DefaultTutorial
+  m_EditorClassIdentifier: 
+  completeFlag: TutorialDone
+  additionalCompleteFlags:
+  - TutorialPastTroll
+  steps:
+  - id: drag_red
+    hintText: 'DRAG THE
+
+      RED PAD!'
+    subText: 
+    condition:
+      rid: 7932376582882853240
+    autoAdvanceDelay: 0
+    highlights:
+    - targetId: red_pad
+      color: {r: 1, g: 0.85, b: 0.1, a: 1}
+    actions: []
+    setFlagOnEnter: 
+    setFlagOnComplete: 
+    skipIfFlagSet: TutorialTrollTriggered
+    stopAfterComplete: 0
+  - id: place_red
+    hintText: 'PLACE IT IN
+
+      THE ZONE!'
+    subText: 
+    condition:
+      rid: 7932376582882853241
+    autoAdvanceDelay: 0
+    highlights:
+    - targetId: red_pad
+      color: {r: 1, g: 0.85, b: 0.1, a: 1}
+    - targetId: zone_1
+      color: {r: 1, g: 0.25, b: 0.25, a: 0.55}
+    actions: []
+    setFlagOnEnter: 
+    setFlagOnComplete: 
+    skipIfFlagSet: TutorialTrollTriggered
+    stopAfterComplete: 0
+  - id: drag_blue
+    hintText: 'NOW DRAG THE
+
+      BLUE PAD!'
+    subText: 
+    condition:
+      rid: 7932376582882853242
+    autoAdvanceDelay: 0
+    highlights:
+    - targetId: blue_pad
+      color: {r: 1, g: 0.85, b: 0.1, a: 1}
+    actions: []
+    setFlagOnEnter: 
+    setFlagOnComplete: 
+    skipIfFlagSet: TutorialTrollTriggered
+    stopAfterComplete: 0
+  - id: place_blue
+    hintText: 'PLACE IT IN
+
+      THE ZONE!'
+    subText: 
+    condition:
+      rid: 7932376582882853243
+    autoAdvanceDelay: 0
+    highlights:
+    - targetId: blue_pad
+      color: {r: 1, g: 0.85, b: 0.1, a: 1}
+    - targetId: zone_2
+      color: {r: 0.25, g: 0.55, b: 1, a: 0.55}
+    actions: []
+    setFlagOnEnter: 
+    setFlagOnComplete: 
+    skipIfFlagSet: TutorialTrollTriggered
+    stopAfterComplete: 0
+  - id: troll
+    hintText: 'LAST LESSON!
+
+      DRAG TO THE ZONE!'
+    subText: 
+    condition:
+      rid: 7932376582882853244
+    autoAdvanceDelay: 0
+    highlights:
+    - targetId: red_pad
+      color: {r: 1, g: 0.85, b: 0.1, a: 1}
+    - targetId: zone_3
+      color: {r: 1, g: 0.25, b: 0.25, a: 0.55}
+    actions: []
+    setFlagOnEnter: 
+    setFlagOnComplete: TutorialTrollTriggered
+    skipIfFlagSet: TutorialTrollTriggered
+    stopAfterComplete: 1
+  - id: troll_result
+    hintText: 'HA-HA! DON''T
+
+      STRETCH TOO MUCH!'
+    subText: 
+    condition:
+      rid: 7932376582882853245
+    autoAdvanceDelay: 4
+    highlights: []
+    actions:
+    - rid: 7932376582882853423
+    setFlagOnEnter: TutorialPastTroll
+    setFlagOnComplete: 
+    skipIfFlagSet: 
+    stopAfterComplete: 0
+  - id: info_star
+    hintText: 'COLLECT ALL 3 STARS
+
+      ON EACH LEVEL!'
+    subText: 
+    condition:
+      rid: 7932376582882853246
+    autoAdvanceDelay: 4
+    highlights:
+    - targetId: tutor_star
+      color: {r: 1, g: 0.39607844, b: 0.101960786, a: 1}
+    actions:
+    - rid: 7932376582882853424
+    - rid: 7932376582882853436
+    setFlagOnEnter: 
+    setFlagOnComplete: 
+    skipIfFlagSet: 
+    stopAfterComplete: 0
+  - id: info_coin
+    hintText: 'COLLECT COINS TO
+
+      GET NEW SKINS!'
+    subText: 
+    condition:
+      rid: 7932376582882853247
+    autoAdvanceDelay: 4
+    highlights:
+    - targetId: tutor_coin
+      color: {r: 1, g: 0.39512566, b: 0.10196078, a: 1}
+    actions:
+    - rid: 7932376582882853425
+    - rid: 7932376582882853435
+    setFlagOnEnter: 
+    setFlagOnComplete: 
+    skipIfFlagSet: 
+    stopAfterComplete: 0
+  - id: info_goodluck
+    hintText: GOOD LUCK!
+    subText: 
+    condition:
+      rid: 7932376582882853471
+    autoAdvanceDelay: 4
+    highlights: []
+    actions:
+    - rid: 7932376582882853493
+    setFlagOnEnter: 
+    setFlagOnComplete: 
+    skipIfFlagSet: 
+    stopAfterComplete: 0
+  references:
+    version: 2
+    RefIds:
+    - rid: 7932376582882853240
+      type: {class: EventTutorialCondition, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
+      data:
+        eventId: pad_drag_start
+        payloadFilter: RightHockeyPad
+    - rid: 7932376582882853241
+      type: {class: EventTutorialCondition, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
+      data:
+        eventId: zone_entered
+        payloadFilter: zone_1
+    - rid: 7932376582882853242
+      type: {class: EventTutorialCondition, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
+      data:
+        eventId: pad_drag_start
+        payloadFilter: LeftHockeyPad
+    - rid: 7932376582882853243
+      type: {class: EventTutorialCondition, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
+      data:
+        eventId: zone_entered
+        payloadFilter: zone_2
+    - rid: 7932376582882853244
+      type: {class: GameStateTutorialCondition, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
+      data:
+        targetState: 4
+    - rid: 7932376582882853245
+      type: {class: ManualAdvanceCondition, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
+      data: 
+    - rid: 7932376582882853246
+      type: {class: ManualAdvanceCondition, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
+      data: 
+    - rid: 7932376582882853247
+      type: {class: ManualAdvanceCondition, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
+      data: 
+    - rid: 7932376582882853423
+      type: {class: BlockInputAction, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
+      data:
+        blockGameInput: 1
+        blockUI: 1
+    - rid: 7932376582882853424
+      type: {class: BlockInputAction, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
+      data:
+        blockGameInput: 1
+        blockUI: 1
+    - rid: 7932376582882853425
+      type: {class: BlockInputAction, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
+      data:
+        blockGameInput: 1
+        blockUI: 1
+    - rid: 7932376582882853435
+      type: {class: CameraFocusAction, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
+      data:
+        targetId: tutor_coin
+        lerpSpeed: 4
+        distance: 4
+        yOffset: 0
+    - rid: 7932376582882853436
+      type: {class: CameraFocusAction, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
+      data:
+        targetId: tutor_star
+        lerpSpeed: 4
+        distance: 4
+        yOffset: 0
+    - rid: 7932376582882853471
+      type: {class: ManualAdvanceCondition, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
+      data: 
+    - rid: 7932376582882853493
+      type: {class: CameraFocusAction, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
+      data:
+        targetId: player
+        lerpSpeed: 4
+        distance: 5
+        yOffset: 1

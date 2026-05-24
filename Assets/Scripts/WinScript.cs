@@ -1,36 +1,66 @@
 using UnityEngine;
+using System;
 
+/// <summary>
+/// Отслеживает касание обоих WinCollider.
+/// Запускает обратный отсчёт 3-2-1 пока оба пэда в зонах.
+/// При выходе пэда из зоны — сбрасывает отсчёт.
+/// </summary>
 public class WinScript : MonoBehaviour
 {
-    public int WinValue;
-    private bool isWin;
-    private TimeManager timeManager;
-    private GameObject pausePrefab;
-    [SerializeField] private GameObject WinWindow;
+    [HideInInspector] public int WinValue;
 
-    private void Start()
+    [SerializeField] private float countdownDuration = 3f;
+
+    // ─── События ─────────────────────────────────────────────────────────────
+    /// <summary>Текущая цифра отсчёта (3, 2, 1). Вызывается при смене цифры.</summary>
+    public static event Action<int> OnCountdownTick;
+
+    /// <summary>Отсчёт сброшен — пэд покинул зону.</summary>
+    public static event Action OnCountdownCancel;
+
+    // ─── Runtime ─────────────────────────────────────────────────────────────
+    private float _timer;
+    private int   _lastTick = -1;
+    private bool  _wasActive;
+
+    private void OnDestroy()
     {
-        timeManager = FindObjectOfType<TimeManager>();
-        pausePrefab = GameObject.Find("Pause");
-        isWin = false;
+        OnCountdownTick   = null;
+        OnCountdownCancel = null;
     }
 
-    void Update()
+    private void Update()
     {
-        if (!isWin)
+        if (WinValue >= 2)
         {
-            if (WinValue == 2)
+            _wasActive = true;
+            _timer += Time.deltaTime;
+
+            // Текущая цифра: 3 → 2 → 1
+            int tick = Mathf.Max(1, Mathf.CeilToInt(countdownDuration - _timer));
+            if (tick != _lastTick)
             {
-                pausePrefab.SetActive(false);
-                timeManager.PausedChanger();
-                WinWindowActive();
+                _lastTick = tick;
+                OnCountdownTick?.Invoke(tick);
+            }
+
+            if (_timer >= countdownDuration)
+            {
+                LevelManager.Instance?.CompleteLevel();
+                enabled = false;
             }
         }
-    }
-
-    private void WinWindowActive()
-    {
-        WinWindow.SetActive(true);
-        isWin = true;
+        else
+        {
+            if (_wasActive)
+            {
+                // Пэд покинул зону — сбрасываем
+                _timer     = 0f;
+                _lastTick  = -1;
+                _wasActive = false;
+                OnCountdownCancel?.Invoke();
+            }
+        }
     }
 }

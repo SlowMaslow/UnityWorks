@@ -1,39 +1,58 @@
-using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
 
+/// <summary>
+/// Фиксирует пэд на платформе.
+/// Обнуляет velocity каждый Stay-кадр — joint-импульсы от тела не могут сдвинуть пэд.
+/// Снимает фиксацию ТОЛЬКО когда пэд активно тащат мышью (IsDragging).
+/// </summary>
 public class PlatformCollisionLogic : MonoBehaviour
 {
-    private DragObject dragObject;
-    private CollisionChecker collisionChecker;
-    private bool currectCheck;
-    private void Start()
+    private static readonly RigidbodyConstraints FrozenConstraints =
+        RigidbodyConstraints.FreezePosition    |
+        RigidbodyConstraints.FreezeRotationX   |
+        RigidbodyConstraints.FreezeRotationY;
+
+    private void OnCollisionEnter(Collision collision) => TryFreeze(collision);
+    private void OnCollisionStay(Collision collision)  => TryFreeze(collision);
+
+    private void TryFreeze(Collision collision)
     {
-        dragObject = FindObjectOfType<DragObject>();
-        collisionChecker = FindObjectOfType<CollisionChecker>();
+        var colRb = collision.rigidbody;
+        if (colRb == null) return;
+
+        var drag = collision.gameObject.GetComponent<DragObject>();
+        var cc   = CollisionChecker.Instance;
+        if (drag == null || cc == null) return;
+
+        // Если пэд сейчас тащат — не мешаем
+        if (drag.IsDragging) return;
+
+        // Полная фиксация + обнуление velocity каждый кадр
+        // Это гарантирует что никакой joint-импульс не сдвинет пэд
+        colRb.constraints      = FrozenConstraints;
+        colRb.linearVelocity   = Vector3.zero;
+        colRb.angularVelocity  = Vector3.zero;
+
+        cc.collideCheck[drag.IsFirstPad(colRb) ? 0 : 1] = true;
+        drag.UpdatePadDamping();
     }
-    private void OnCollisionStay(Collision collision)
-    {
-        collision.gameObject.GetComponent<Rigidbody>().constraints = RigidbodyConstraints.FreezePosition | RigidbodyConstraints.FreezeRotationX | RigidbodyConstraints.FreezeRotationY;
-        if (collision.gameObject.GetComponent<Rigidbody>() == collision.gameObject.GetComponent<DragObject>().padsRB[0])
-        {
-            collisionChecker.collideCheck[0] = true;
-        }
-        else
-        {
-            collisionChecker.collideCheck[1] = true;
-        }
-        dragObject.OneHandLimitCheck();
-    }
+
     private void OnCollisionExit(Collision collision)
     {
-        if (collision.gameObject.GetComponent<Rigidbody>() == collision.gameObject.GetComponent<DragObject>().padsRB[0])
-        {
-            collisionChecker.collideCheck[0] = false;
-        }
-        else
-        {
-            collisionChecker.collideCheck[1] = false;
-        }
+        var colRb = collision.rigidbody;
+        if (colRb == null) return;
+
+        var drag = collision.gameObject.GetComponent<DragObject>();
+        var cc   = CollisionChecker.Instance;
+        if (drag == null || cc == null) return;
+
+        // Снимаем фиксацию ТОЛЬКО если пэд активно тащат
+        // Иначе тело могло просто дёрнуть пэд — сохраняем FreezePosition
+        if (!drag.IsDragging) return;
+
+        colRb.constraints = RigidbodyConstraints.FreezeRotationX
+                          | RigidbodyConstraints.FreezeRotationY;
+
+        cc.collideCheck[drag.IsFirstPad(colRb) ? 0 : 1] = false;
     }
 }

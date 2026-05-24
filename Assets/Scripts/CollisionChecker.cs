@@ -1,19 +1,24 @@
-using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
 
+/// <summary>
+/// Хранит флаги контакта каждого пэда с платформой.
+/// Singleton — к нему обращаются PlatformCollisionLogic без поиска по сцене.
+/// </summary>
 public class CollisionChecker : MonoBehaviour
 {
+    public static CollisionChecker Instance { get; private set; }
+
+    // [0] = левый пэд, [1] = правый пэд
     [HideInInspector] public bool[] collideCheck = new bool[2];
-    // Start is called before the first frame update
-    void Start()
+
+    private void Awake()
     {
-        
+        if (Instance != null && Instance != this) { Destroy(this); return; }
+        Instance = this;
     }
 
-    // Update is called once per frame
-    void Update()
+    private void OnDestroy()
     {
-        
+        if (Instance == this) Instance = null;
     }
 }
