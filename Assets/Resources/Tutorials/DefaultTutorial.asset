@@ -125,9 +125,7 @@ MonoBehaviour:
     condition:
       rid: 7932376582882853246
     autoAdvanceDelay: 4
-    highlights:
-    - targetId: tutor_star
-      color: {r: 1, g: 0.39607844, b: 0.101960786, a: 1}
+    highlights: []
     actions:
     - rid: 7932376582882853424
     - rid: 7932376582882853436
@@ -143,12 +141,25 @@ MonoBehaviour:
     condition:
       rid: 7932376582882853247
     autoAdvanceDelay: 4
-    highlights:
-    - targetId: tutor_coin
-      color: {r: 1, g: 0.39512566, b: 0.10196078, a: 1}
+    highlights: []
     actions:
     - rid: 7932376582882853425
     - rid: 7932376582882853435
+    setFlagOnEnter: 
+    setFlagOnComplete: 
+    skipIfFlagSet: 
+    stopAfterComplete: 0
+  - id: info_finish
+    hintText: 'CLIMB UP TO
+
+      THE FINISH LINE'
+    subText: 
+    condition:
+      rid: 7932376582882853557
+    autoAdvanceDelay: 4
+    highlights: []
+    actions:
+    - rid: 7932376582882853558
     setFlagOnEnter: 
     setFlagOnComplete: 
     skipIfFlagSet: 
@@ -222,14 +233,14 @@ MonoBehaviour:
       data:
         targetId: tutor_coin
         lerpSpeed: 4
-        distance: 4
+        distance: 2
         yOffset: 0
     - rid: 7932376582882853436
       type: {class: CameraFocusAction, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
       data:
         targetId: tutor_star
         lerpSpeed: 4
-        distance: 4
+        distance: 2
         yOffset: 0
     - rid: 7932376582882853471
       type: {class: ManualAdvanceCondition, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
@@ -241,3 +252,13 @@ MonoBehaviour:
         lerpSpeed: 4
         distance: 5
         yOffset: 1
+    - rid: 7932376582882853557
+      type: {class: ManualAdvanceCondition, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
+      data: 
+    - rid: 7932376582882853558
+      type: {class: CameraFocusAction, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
+      data:
+        targetId: tutor_finish
+        lerpSpeed: 4
+        distance: 2
+        yOffset: 0

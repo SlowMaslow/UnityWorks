@@ -5,6 +5,8 @@ using UnityEngine;
 /// DontDestroyOnLoad — создаётся один раз, живёт до закрытия игры.
 /// Присутствует в обеих сценах, но только первый экземпляр выживает.
 /// </summary>
+[DefaultExecutionOrder(-100)] // Awake до любых других скриптов
+[DisallowMultipleComponent]
 public class MusicPlayer : MonoBehaviour
 {
     public static MusicPlayer Instance { get; private set; }
@@ -16,22 +18,38 @@ public class MusicPlayer : MonoBehaviour
 
     private void Awake()
     {
-        // Если уже есть — уничтожаем дубликат (музыка продолжает играть)
+        // Если уже есть живой Instance — мы дубликат, должны умереть НЕМЕДЛЕННО
         if (Instance != null && Instance != this)
         {
-            Destroy(gameObject);
+            // DestroyImmediate чтобы не было ни одного кадра с двумя источниками
+            DestroyImmediate(gameObject);
             return;
         }
 
         Instance = this;
         DontDestroyOnLoad(gameObject);
 
-        _source             = gameObject.AddComponent<AudioSource>();
+        // Переиспользуем AudioSource если уже есть (защита от двойного AddComponent
+        // при повторном Awake после ошибки или редактора)
+        _source = GetComponent<AudioSource>();
+        if (_source == null) _source = gameObject.AddComponent<AudioSource>();
+
+        // Чистим возможные лишние AudioSource на этом же GameObject
+        var allSources = GetComponents<AudioSource>();
+        if (allSources.Length > 1)
+        {
+            for (int i = 0; i < allSources.Length; i++)
+                if (allSources[i] != _source)
+                    Destroy(allSources[i]);
+        }
+
         _source.clip        = music;
         _source.loop        = true;
         _source.volume      = volume;
         _source.playOnAwake = false;
-        _source.Play();
+
+        // Не рестартуем трек если уже играет (после domain reload / повторного Awake)
+        if (!_source.isPlaying) _source.Play();
     }
 
     private void OnDestroy()

@@ -442,11 +442,16 @@ public class LevelEditorWindow : EditorWindow
             case Tool.PlatformWall:
             {
                 var s   = _pfWall != null ? _pfWall.transform.localScale : Vector3.one;
-                float w = s.y, h = _platW;
+                // PlatformWall.prefab имеет rotation (0,0,90), поэтому локальные X/Y
+                // меняются местами в визуале. Сетим scale=(длина, толщина, z),
+                // что после поворота даст визуально (толщина, длина) = вертикальная стена.
+                float thickness = s.y;
+                float length    = _platW;
+                float w = thickness, h = length; // для preview / GetPivotOffset (визуальные размеры)
                 go = PlaceFromPrefab(_pfWall, pos + GetPivotOffset(w, h),
                     GetGroup("Walls"), "PlatformWall");
                 if (go != null)
-                    go.transform.localScale = new Vector3(w, h, s.z);
+                    go.transform.localScale = new Vector3(length, thickness, s.z);
                 break;
             }
 
