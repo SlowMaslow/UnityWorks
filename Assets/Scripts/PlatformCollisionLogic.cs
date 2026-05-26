@@ -24,6 +24,9 @@ public class PlatformCollisionLogic : MonoBehaviour
         var cc   = CollisionChecker.Instance;
         if (drag == null || cc == null) return;
 
+        // После разрыва joint'ов — не трогаем пэды, они должны свободно упасть
+        if (drag.AreJointsBroken) return;
+
         // Если пэд сейчас тащат — не мешаем
         if (drag.IsDragging) return;
 
@@ -32,6 +35,9 @@ public class PlatformCollisionLogic : MonoBehaviour
         colRb.constraints      = FrozenConstraints;
         colRb.linearVelocity   = Vector3.zero;
         colRb.angularVelocity  = Vector3.zero;
+
+        // Визуальный пэд — kinematic + отвязка от Hand + снап к точке захвата
+        drag.FreezeVisual(colRb.transform.position);
 
         cc.collideCheck[drag.IsFirstPad(colRb) ? 0 : 1] = true;
         drag.UpdatePadDamping();
@@ -46,12 +52,17 @@ public class PlatformCollisionLogic : MonoBehaviour
         var cc   = CollisionChecker.Instance;
         if (drag == null || cc == null) return;
 
+        if (drag.AreJointsBroken) return;
+
         // Снимаем фиксацию ТОЛЬКО если пэд активно тащат
         // Иначе тело могло просто дёрнуть пэд — сохраняем FreezePosition
         if (!drag.IsDragging) return;
 
         colRb.constraints = RigidbodyConstraints.FreezeRotationX
                           | RigidbodyConstraints.FreezeRotationY;
+
+        // Возвращаем визуальный пэд в физику, re-parent обратно под Hand
+        drag.UnfreezeVisual();
 
         cc.collideCheck[drag.IsFirstPad(colRb) ? 0 : 1] = false;
     }

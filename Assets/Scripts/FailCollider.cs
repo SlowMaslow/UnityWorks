@@ -22,6 +22,12 @@ public class FailCollider : MonoBehaviour
 
     private void OnCollisionEnter(Collision collision)
     {
+        // Игнорируем отлетевшие visual пэды — у них root без CollisionChecker в иерархии.
+        // Реагируем только на части рагдолла (их root = Player, CollisionChecker есть в children).
+        if (collision.rigidbody != null &&
+            collision.rigidbody.transform.root.GetComponentInChildren<CollisionChecker>() == null)
+            return;
+
         // Освобождаем рагдолл
         foreach (var rb in _ragdollBodies)
             if (rb != null) rb.constraints = RigidbodyConstraints.None;
