@@ -30,6 +30,18 @@ public class PlatformCollisionLogic : MonoBehaviour
         // Если пэд сейчас тащат — не мешаем
         if (drag.IsDragging) return;
 
+        // Захват разрешён только если пэд находится в пределах платформы по X (с отступом от краёв).
+        // Это исключает угловые захваты, когда пэд висит на ребре платформы.
+        var platformCol = GetComponent<Collider>();
+        if (platformCol != null)
+        {
+            var b = platformCol.bounds;
+            const float edgeInset = 0.01f;  // минимальный отступ от края
+            if (colRb.position.x < b.min.x + edgeInset ||
+                colRb.position.x > b.max.x - edgeInset)
+                return;
+        }
+
         // Полная фиксация + обнуление velocity каждый кадр
         // Это гарантирует что никакой joint-импульс не сдвинет пэд
         colRb.constraints      = FrozenConstraints;

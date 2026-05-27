@@ -15,8 +15,10 @@ public class DragObject : MonoBehaviour
     [SerializeField] private float kD = 18f;
 
     [Header("Joint Break")]
-    [SerializeField] private float breakMargin    = 0.35f;
-    [SerializeField] private float minPadsDistance = 0.3f;  // пэды не могут налезть друг на друга
+    [SerializeField] private float maxPadsDistance  = 1.8f;   // абсолютный порог разрыва в метрах
+    [SerializeField] private float minPadsDistance  = 0.3f;   // пэды не могут налезть друг на друга
+    [SerializeField] private float resistanceStart  = 0.85f;  // с какой доли maxPadsDistance начинается сопротивление — должно быть ВЫШЕ стартового расстояния / maxPadsDistance
+    [SerializeField] private float resistanceFloor  = 0.15f;  // минимальная сила у предела разрыва (0=совсем не двигается, 1=без сопротивления)
 
     /// <summary>Визуальный пэд этого контрол-пэда. Фризится/размораживается синхронно.</summary>
     [HideInInspector] public Rigidbody visualPadRb;
@@ -31,6 +33,8 @@ public class DragObject : MonoBehaviour
     private float            breakDistance;
     private CharacterJoint   headJoint;
     private CharacterJoint[] padsJoints     = new CharacterJoint[2];
+    private DragObject[]     _allDrags           = new DragObject[2];
+    private bool             _wasGrippedOnBreak  = false;
     private SoftJointLimit   minSwing2Limit;
     private SoftJointLimit   maxSwing2Limit;
     private Quaternion       naturalRotation;
@@ -56,6 +60,7 @@ public class DragObject : MonoBehaviour
         {
             padsRB[i]     = padsPositions[i].GetComponent<Rigidbody>();
             padsJoints[i] = padsPositions[i].GetComponent<CharacterJoint>();
+            _allDrags[i]  = padsPositions[i].GetComponent<DragObject>();
         }
 
         // Запоминаем родителя визуального пэда (Hand-кость) — понадобится при re-parenting
@@ -64,12 +69,12 @@ public class DragObject : MonoBehaviour
 
         minSwing2Limit.limit = 0f;
         maxSwing2Limit.limit = 90f;
-        breakDistance        = PadsDistance() + breakMargin;
+        breakDistance        = maxPadsDistance; // абсолютное значение — никаких вычислений
     }
 
     private void Update()
     {
-        if (padsJoints[0] == null)
+        if (padsJoints[0] == null || padsJoints[1] == null)
         {
             if (!_jointsBroken) { _jointsBroken = true; ReleaseAllConstraints(); }
             return;
@@ -89,9 +94,15 @@ public class DragObject : MonoBehaviour
                        | RigidbodyConstraints.FreezeRotationX
                        | RigidbodyConstraints.FreezeRotationY;
 
-        Vector3 posError = targetWorldPos - transform.position;
-        float   stretch  = PadsDistance();
-        float   factor   = stretch > 1.3f ? Mathf.Max(0.3f, 1f - (stretch - 1.3f)) : 1f;
+        Vector3 posError   = targetWorldPos - transform.position;
+        float   stretch    = PadsDistance();
+        float   breakRatio = stretch / maxPadsDistance;
+
+        // Линейное сопротивление от 1.0 до resistanceFloor в диапазоне resistanceStart..maxPadsDistance.
+        // Ощутимо тяжелее у предела, но разорвать всё ещё возможно.
+        float factor = breakRatio < resistanceStart
+            ? 1f
+            : Mathf.Lerp(1f, resistanceFloor, Mathf.InverseLerp(resistanceStart, 1f, breakRatio));
 
         var  cc          = CollisionChecker.Instance;
         bool anyGrounded = cc != null && (cc.collideCheck[0] || cc.collideCheck[1]);
@@ -228,9 +239,11 @@ public class DragObject : MonoBehaviour
             VFXManager.Instance.PlayJointBreakVFX(mid);
         }
 
-        // Visual пэд — уничтожаем CharacterJoint, отцепляем, снимаем все constraints.
-        // Наследуем скорость руки чтобы пэд не стартовал из покоя пока рагдолл уже летит.
-        if (visualPadRb != null)
+        // Если через 3 секунды поражение не наступило (пэд завис на платформе и т.п.) — форсируем Fail
+        StartCoroutine(ForceFailAfterDelay(3f));
+
+        // Visual пэд — отрываем ТОЛЬКО если этот пэд был frozen при разрыве.
+        if (visualPadRb != null && _wasGrippedOnBreak)
         {
             _visualFrozen = false;
 
@@ -272,11 +285,47 @@ public class DragObject : MonoBehaviour
 
     private void CheckJointBreak()
     {
+        // Разрыв только если игрок активно тащит пэд.
+        // Пассивное висение под весом тела — разрыва не вызывает.
+        bool anyDragging = (_allDrags[0] != null && _allDrags[0].IsDragging)
+                        || (_allDrags[1] != null && _allDrags[1].IsDragging);
+        if (!anyDragging) return;
+
         if (PadsDistance() > breakDistance)
-            for (int i = 0; i < 2; i++)
-                padsJoints[i].breakForce = 0f;
+        {
+            var  cc      = CollisionChecker.Instance;
+            int  myIdx   = rb == padsRB[0] ? 0 : 1;
+            // Пэд считается gripped только если он НЕ тащится прямо сейчас.
+            // IsDragging=true означает активный пэд, даже если collideCheck ещё true (скользит по платформе).
+            bool myGrip  = (cc?.collideCheck[myIdx]     ?? false) && !isDragging;
+            bool othGrip = (cc?.collideCheck[1 - myIdx] ?? false) && !(_allDrags[1 - myIdx]?.IsDragging ?? false);
+
+            if (myGrip && !othGrip)
+            {
+                _wasGrippedOnBreak = true;
+                if (padsJoints[myIdx] != null) padsJoints[myIdx].breakForce = 0f;
+            }
+            else if (!myGrip && othGrip)
+            {
+                _wasGrippedOnBreak = false;
+                if (padsJoints[1 - myIdx] != null) padsJoints[1 - myIdx].breakForce = 0f;
+            }
+            else
+            {
+                _wasGrippedOnBreak = true;
+                for (int i = 0; i < 2; i++)
+                    if (padsJoints[i] != null) padsJoints[i].breakForce = 0f;
+            }
+        }
     }
 
     private float PadsDistance()
         => Vector3.Distance(padsPositions[0].position, padsPositions[1].position);
+
+    private System.Collections.IEnumerator ForceFailAfterDelay(float delay)
+    {
+        yield return new WaitForSeconds(delay);
+        if (GameManager.Instance != null && GameManager.Instance.State == GameState.Playing)
+            GameManager.Instance.SetState(GameState.Fail);
+    }
 }
