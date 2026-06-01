@@ -14,6 +14,16 @@ public class DragObject : MonoBehaviour
     [SerializeField] private float kP = 150f;
     [SerializeField] private float kD = 18f;
 
+    [Header("Body Pull (отзывчивое подтягивание)")]
+    [Tooltip("Rigidbody таза (mixamorig:Hips). Тяга центра масс к зафиксированному пэду.")]
+    [SerializeField] private Rigidbody hipsRb;
+    [Tooltip("Сила притяжения тела к якорю. 0 = выключить, вернуться к старому поведению.")]
+    [SerializeField] private float bodyPullStrength = 80f;
+    [Tooltip("Демпфирование тела — гасит колебания при подтягивании.")]
+    [SerializeField] private float bodyPullDamping  = 12f;
+    [Tooltip("На сколько метров ниже якоря висит таз (длина 'руки').")]
+    [SerializeField] private float bodyHangOffset   = 0.9f;
+
     [Header("Joint Break")]
     [SerializeField] private float maxPadsDistance  = 1.8f;   // абсолютный порог разрыва в метрах
     [SerializeField] private float minPadsDistance  = 0.3f;   // пэды не могут налезть друг на друга
@@ -123,6 +133,32 @@ public class DragObject : MonoBehaviour
         }
 
         rb.AddForce(force, ForceMode.Force);
+
+        // ─── Отзывчивое подтягивание тела ──────────────────────────────────────
+        // Тянем центр масс (таз) напрямую к зафиксированному пэду-якорю,
+        // а не ждём пока сила дойдёт через цепь joint'ов. Тело реагирует мгновенно.
+        ApplyBodyPull(cc);
+    }
+
+    /// <summary>Прямая тяга таза к зафиксированному пэду — основа отзывчивого карабканья.</summary>
+    private void ApplyBodyPull(CollisionChecker cc)
+    {
+        if (hipsRb == null || bodyPullStrength <= 0f || cc == null) return;
+
+        // Якорь — другой пэд, если он зафиксирован на платформе
+        int otherIdx = (rb == padsRB[0]) ? 1 : 0;
+        if (!cc.collideCheck[otherIdx]) return;       // нет опоры — не тянем
+        var anchor = padsRB[otherIdx];
+        if (anchor == null) return;
+
+        // Цель таза — на bodyHangOffset ниже якоря (длина вытянутой руки)
+        Vector3 target   = anchor.position - Vector3.up * bodyHangOffset;
+        Vector3 hipError = target - hipsRb.position;
+        hipError.z = 0f;                              // 2.5D — без движения по Z
+
+        Vector3 bodyForce = hipError * bodyPullStrength - hipsRb.linearVelocity * bodyPullDamping;
+        bodyForce.z = 0f;
+        hipsRb.AddForce(bodyForce, ForceMode.Force);
     }
 
     // ─── Input (мышь на desktop, первый тач на mobile — Unity эмулирует автоматически) ──

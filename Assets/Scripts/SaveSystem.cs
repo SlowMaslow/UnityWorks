@@ -92,6 +92,24 @@ public static class SaveSystem
         set { if (value) { PlayerPrefs.SetInt("TutorialDone", 1); PlayerPrefs.Save(); } }
     }
 
+    // ─── Скины ───────────────────────────────────────────────────────────────
+    private const string KEY_SELECTED_SKIN = "SelectedSkin";
+
+    public static string SelectedSkinId
+    {
+        get => PlayerPrefs.GetString(KEY_SELECTED_SKIN, "");
+        set { PlayerPrefs.SetString(KEY_SELECTED_SKIN, value); PlayerPrefs.Save(); }
+    }
+
+    public static bool IsSkinUnlocked(string skinId)
+        => PlayerPrefs.GetInt($"SkinUnlocked_{skinId}", 0) == 1;
+
+    public static void UnlockSkin(string skinId)
+    {
+        PlayerPrefs.SetInt($"SkinUnlocked_{skinId}", 1);
+        PlayerPrefs.Save();
+    }
+
     // ─── Dev ─────────────────────────────────────────────────────────────────
     /// <summary>Полный сброс прогресса (для тестирования).</summary>
     public static void ResetAll()
