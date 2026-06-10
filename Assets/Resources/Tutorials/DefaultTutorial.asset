@@ -184,7 +184,7 @@ MonoBehaviour:
       type: {class: EventTutorialCondition, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
       data:
         eventId: pad_drag_start
-        payloadFilter: RightHockeyPad
+        payloadFilter: Pad_1
     - rid: 7932376582882853241
       type: {class: EventTutorialCondition, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
       data:
@@ -194,7 +194,7 @@ MonoBehaviour:
       type: {class: EventTutorialCondition, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
       data:
         eventId: pad_drag_start
-        payloadFilter: LeftHockeyPad
+        payloadFilter: Pad_0
     - rid: 7932376582882853243
       type: {class: EventTutorialCondition, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
       data:

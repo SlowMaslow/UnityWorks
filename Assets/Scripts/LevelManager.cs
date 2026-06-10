@@ -14,6 +14,10 @@ public class LevelManager : MonoBehaviour
     [Header("Пустой GameObject куда инстанциируется уровень")]
     [SerializeField] private Transform levelContainer;
 
+    [Header("Спавн игрока")]
+    [Tooltip("Z-плоскость игрока при спавне (геймплейная плоскость). X/Y берутся из SpawnPoint уровня.")]
+    [SerializeField] private float playerSpawnZ = -0.05f;
+
     // ─── Состояние уровня ────────────────────────────────────────────────────
     public float ElapsedTime    { get; private set; }
     public int   StarsCollected { get; private set; }
@@ -50,8 +54,36 @@ public class LevelManager : MonoBehaviour
     private void Start()
     {
         _currentLevelIndex = LevelLoader.PendingLevel;
-        LoadLevelPrefab(_currentLevelIndex);
+        var levelGO = LoadLevelPrefab(_currentLevelIndex);
+        PositionPlayerAtSpawn(levelGO);
         StartLevel();
+    }
+
+    /// <summary>Ставит единственного игрока сцены на SpawnPoint загруженного уровня.</summary>
+    private void PositionPlayerAtSpawn(GameObject levelGO)
+    {
+        if (levelGO == null) return;
+
+        Transform spawn = null;
+        foreach (var t in levelGO.GetComponentsInChildren<Transform>(true))
+            if (t.name == "SpawnPoint") { spawn = t; break; }
+        if (spawn == null)
+        {
+            Debug.LogWarning("[LevelManager] SpawnPoint не найден в уровне — игрок не перемещён.");
+            return;
+        }
+
+        var playerGO = GameObject.FindWithTag("Player");
+        if (playerGO == null)
+        {
+            Debug.LogWarning("[LevelManager] Объект с тегом Player не найден в сцене.");
+            return;
+        }
+
+        Vector3 pos = new Vector3(spawn.position.x, spawn.position.y, playerSpawnZ);
+        var climb = playerGO.GetComponent<ClimbController>();
+        if (climb != null) climb.MoveTo(pos);
+        else playerGO.transform.position = pos;
     }
 
     private void Update()
@@ -64,7 +96,7 @@ public class LevelManager : MonoBehaviour
     }
 
     // ─── Prefab loading ──────────────────────────────────────────────────────
-    private void LoadLevelPrefab(int index)
+    private GameObject LoadLevelPrefab(int index)
     {
         var prefabName = LevelLoader.PrefabName(index);
         var prefab     = Resources.Load<GameObject>($"{LevelLoader.ResourcesPath}/{prefabName}");
@@ -72,12 +104,13 @@ public class LevelManager : MonoBehaviour
         if (prefab == null)
         {
             Debug.LogError($"[LevelManager] Prefab не найден: Resources/{LevelLoader.ResourcesPath}/{prefabName}");
-            return;
+            return null;
         }
 
-        var parent = levelContainer != null ? levelContainer : transform;
-        Instantiate(prefab, parent.position, parent.rotation, parent);
+        var parent   = levelContainer != null ? levelContainer : transform;
+        var instance = Instantiate(prefab, parent.position, parent.rotation, parent);
         Debug.Log($"[LevelManager] Загружен уровень {index} ({prefabName})");
+        return instance;
     }
 
     // ─── API ─────────────────────────────────────────────────────────────────

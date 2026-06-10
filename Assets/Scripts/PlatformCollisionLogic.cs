@@ -1,81 +1,75 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// Фиксирует пэд на платформе.
-/// Обнуляет velocity каждый Stay-кадр — joint-импульсы от тела не могут сдвинуть пэд.
-/// Снимает фиксацию ТОЛЬКО когда пэд активно тащат мышью (IsDragging).
+/// Детектор поверхности платформы для новой механики карабканья (роль PlatformTop из прототипа).
+/// Висит на дочернем объекте "PadCollision" платформы (тонкий коллайдер у верхней грани).
+///
+/// Пэды кинематические → детект через ТРИГГЕР (OnTriggerEnter/Exit срабатывает для kinematic).
+/// ClimbController опрашивает All / Contains() чтобы решить — захват или падение,
+/// и берёт SurfaceY для приклеивания пэда к поверхности.
+///
+/// Сплошной коллайдер тела платформы (родитель) остаётся для SlideAroundPlatforms
+/// (пэд не проходит сквозь платформу) и отдаётся через BodyCollider.
 /// </summary>
+[RequireComponent(typeof(Collider))]
 public class PlatformCollisionLogic : MonoBehaviour
 {
-    private static readonly RigidbodyConstraints FrozenConstraints =
-        RigidbodyConstraints.FreezePosition    |
-        RigidbodyConstraints.FreezeRotationX   |
-        RigidbodyConstraints.FreezeRotationY;
+    /// <summary>Все активные детекторы платформ в сцене.</summary>
+    public static readonly List<PlatformCollisionLogic> All = new List<PlatformCollisionLogic>();
 
-    private void OnCollisionEnter(Collision collision) => TryFreeze(collision);
-    private void OnCollisionStay(Collision collision)  => TryFreeze(collision);
+    /// <summary>Мировая Y верхней поверхности платформы (для приклеивания пэда).</summary>
+    public float SurfaceY { get; private set; }
 
-    private void TryFreeze(Collision collision)
+    /// <summary>Сплошной коллайдер тела платформы (для SlideAroundPlatforms).</summary>
+    public Collider BodyCollider { get; private set; }
+
+    private Collider _triggerCol;
+    private Bounds   _bodyBounds;
+    private readonly HashSet<Rigidbody> _pads = new HashSet<Rigidbody>();
+
+    private void Awake()
     {
-        var colRb = collision.rigidbody;
-        if (colRb == null) return;
+        _triggerCol = GetComponent<Collider>();
+        _triggerCol.isTrigger = true;   // детект-зона захвата (надёжно для kinematic пэдов)
 
-        var drag = collision.gameObject.GetComponent<DragObject>();
-        var cc   = CollisionChecker.Instance;
-        if (drag == null || cc == null) return;
-
-        // После разрыва joint'ов — не трогаем пэды, они должны свободно упасть
-        if (drag.AreJointsBroken) return;
-
-        // Если пэд сейчас тащат — не мешаем
-        if (drag.IsDragging) return;
-
-        // Захват разрешён только если пэд находится в пределах платформы по X (с отступом от краёв).
-        // Это исключает угловые захваты, когда пэд висит на ребре платформы.
-        var platformCol = GetComponent<Collider>();
-        if (platformCol != null)
-        {
-            var b = platformCol.bounds;
-            const float edgeInset = 0.01f;  // минимальный отступ от края
-            if (colRb.position.x < b.min.x + edgeInset ||
-                colRb.position.x > b.max.x - edgeInset)
-                return;
-        }
-
-        // Полная фиксация + обнуление velocity каждый кадр
-        // Это гарантирует что никакой joint-импульс не сдвинет пэд
-        colRb.constraints      = FrozenConstraints;
-        colRb.linearVelocity   = Vector3.zero;
-        colRb.angularVelocity  = Vector3.zero;
-
-        // Визуальный пэд — kinematic + отвязка от Hand + снап к точке захвата
-        drag.FreezeVisual(colRb.transform.position);
-
-        cc.collideCheck[drag.IsFirstPad(colRb) ? 0 : 1] = true;
-        drag.UpdatePadDamping();
+        // Тело платформы = коллайдер родителя (сплошной блок). Запасной вариант — свой коллайдер.
+        BodyCollider = transform.parent != null ? transform.parent.GetComponent<Collider>() : null;
+        if (BodyCollider == null) BodyCollider = _triggerCol;
     }
 
-    private void OnCollisionExit(Collision collision)
+    private void OnEnable()
     {
-        var colRb = collision.rigidbody;
-        if (colRb == null) return;
-
-        var drag = collision.gameObject.GetComponent<DragObject>();
-        var cc   = CollisionChecker.Instance;
-        if (drag == null || cc == null) return;
-
-        if (drag.AreJointsBroken) return;
-
-        // Снимаем фиксацию ТОЛЬКО если пэд активно тащат
-        // Иначе тело могло просто дёрнуть пэд — сохраняем FreezePosition
-        if (!drag.IsDragging) return;
-
-        colRb.constraints = RigidbodyConstraints.FreezeRotationX
-                          | RigidbodyConstraints.FreezeRotationY;
-
-        // Возвращаем визуальный пэд в физику, re-parent обратно под Hand
-        drag.UnfreezeVisual();
-
-        cc.collideCheck[drag.IsFirstPad(colRb) ? 0 : 1] = false;
+        if (!All.Contains(this)) All.Add(this);
+        RecomputeSurface();
     }
+
+    private void OnDisable() => All.Remove(this);
+
+    /// <summary>Пересчитывает верхнюю поверхность и X-границы из тела платформы.</summary>
+    public void RecomputeSurface()
+    {
+        if (BodyCollider == null) return;
+        _bodyBounds = BodyCollider.bounds;
+        SurfaceY    = _bodyBounds.max.y;
+    }
+
+    private void OnTriggerEnter(Collider other)
+    {
+        var rb = other.attachedRigidbody;
+        if (rb != null) _pads.Add(rb);
+    }
+
+    private void OnTriggerExit(Collider other)
+    {
+        var rb = other.attachedRigidbody;
+        if (rb != null) _pads.Remove(rb);
+    }
+
+    /// <summary>Пэд сейчас на поверхности этой платформы?</summary>
+    public bool Contains(Rigidbody rb) => _pads.Contains(rb);
+
+    /// <summary>X внутри границ платформы (с отступом от края, чтобы не цеплять угол)?</summary>
+    public bool WithinXBounds(float x, float inset)
+        => x >= _bodyBounds.min.x + inset && x <= _bodyBounds.max.x - inset;
 }
