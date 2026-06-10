@@ -1,36 +1,21 @@
 using UnityEngine;
 
 /// <summary>
-/// Зона провала внизу уровня. Живёт в level prefab.
-/// Находит ragdoll rigidbodies по DragObject в сцене —
-/// не нужны serialized ссылки на объекты из другой иерархии.
+/// Зона провала внизу уровня (FallCollider). Живёт в level prefab.
+/// Срабатывает, когда в неё попадает что-либо принадлежащее игроку (пэд/тело) → GameState.Fail.
+/// Игрок определяется по ClimbController в корне иерархии — без зависимости от старой
+/// ragdoll-механики (DragObject/CollisionChecker удалены).
 /// </summary>
 public class FailCollider : MonoBehaviour
 {
-    private Rigidbody[] _ragdollBodies;
+    private void OnCollisionEnter(Collision collision) => TryFail(collision.collider);
+    private void OnTriggerEnter(Collider other)        => TryFail(other);
 
-    private void Start()
+    private void TryFail(Collider other)
     {
-        // DragObject есть на каждом пэде (LeftHockeyPad, RightHockeyPad)
-        var drags = FindObjectsByType<DragObject>(
-            FindObjectsInactive.Include, FindObjectsSortMode.None);
-
-        _ragdollBodies = new Rigidbody[drags.Length];
-        for (int i = 0; i < drags.Length; i++)
-            _ragdollBodies[i] = drags[i].GetComponent<Rigidbody>();
-    }
-
-    private void OnCollisionEnter(Collision collision)
-    {
-        // Игнорируем отлетевшие visual пэды — у них root без CollisionChecker в иерархии.
-        // Реагируем только на части рагдолла (их root = Player, CollisionChecker есть в children).
-        if (collision.rigidbody != null &&
-            collision.rigidbody.transform.root.GetComponentInChildren<CollisionChecker>() == null)
-            return;
-
-        // Освобождаем рагдолл
-        foreach (var rb in _ragdollBodies)
-            if (rb != null) rb.constraints = RigidbodyConstraints.None;
+        if (other == null) return;
+        // Принадлежит игроку? (корень иерархии содержит ClimbController)
+        if (other.transform.root.GetComponentInChildren<ClimbController>() == null) return;
 
         GameManager.Instance?.SetState(GameState.Fail);
     }
