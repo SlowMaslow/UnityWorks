@@ -16,5 +16,5 @@ MonoBehaviour:
   displayName: Skin 02
   isDefault: 0
   price: 100
-  previewSprite: {fileID: 0}
+  previewSprite: {fileID: 21300000, guid: 01a8d9283fbb5094eb244a3242b01c28, type: 3}
   skinPrefab: {fileID: 1728048965993984894, guid: d7b444cc7dcf43240900a49f8d155826, type: 3}

@@ -65,14 +65,16 @@ public class SkinApplier : MonoBehaviour
         newSmr.sharedMesh = skinSmr.sharedMesh;
         newSmr.sharedMaterials = skinSmr.sharedMaterials;
 
-        // Перепривязка костей: ищем каждую кость скина в иерархии рагдолла
+        // Перепривязка костей: ищем каждую кость скина в риге по имени. Если кость отсутствует
+        // (у скина больше костей, чем у базового рига — напр. фаланги среднего пальца у Skin03,
+        // которых нет у Skin01) — ВОССОЗДАЁМ её на риге с теми же локальными трансформами, что
+        // в скине (bind-pose совпадает → палец отрисовывается корректно, просто без анимации).
         var srcBones = skinSmr.bones;
         var newBones = new Transform[srcBones.Length];
         for (int i = 0; i < srcBones.Length; i++)
         {
             if (srcBones[i] == null) continue;
-            if (!boneMap.TryGetValue(srcBones[i].name, out newBones[i]))
-                Debug.LogWarning($"[SkinApplier] Bone not found in ragdoll: {srcBones[i].name}");
+            newBones[i] = GetOrCreateBone(srcBones[i], boneMap);
         }
         newSmr.bones = newBones;
 
@@ -81,6 +83,29 @@ public class SkinApplier : MonoBehaviour
             newSmr.rootBone = hips;
 
         Debug.Log($"[SkinApplier] Applied skin: {skin.displayName}");
+    }
+
+    /// <summary>
+    /// Возвращает кость рига с именем как у src. Если её нет — рекурсивно создаёт цепочку
+    /// недостающих костей (от ближайшего существующего предка) с локальными трансформами из
+    /// скелета скина, чтобы bind-pose совпал и меш деформировался корректно.
+    /// </summary>
+    private Transform GetOrCreateBone(Transform src, Dictionary<string, Transform> boneMap)
+    {
+        if (src == null)
+            return boneMap.TryGetValue("mixamorig:Hips", out var root) ? root : transform;
+
+        if (boneMap.TryGetValue(src.name, out var existing) && existing != null)
+            return existing;
+
+        var parent = GetOrCreateBone(src.parent, boneMap);
+        var bone = new GameObject(src.name).transform;
+        bone.SetParent(parent, false);
+        bone.localPosition = src.localPosition;
+        bone.localRotation = src.localRotation;
+        bone.localScale    = src.localScale;
+        boneMap[src.name]  = bone;
+        return bone;
     }
 
     private void SetDefaultRenderers(bool enabled)

@@ -12,8 +12,9 @@ GameObject:
   - component: {fileID: 175740841571474586}
   - component: {fileID: 3206093109535588886}
   - component: {fileID: 2275057639290929788}
+  - component: {fileID: 7644589039905431521}
   m_Layer: 0
-  m_Name: Player_Climb
+  m_Name: Player
   m_TagString: Player
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -75,9 +76,11 @@ MonoBehaviour:
   breakFactor: 0.95
   breakHoldTime: 0.5
   forceFailDelay: 3
+  bodyColliderHeight: 3
+  bodyColliderRadius: 0.7
   shoulderOffsetX: 0.37800002
   shoulderLocalY: 0.6
-  rigOffset: {x: 0, y: -1.224, z: -0.85}
+  rigOffset: {x: 0, y: -1.224, z: -0.49}
   rigScale: 2.7
   hideCapsule: 1
   hidePadVisual: 1
@@ -116,6 +119,20 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   id: player
   offset: {x: 0, y: 0, z: 0}
+--- !u!114 &7644589039905431521
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 782263142540876363}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8bc043dbd56b02748b0dc292f5f24907, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  defaultRenderers:
+  - {fileID: 5342754969607480174}
 --- !u!1 &898515894576375810
 GameObject:
   m_ObjectHideFlags: 0
@@ -601,6 +618,11 @@ PrefabInstance:
     m_AddedGameObjects: []
     m_AddedComponents: []
   m_SourcePrefab: {fileID: 100100000, guid: e4f0d68ad1141ac4db09dfcfc988a839, type: 3}
+--- !u!137 &5342754969607480174 stripped
+SkinnedMeshRenderer:
+  m_CorrespondingSourceObject: {fileID: 8052998052731069068, guid: e4f0d68ad1141ac4db09dfcfc988a839, type: 3}
+  m_PrefabInstance: {fileID: 2730509968642572770}
+  m_PrefabAsset: {fileID: 0}
 --- !u!4 &6703148051062251491 stripped
 Transform:
   m_CorrespondingSourceObject: {fileID: 8710777494362414593, guid: e4f0d68ad1141ac4db09dfcfc988a839, type: 3}

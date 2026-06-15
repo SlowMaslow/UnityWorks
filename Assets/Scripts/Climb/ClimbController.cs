@@ -69,6 +69,10 @@ public class ClimbController : MonoBehaviour
     public float breakHoldTime = 0.5f;
     [Tooltip("Если за это время после разрыва Fail не наступил — форсируем GameState.Fail.")]
     public float forceFailDelay = 3f;
+    [Tooltip("Высота капсулы-коллайдера тела (покрывает длину рига, чтобы не проваливаться в зону смерти).")]
+    public float bodyColliderHeight = 3f;
+    [Tooltip("Радиус капсулы-коллайдера тела (покрывает толщину рига).")]
+    public float bodyColliderRadius = 0.7f;
 
     [Header("Плечи (раздельные точки крепления рук)")]
     [Tooltip("Смещение плеча от центра тела по X. Левая рука крепится к -X, правая к +X.")]
@@ -127,6 +131,15 @@ public class ClimbController : MonoBehaviour
         // Платформы (вкл. боковые PlatformWall) + стены-коллайдеры. БЕЗ слоя Wall (там фон BackGroundWall).
         _blockerMask = LayerMask.GetMask("Platforms", "WallCollider");
 
+        // Слой VisualPad делаем «детектором падения»: сталкивается ТОЛЬКО с FallArea.
+        // На нём висит коллайдер тела → при разрыве тело приземляется на зону смерти,
+        // НЕ цепляя платформы/монеты/стены во время карабканья.
+        int deathLayer = LayerMask.NameToLayer("VisualPad");
+        int fallLayer  = LayerMask.NameToLayer("FallArea");
+        if (deathLayer >= 0)
+            for (int i = 0; i < 32; i++)
+                Physics.IgnoreLayerCollision(deathLayer, i, i != fallLayer);
+
         if (bodyRb == null || padRb == null || padRb.Length < 2 || padRb[0] == null || padRb[1] == null)
         {
             Debug.LogError("[ClimbController] Не назначены ссылки bodyRb/padRb — отключаюсь.");
@@ -177,9 +190,21 @@ public class ClimbController : MonoBehaviour
                               | RigidbodyConstraints.FreezeRotationX
                               | RigidbodyConstraints.FreezeRotationY;
 
-        // тело без физ-коллайдера (как в прототипе) — визуал = риг
-        var col = bodyRb.GetComponent<Collider>();
-        if (col != null) col.enabled = false;
+        // Коллайдер тела на слое VisualPad (сталкивается только с FallArea) — детектор падения.
+        // Во время карабканья ни с чем не контактирует; при разрыве приземляется на зону смерти.
+        // Капсула подогнана под габариты рига (он co-вращается с телом) — чтобы при кувырке
+        // тело не проваливалось в зону: высота покрывает длину рига, радиус — толщину.
+        var capsule = bodyRb.GetComponent<CapsuleCollider>();
+        if (capsule == null) capsule = bodyRb.gameObject.AddComponent<CapsuleCollider>();
+        capsule.enabled   = true;
+        capsule.isTrigger = false;
+        capsule.direction = 1;                       // вдоль локальной оси Y тела (= длинная ось рига)
+        capsule.center    = Vector3.zero;
+        capsule.height    = bodyColliderHeight;
+        capsule.radius    = bodyColliderRadius;
+        int deathLayer = LayerMask.NameToLayer("VisualPad");
+        if (deathLayer >= 0) bodyRb.gameObject.layer = deathLayer;
+
         if (hideCapsule)
         {
             var capRend = bodyRb.GetComponent<Renderer>();
@@ -591,9 +616,11 @@ public class ClimbController : MonoBehaviour
         visualRig.position = bodyRb.transform.TransformPoint(rigOffset);
         visualRig.rotation = bodyRb.transform.rotation;
 
-        // IK рук — ПОСЛЕ позиционирования рига
-        for (int i = 0; i < 2; i++)
-            _armIK[i]?.Solve();
+        // IK рук — ПОСЛЕ позиционирования рига. После разрыва НЕ солвим: руки замирают в позе
+        // и кувыркаются вместе с телом (естественнее, чем дёргаться к упавшим пэдам).
+        if (!broken)
+            for (int i = 0; i < 2; i++)
+                _armIK[i]?.Solve();
 
         // Живое обновление шаров в руке — чтобы handBallLocalPos/Size крутились в инспекторе в Play
         for (int i = 0; i < 2; i++)
@@ -612,9 +639,23 @@ public class ClimbController : MonoBehaviour
     {
         if (debugLog) Debug.Log($"[BREAK] t={Time.time:F2}");
 
+        // Направление разрыва: куда игрок тянул (от тела к тащимому пэду) — туда и кувырок.
+        float dir = Random.value < 0.5f ? -1f : 1f;
+        if (draggingPad >= 0)
+        {
+            float dx = padRb[draggingPad].position.x - bodyRb.position.x;
+            if (Mathf.Abs(dx) > 0.01f) dir = Mathf.Sign(dx);
+        }
+
         broken = true;
         draggingPad = -1;
-        bodyRb.constraints = RigidbodyConstraints.FreezePositionZ;
+        // 2.5D-кувырок: вращение только вокруг Z (в плоскости экрана), позиция Z заморожена.
+        bodyRb.constraints = RigidbodyConstraints.FreezePositionZ
+                           | RigidbodyConstraints.FreezeRotationX
+                           | RigidbodyConstraints.FreezeRotationY;
+        // подброс + толчок В СТОРОНУ РАЗРЫВА + закрутка туда же → кувырок в направлении натяжения
+        bodyRb.linearVelocity  += new Vector3(dir * Random.Range(0.8f, 2f), 1.5f, 0f);
+        bodyRb.angularVelocity  = new Vector3(0f, 0f, -dir * Random.Range(4f, 7f));
         for (int i = 0; i < 2; i++)
         {
             padRb[i].isKinematic = false;
@@ -628,12 +669,32 @@ public class ClimbController : MonoBehaviour
             VFXManager.Instance.PlayJointBreakVFX(mid);
         }
 
-        StartCoroutine(ForceFailAfterDelay(forceFailDelay));
+        StartCoroutine(FailWhenFallen());
     }
 
-    private IEnumerator ForceFailAfterDelay(float delay)
+    /// <summary>
+    /// После разрыва ждёт, пока тело не достигнет зоны смерти (FailCollider) — тогда Fail.
+    /// Тело без коллайдера (чтобы не цеплять платформы/монеты), поэтому контакт ловим
+    /// геометрически по bounds зоны. forceFailDelay — запасной предел, если зоны нет/не достигли.
+    /// </summary>
+    private IEnumerator FailWhenFallen()
     {
-        yield return new WaitForSeconds(delay);
+        var fail = UnityEngine.Object.FindFirstObjectByType<FailCollider>();
+        Collider zone = fail != null ? fail.GetComponent<Collider>() : null;
+        float deadline = Time.time + forceFailDelay;
+
+        while (Time.time < deadline)
+        {
+            if (zone != null)
+            {
+                var b = zone.bounds;
+                Vector3 bp = bodyRb.position;
+                if (bp.y <= b.max.y && bp.x >= b.min.x && bp.x <= b.max.x)
+                    break;   // тело вошло в зону смерти
+            }
+            yield return new WaitForFixedUpdate();
+        }
+
         if (GameManager.Instance != null && GameManager.Instance.State == GameState.Playing)
             GameManager.Instance.SetState(GameState.Fail);
     }
