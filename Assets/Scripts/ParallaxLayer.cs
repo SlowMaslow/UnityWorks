@@ -67,7 +67,8 @@ public class ParallaxLayer : MonoBehaviour
     {
         if (!_init || _cam == null) { Init(); if (!_init) return; }
 
-        if (tileHorizontal && _tiles != null)
+        if (tileHorizontal && Application.isPlaying && _tiles != null && _tiles.Length >= 3
+            && _tiles[0] != null && _tiles[1] != null && _tiles[2] != null)
         {
             // Родитель: по X — вслед за камерой (тайлы всегда покрывают кадр), по Y — параллакс.
             var p = transform.position;

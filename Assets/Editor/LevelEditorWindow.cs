@@ -17,7 +17,8 @@ public class LevelEditorWindow : EditorWindow
         Platform, PlatformWall,
         Coin, Star,
         FinLeft, FinRight,
-        SpawnPoint
+        SpawnPoint,
+        Tile
     }
 
     private static readonly string[] ToolLabels =
@@ -26,7 +27,8 @@ public class LevelEditorWindow : EditorWindow
         "⬛ Platform", "▎PlatformWall",
         "🪙 Coin", "⭐ Star",
         "🏁 FinLeft", "🏁 FinRight",
-        "📍 SpawnPoint"
+        "📍 SpawnPoint",
+        "🧱 Tile"
     };
 
     private static readonly Color[] ToolColors =
@@ -35,7 +37,8 @@ public class LevelEditorWindow : EditorWindow
         new Color(0.4f, 0.4f, 0.4f), new Color(0.35f, 0.35f, 0.45f),
         new Color(1f, 0.8f, 0.1f),   new Color(1f, 0.85f, 0.1f),
         new Color(0.2f, 0.8f, 0.3f), new Color(0.2f, 0.8f, 0.3f),
-        new Color(1f, 0.4f, 0.4f)
+        new Color(1f, 0.4f, 0.4f),
+        new Color(0.55f, 0.5f, 0.45f)
     };
 
     // ─── State ────────────────────────────────────────────────────────────────
@@ -65,6 +68,13 @@ public class LevelEditorWindow : EditorWindow
     // ─── Prefabs ──────────────────────────────────────────────────────────────
     private GameObject _pfPlatform, _pfWall, _pfCoin, _pfStar;
     private GameObject _pfBgWall, _pfFallCollider, _pfLeftFin, _pfRightFin;
+    private GameObject _pfTile;
+
+    // ─── Tiles ────────────────────────────────────────────────────────────────
+    private Sprite[]   _tileSprites = {};
+    private int        _selTile = 0;
+    private Vector2    _tileScroll;
+    private const float TileCell = 0.56f; // шаг сетки < размера тайла (0.6) → лёгкое перекрытие, плотные швы
 
     // ─── Menu ─────────────────────────────────────────────────────────────────
     [MenuItem("Tools/Level Editor %#e")]
@@ -131,6 +141,7 @@ public class LevelEditorWindow : EditorWindow
         using (new GUILayout.HorizontalScope())
         {
             DrawToolGroup(7, 1); // SpawnPoint (7)
+            DrawToolGroup(8, 1); // Tile (8)
         }
     }
 
@@ -181,6 +192,46 @@ public class LevelEditorWindow : EditorWindow
                 $"{label}  ({cells * _grid:F2} u)", cells, 1, 24);
             _platW = cells * _grid;
         }
+
+        if (_tool == Tool.Tile)
+            DrawTilePalette();
+    }
+
+    private void DrawTilePalette()
+    {
+        GUILayout.Space(4);
+        GUILayout.Label("TILE PALETTE", EditorStyles.boldLabel);
+        if (_tileSprites == null || _tileSprites.Length == 0)
+        {
+            EditorGUILayout.HelpBox("Нет спрайтов в Assets/Sprites/Tileset", MessageType.Info);
+            if (GUILayout.Button("↻ Reload tiles")) LoadTiles();
+            return;
+        }
+
+        const int   cols = 4;
+        const float sz   = 58f;
+        _tileScroll = GUILayout.BeginScrollView(_tileScroll, GUILayout.Height(190));
+        for (int i = 0; i < _tileSprites.Length; i++)
+        {
+            if (i % cols == 0) GUILayout.BeginHorizontal();
+
+            Texture tex = AssetPreview.GetAssetPreview(_tileSprites[i]);
+            if (tex == null) tex = _tileSprites[i].texture;
+
+            var prev = GUI.backgroundColor;
+            if (i == _selTile) GUI.backgroundColor = new Color(0.4f, 0.8f, 1f);
+            if (GUILayout.Button(new GUIContent(tex), GUILayout.Width(sz), GUILayout.Height(sz)))
+            {
+                _selTile = i;
+                SceneView.RepaintAll();
+            }
+            GUI.backgroundColor = prev;
+
+            if (i % cols == cols - 1 || i == _tileSprites.Length - 1) GUILayout.EndHorizontal();
+        }
+        GUILayout.EndScrollView();
+        GUILayout.Label($"Selected: {_tileSprites[_selTile].name}", EditorStyles.centeredGreyMiniLabel);
+        if (GUILayout.Button("↻ Reload tiles")) LoadTiles();
     }
 
     private void DrawLevelActions()
@@ -236,6 +287,7 @@ public class LevelEditorWindow : EditorWindow
         DrawGroupFoldout("Walls",      _root.transform.Find("Walls"));
         DrawGroupFoldout("Coins",      _root.transform.Find("Coins"));
         DrawGroupFoldout("Stars",      _root.transform.Find("Stars"));
+        DrawGroupFoldout("Tiles",      _root.transform.Find("Tiles"));
 
         // Одиночные объекты
         foreach (Transform t in _root.transform)
@@ -347,7 +399,12 @@ public class LevelEditorWindow : EditorWindow
             float t   = -ray.origin.z / ray.direction.z;
             var   pos = ray.origin + ray.direction * t;
             pos.z     = 0f;
-            if (_snapGrid || _snapMove) pos = Snap(pos);
+            if (_tool == Tool.Tile)
+            {
+                pos.x = Mathf.Round(pos.x / TileCell) * TileCell;
+                pos.y = Mathf.Round(pos.y / TileCell) * TileCell;
+            }
+            else if (_snapGrid || _snapMove) pos = Snap(pos);
             _previewPos = pos;
             _hovering   = true;
         }
@@ -414,6 +471,10 @@ public class LevelEditorWindow : EditorWindow
                 Handles.DrawSolidDisc(pos, Vector3.forward, 0.2f);
                 Handles.DrawWireDisc(pos, Vector3.forward, 0.5f);
                 break;
+            case Tool.Tile:
+                Handles.color = new Color(0.5f, 1f, 0.5f, 0.7f);
+                Handles.DrawWireCube(pos, new Vector3(TileCell, TileCell, 0.1f));
+                break;
         }
 
         Handles.color = Color.white;
@@ -474,6 +535,22 @@ public class LevelEditorWindow : EditorWindow
             case Tool.SpawnPoint:
                 go = PlaceSpawnPoint(pos);
                 break;
+
+            case Tool.Tile:
+            {
+                if (_pfTile == null || _tileSprites == null || _tileSprites.Length == 0)
+                {
+                    Debug.LogWarning("[LevelEditor] Tile prefab или спрайты не найдены (Assets/Sprites/Tileset)");
+                    break;
+                }
+                var grp = GetGroup("Tiles");
+                go = (GameObject)PrefabUtility.InstantiatePrefab(_pfTile, grp);
+                go.transform.position = new Vector3(pos.x, pos.y, grp != null ? grp.position.z : 0f);
+                var sr = go.GetComponent<SpriteRenderer>();
+                if (sr != null) sr.sprite = _tileSprites[_selTile];
+                go.name = UniqueChildName(grp, _tileSprites[_selTile].name);
+                break;
+            }
         }
 
         if (go != null)
@@ -713,6 +790,22 @@ public class LevelEditorWindow : EditorWindow
         _pfFallCollider = Load("Assets/Prefabs/FallCollider.prefab");
         _pfLeftFin      = Load("Assets/Prefabs/LeftFin.prefab");
         _pfRightFin     = Load("Assets/Prefabs/RightFin.prefab");
+        _pfTile         = Load("Assets/Prefabs/Tile.prefab");
+        LoadTiles();
+    }
+
+    private void LoadTiles()
+    {
+        var guids = AssetDatabase.FindAssets("t:Sprite", new[] { "Assets/Sprites/Tileset" });
+        var list  = new System.Collections.Generic.List<Sprite>();
+        foreach (var g in guids)
+        {
+            var s = AssetDatabase.LoadAssetAtPath<Sprite>(AssetDatabase.GUIDToAssetPath(g));
+            if (s != null) list.Add(s);
+        }
+        list.Sort((a, b) => string.Compare(a.name, b.name, System.StringComparison.Ordinal));
+        _tileSprites = list.ToArray();
+        if (_tileSprites.Length > 0) _selTile = Mathf.Clamp(_selTile, 0, _tileSprites.Length - 1);
     }
 
     private static GameObject Load(string path)
@@ -875,7 +968,7 @@ public class LevelEditorWindow : EditorWindow
     }
 
     private static bool IsGroup(string name)
-        => name == "Platforms" || name == "Walls" || name == "Coins" || name == "Stars";
+        => name == "Platforms" || name == "Walls" || name == "Coins" || name == "Stars" || name == "Tiles";
 
     private void AutoLevelName()
     {

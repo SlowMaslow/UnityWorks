@@ -16,7 +16,7 @@ public class LevelManager : MonoBehaviour
 
     [Header("Спавн игрока")]
     [Tooltip("Z-плоскость игрока при спавне (геймплейная плоскость). X/Y берутся из SpawnPoint уровня.")]
-    [SerializeField] private float playerSpawnZ = -0.05f;
+    [SerializeField] private float playerSpawnZ = -0.5f; // выдвинут вперёд: руки/контроллеры рисуются перед тайлами
 
     // ─── Состояние уровня ────────────────────────────────────────────────────
     public float ElapsedTime    { get; private set; }
@@ -25,6 +25,9 @@ public class LevelManager : MonoBehaviour
     public bool  IsRunning      { get; private set; }
 
     private int _currentLevelIndex;
+
+    /// <summary>Индекс текущего загруженного уровня (для аналитики/рекламы).</summary>
+    public int CurrentLevelIndex => _currentLevelIndex;
 
     // ─── События ─────────────────────────────────────────────────────────────
     public static event Action<float>       OnTimerTick;
@@ -120,6 +123,8 @@ public class LevelManager : MonoBehaviour
         StarsCollected = 0;
         CoinsThisRun   = 0;
         IsRunning      = true;
+
+        AnalyticsManager.Instance?.LevelStart(_currentLevelIndex);
     }
 
     public void RegisterCoin()
@@ -158,6 +163,7 @@ public class LevelManager : MonoBehaviour
         };
 
         GameManager.Instance?.SetState(GameState.Win);
+        AnalyticsManager.Instance?.LevelComplete(result);
         OnLevelCompleted?.Invoke(result);
     }
 }

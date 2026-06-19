@@ -3,6 +3,10 @@
     "unity-mcp": {
       "command": "C:\\Users\\slowm\\.local\\bin\\uvx.exe",
       "args": ["--from", "mcpforunityserver", "mcp-for-unity", "--transport", "stdio"]
+    },
+    "comfyui-mcp-server": {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:9000/mcp"
     }
   }
 }

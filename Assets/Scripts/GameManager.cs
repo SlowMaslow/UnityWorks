@@ -54,6 +54,10 @@ public class GameManager : MonoBehaviour
         // Пауза останавливает Time.timeScale; Win/Fail — оставляем физику
         Time.timeScale = (newState == GameState.Paused) ? 0f : 1f;
 
+        // Аналитика проигрыша (победа логируется в LevelManager.CompleteLevel с результатом)
+        if (newState == GameState.Fail)
+            AnalyticsManager.Instance?.LevelFail(LevelManager.Instance != null ? LevelManager.Instance.CurrentLevelIndex : -1);
+
         OnGameStateChanged?.Invoke(newState);
     }
 

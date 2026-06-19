@@ -110,6 +110,15 @@ public static class SaveSystem
         PlayerPrefs.Save();
     }
 
+    // ─── Реклама (IAP «убрать рекламу») ──────────────────────────────────────
+    private const string KEY_ADS_REMOVED = "AdsRemoved";
+
+    public static bool AdsRemoved
+    {
+        get => PlayerPrefs.GetInt(KEY_ADS_REMOVED, 0) == 1;
+        set { PlayerPrefs.SetInt(KEY_ADS_REMOVED, value ? 1 : 0); PlayerPrefs.Save(); }
+    }
+
     // ─── Dev ─────────────────────────────────────────────────────────────────
     /// <summary>Полный сброс прогресса (для тестирования).</summary>
     public static void ResetAll()

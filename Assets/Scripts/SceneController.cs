@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -22,9 +23,12 @@ public class SceneController : MonoBehaviour
     public void LoadMainMenu()
         => LoadScene(MENU_INDEX);
 
-    /// <summary>Перезапустить текущий уровень.</summary>
+    /// <summary>Перезапустить текущий уровень. Перед перезапуском — interstitial (с учётом кэпа).</summary>
     public void ReloadCurrentScene()
-        => LoadGameScene(LevelLoader.PendingLevel);
+    {
+        int lvl = LevelLoader.PendingLevel;
+        ShowAdThen(() => LoadGameScene(lvl));
+    }
 
     /// <summary>Алиас для кнопок Inspector.</summary>
     public void LoadCurrentScene()
@@ -33,9 +37,17 @@ public class SceneController : MonoBehaviour
     /// <summary>Загрузить следующий уровень. Если уровней нет — вернуться к первому.</summary>
     public void LoadNextScene()
     {
-        int next  = LevelLoader.PendingLevel + 1;
-        int total = LevelLoader.TotalLevels;
-        LoadGameScene(next <= total ? next : 1);
+        int next   = LevelLoader.PendingLevel + 1;
+        int total  = LevelLoader.TotalLevels;
+        int target = next <= total ? next : 1;
+        ShowAdThen(() => LoadGameScene(target));
+    }
+
+    /// <summary>Показать interstitial (если положен по кэпу), затем выполнить переход.</summary>
+    private void ShowAdThen(Action load)
+    {
+        if (AdsManager.Instance != null) AdsManager.Instance.NotifyLevelEnded(load);
+        else load();
     }
 
     /// <summary>Загрузить последний открытый уровень (кнопка Play в меню).</summary>
