@@ -1418,7 +1418,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   levelContainer: {fileID: 685601824}
-  playerSpawnZ: -0.5
+  playerSpawnZ: -0.05
 --- !u!114 &788784685
 MonoBehaviour:
   m_ObjectHideFlags: 0

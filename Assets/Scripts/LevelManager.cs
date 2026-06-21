@@ -16,7 +16,7 @@ public class LevelManager : MonoBehaviour
 
     [Header("Спавн игрока")]
     [Tooltip("Z-плоскость игрока при спавне (геймплейная плоскость). X/Y берутся из SpawnPoint уровня.")]
-    [SerializeField] private float playerSpawnZ = -0.5f; // выдвинут вперёд: руки/контроллеры рисуются перед тайлами
+    [SerializeField] private float playerSpawnZ = -0.05f;
 
     // ─── Состояние уровня ────────────────────────────────────────────────────
     public float ElapsedTime    { get; private set; }

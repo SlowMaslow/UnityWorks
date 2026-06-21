@@ -101,6 +101,8 @@ public class ClimbController : MonoBehaviour
     public float startSnapRange = 0.6f;
     [Tooltip("Допуск по высоте для захвата пэда у поверхности платформы (геометрический, не зависит от матрицы слоёв).")]
     public float grabTolerance = 0.25f;
+    [Tooltip("Насколько ниже опустить ХВАТ (кисть), чтобы шар-в-ладони сел на поверхность, а не висел над ней. 0 = старое поведение.")]
+    public float gripVisualDrop = 0.15f;
 
     [Header("Отладка")]
     public bool showArmLines = false;   // отладочные верёвки плечо→пэд
@@ -252,13 +254,18 @@ public class ClimbController : MonoBehaviour
         var c1 = padRb[1].GetComponent<Collider>();
         if (c0 != null && c1 != null) Physics.IgnoreCollision(c0, c1, true);
 
-        // Радиус пэда из коллайдера (мировой) — чтобы захват/слайд следовали за масштабом
-        var sc = padRb[0].GetComponent<SphereCollider>();
-        if (sc != null)
+        // Радиус коллайдера пэда = радиус ВИЗУАЛЬНОГО шара (handBallSize — мировой ДИАМЕТР),
+        // чтобы габарит коллизии совпадал с видимым контроллером.
+        float ballWorldRadius = handBallSize * 0.5f;
+        for (int i = 0; i < 2; i++)
         {
-            var ls = padRb[0].transform.lossyScale;
-            _padRadius = sc.radius * Mathf.Max(ls.x, Mathf.Max(ls.y, ls.z));
+            var sci = padRb[i].GetComponent<SphereCollider>();
+            if (sci == null) continue;
+            var ls = padRb[i].transform.lossyScale;
+            float scale = Mathf.Max(ls.x, Mathf.Max(ls.y, ls.z));
+            sci.radius = ballWorldRadius / Mathf.Max(0.0001f, scale);
         }
+        _padRadius = ballWorldRadius;
     }
 
     /// <summary>Настраивает 2-костный IK обеих рук рига, таргеты — пэды.</summary>
@@ -330,10 +337,10 @@ public class ClimbController : MonoBehaviour
             if (surf.HasValue)
             {
                 float restY = surf.Value + _padRadius;
-                Vector3 p = padRb[i].position; p.y = restY;
+                Vector3 p = padRb[i].position; p.y = restY - gripVisualDrop;
                 padRb[i].position = p;
                 padRb[i].transform.position = p;   // синхронизируем visual transform с физикой
-                gripSurfaceY[i] = restY;
+                gripSurfaceY[i] = p.y;
             }
             else
             {
@@ -471,10 +478,10 @@ public class ClimbController : MonoBehaviour
             }
 
             Vector3 p = padRb[i].position;
-            p.y = restY;                  // приклеиваем к поверхности
+            p.y = restY - gripVisualDrop;  // опускаем хват, чтобы шар-в-ладони сел на поверхность
             padRb[i].position = p;
             padRb[i].transform.position = p;   // синхронизируем visual transform с физикой
-            gripSurfaceY[i] = restY;
+            gripSurfaceY[i] = p.y;
             SetState(i, PadState.Gripped);
             return true;
         }
@@ -612,6 +619,15 @@ public class ClimbController : MonoBehaviour
     private void LateUpdate()
     {
         if (visualRig == null) return;
+
+        // Перелинковка ссылок на шары: они могут быть запечены в риг / пересозданы SkinApplier'ом
+        // ПОСЛЕ Start, из-за чего _handBalls оказывались null → live-обновление и коррекция молча
+        // скипались. Находим существующие HandBall_L/R под ригом (lazy, один раз пока null).
+        for (int i = 0; i < 2; i++)
+            if (_handBalls[i] == null)
+                foreach (var t in visualRig.GetComponentsInChildren<Transform>(true))
+                    if (t.name == (i == 0 ? "HandBall_L" : "HandBall_R")) { _handBalls[i] = t; break; }
+
         // Визуальный риг следует за капсулой-телом (позиция + наклон/свинг)
         visualRig.position = bodyRb.transform.TransformPoint(rigOffset);
         visualRig.rotation = bodyRb.transform.rotation;
@@ -715,6 +731,15 @@ public class ClimbController : MonoBehaviour
     /// </summary>
     private Vector3 SlideAroundPlatforms(int padIndex, Vector3 from, Vector3 to)
     {
+        // Слайд считаем по позиции ВИЗУАЛЬНОГО шара (шар = пэд + сдвиг кисти): из блоков должен
+        // выталкиваться видимый контроллер, а не геометрический центр пэда. Коррекцию вернём как пэд.
+        Vector3 ballOff = Vector3.zero;
+        if (_handBalls != null && _handBalls[padIndex] != null)
+        {
+            ballOff = _handBalls[padIndex].position - padRb[padIndex].position;
+            ballOff.z = 0f;
+        }
+        from += ballOff; to += ballOff;
         from.z = to.z = bodyRb.position.z;
         float r = _padRadius;
         float moveDist = (to - from).magnitude;
@@ -722,7 +747,7 @@ public class ClimbController : MonoBehaviour
         Vector3 mid = (from + to) * 0.5f;
         var cols = Physics.OverlapSphere(mid, moveDist * 0.5f + r + 0.5f,
                                          _blockerMask, QueryTriggerInteraction.Ignore);
-        if (cols.Length == 0) return to;
+        if (cols.Length == 0) return to - ballOff;
 
         // СУБСТЕПЫ: дробим движение на шаги <= r/2, чтобы пэд НЕ перепрыгнул тонкую платформу
         // за один кадр (главная причина туннелирования). На каждом субшаге выталкиваем по
@@ -767,6 +792,6 @@ public class ClimbController : MonoBehaviour
                 if (!changed) break;
             }
         }
-        return cur;
+        return cur - ballOff;
     }
 }
