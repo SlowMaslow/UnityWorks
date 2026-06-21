@@ -101,8 +101,12 @@ public class ClimbController : MonoBehaviour
     public float startSnapRange = 0.6f;
     [Tooltip("Допуск по высоте для захвата пэда у поверхности платформы (геометрический, не зависит от матрицы слоёв).")]
     public float grabTolerance = 0.25f;
-    [Tooltip("Насколько ниже опустить ХВАТ (кисть), чтобы шар-в-ладони сел на поверхность, а не висел над ней. 0 = старое поведение.")]
-    public float gripVisualDrop = 0.15f;
+
+    [Header("Грип-IK (рука держит контроллер)")]
+    [Tooltip("На сколько отвести ЗАПЯСТЬЕ назад от контроллера вдоль плечо→контроллер, чтобы ЛАДОНЬ села на контроллер (~длина кисти). Подбирай, чтобы ладонь точно держала шар. Без петли обратной связи → без дрожи.")]
+    [Range(0f, 0.6f)] public float handReach = 0f;
+    [Tooltip("Тонкая подстройка ГЛУБИНЫ шара: шар садится на глубину кисти + это значение (чтобы рука держала шар, а не была перед/за ним). XY шара остаётся ровно на контроллере.")]
+    [Range(-0.5f, 0.5f)] public float ballDepth = 0.3f;
 
     [Header("Отладка")]
     public bool showArmLines = false;   // отладочные верёвки плечо→пэд
@@ -113,6 +117,8 @@ public class ClimbController : MonoBehaviour
     private readonly Color[] padColors = { new Color(0.2f,0.4f,0.9f), new Color(0.9f,0.2f,0.2f) };
     private readonly TwoBoneArmIK[] _armIK = new TwoBoneArmIK[2];
     private readonly Transform[] _handBalls = new Transform[2];
+    // Отдельный визуальный IK-таргет: каждый кадр ставим его так, чтобы ЛАДОНЬ кисти села на контроллер.
+    private readonly Transform[] _ikTarget = new Transform[2];
     private LegSwing _legSwing;
     private LineRenderer[] armLines = new LineRenderer[2];
     private Renderer[] padRend = new Renderer[2];
@@ -291,23 +297,25 @@ public class ClimbController : MonoBehaviour
             map.TryGetValue(boneNames[i].arm,  out ik.upper);
             map.TryGetValue(boneNames[i].fore, out ik.lower);
             map.TryGetValue(boneNames[i].hand, out ik.hand);
-            ik.target  = padRb[i].transform;
+            // IK тянет запястье к ОТДЕЛЬНОМУ таргету (не прямо к пэду): в LateUpdate ставим его так,
+            // чтобы ЛАДОНЬ (точка handBallLocalPos на кисти) села на контроллер → шар оказывается «в руке».
+            if (_ikTarget[i] == null)
+                _ikTarget[i] = new GameObject($"IKTarget_{(i==0?"L":"R")}").transform;
+            _ikTarget[i].position = padRb[i].position;
+            ik.target  = _ikTarget[i];
             // Знак сгиба фиксирован: левая рука (i=0) в одну сторону, правая (i=1) в другую.
             ik.bendSign = (i == 0) ? 1f : -1f;
             ik.Init();
 
-            // Декоративный шар В РУКЕ — дочерний кости кисти, едет с ней автоматически.
-            if (hidePadVisual && ik.hand != null)
+            // Шар = КОНТРОЛЛЕР: самостоятельный объект ровно в позиции пэда (жёстко, без люфта).
+            if (hidePadVisual)
             {
                 var ball = GameObject.CreatePrimitive(PrimitiveType.Sphere);
                 ball.name = $"HandBall_{(i==0?"L":"R")}";
                 Destroy(ball.GetComponent<Collider>());
-                ball.transform.SetParent(ik.hand, false);
-                var bp = handBallLocalPos;
-                if (i == 1) bp.x = -bp.x;
-                ball.transform.localPosition = bp;
-                float s = handBallSize / Mathf.Max(0.0001f, rigScale);
-                ball.transform.localScale = Vector3.one * s;
+                ball.transform.SetParent(null);
+                ball.transform.position   = padRb[i].position;
+                ball.transform.localScale = Vector3.one * handBallSize;
                 ball.GetComponent<Renderer>().material.color = padColors[i];
                 _handBalls[i] = ball.transform;
             }
@@ -337,7 +345,7 @@ public class ClimbController : MonoBehaviour
             if (surf.HasValue)
             {
                 float restY = surf.Value + _padRadius;
-                Vector3 p = padRb[i].position; p.y = restY - gripVisualDrop;
+                Vector3 p = padRb[i].position; p.y = restY;   // дно сферы на поверхности, без проникновения
                 padRb[i].position = p;
                 padRb[i].transform.position = p;   // синхронизируем visual transform с физикой
                 gripSurfaceY[i] = p.y;
@@ -478,7 +486,7 @@ public class ClimbController : MonoBehaviour
             }
 
             Vector3 p = padRb[i].position;
-            p.y = restY - gripVisualDrop;  // опускаем хват, чтобы шар-в-ладони сел на поверхность
+            p.y = restY;   // дно сферы-контроллера на поверхности, без проникновения
             padRb[i].position = p;
             padRb[i].transform.position = p;   // синхронизируем visual transform с физикой
             gripSurfaceY[i] = p.y;
@@ -620,32 +628,53 @@ public class ClimbController : MonoBehaviour
     {
         if (visualRig == null) return;
 
-        // Перелинковка ссылок на шары: они могут быть запечены в риг / пересозданы SkinApplier'ом
-        // ПОСЛЕ Start, из-за чего _handBalls оказывались null → live-обновление и коррекция молча
-        // скипались. Находим существующие HandBall_L/R под ригом (lazy, один раз пока null).
+        // Перелинковка ссылок (после пересоздания рига / domain-reload): шар — самостоятельный объект,
+        // IK-компонент и таргет восстанавливаем по той же причине (иначе Solve молча не вызывается).
         for (int i = 0; i < 2; i++)
+        {
             if (_handBalls[i] == null)
-                foreach (var t in visualRig.GetComponentsInChildren<Transform>(true))
-                    if (t.name == (i == 0 ? "HandBall_L" : "HandBall_R")) { _handBalls[i] = t; break; }
+            { var go = GameObject.Find(i == 0 ? "HandBall_L" : "HandBall_R"); if (go != null) _handBalls[i] = go.transform; }
+            if (_armIK[i] == null)
+                foreach (var ik in visualRig.GetComponentsInChildren<TwoBoneArmIK>(true))
+                    if (ik.hand != null && ik.hand.name.Contains(i == 0 ? "Left" : "Right")) { _armIK[i] = ik; break; }
+            if (_ikTarget[i] == null)
+            { var go = GameObject.Find($"IKTarget_{(i==0?"L":"R")}"); _ikTarget[i] = go != null ? go.transform : new GameObject($"IKTarget_{(i==0?"L":"R")}").transform; }
+            if (_armIK[i] != null && _ikTarget[i] != null && _armIK[i].target != _ikTarget[i]) _armIK[i].target = _ikTarget[i];
+        }
 
         // Визуальный риг следует за капсулой-телом (позиция + наклон/свинг)
         visualRig.position = bodyRb.transform.TransformPoint(rigOffset);
         visualRig.rotation = bodyRb.transform.rotation;
 
-        // IK рук — ПОСЛЕ позиционирования рига. После разрыва НЕ солвим: руки замирают в позе
-        // и кувыркаются вместе с телом (естественнее, чем дёргаться к упавшим пэдам).
+        // Palm-IK: каждый кадр ставим IK-таргет так, чтобы ЛАДОНЬ (точка handBallLocalPos на кисти)
+        // села на КОНТРОЛЛЕР (пэд). Feed-forward 3 итерации = полная сходимость В КАДРЕ (плавно,
+        // не лагает как серво: при гладком движении тела поза тоже гладкая). После разрыва не солвим.
         if (!broken)
             for (int i = 0; i < 2; i++)
-                _armIK[i]?.Solve();
+            {
+                var ik = _armIK[i];
+                if (ik == null || ik.hand == null || _ikTarget[i] == null) continue;
+                Vector3 G = padRb[i].position;
+                // СТАБИЛЬНОЕ размещение запястья БЕЗ петли обратной связи (она и давала дрожь у предела
+                // руки): направление руки берём из ГЕОМЕТРИИ — плечо→контроллер — и отводим запястье на
+                // длину кисти назад вдоль него. Не зависит от ориентации из солва → «охотиться» нечему.
+                Vector3 sh = ShoulderFor(i);
+                Vector3 armDir = G - sh; armDir.z = 0f;
+                armDir = armDir.sqrMagnitude > 1e-6f ? armDir.normalized : Vector3.down;
+                _ikTarget[i].position = new Vector3(G.x - armDir.x * handReach, G.y - armDir.y * handReach, G.z);
+                ik.Solve();
+            }
 
-        // Живое обновление шаров в руке — чтобы handBallLocalPos/Size крутились в инспекторе в Play
+        // Шар = контроллер: жёстко в позиции пэда (без люфта), любой кадр.
         for (int i = 0; i < 2; i++)
         {
             if (_handBalls[i] == null) continue;
-            var bp = handBallLocalPos;
-            if (i == 1) bp.x = -bp.x;
-            _handBalls[i].localPosition = bp;
-            _handBalls[i].localScale    = Vector3.one * (handBallSize / Mathf.Max(0.0001f, rigScale));
+            // Шар = контроллер по XY/Y (без люфта/провала); ГЛУБИНУ берём от кисти, чтобы рука держала шар.
+            Vector3 bp = padRb[i].position;
+            var ikb = _armIK[i];
+            if (ikb != null && ikb.hand != null) bp.z = ikb.hand.position.z + ballDepth;
+            _handBalls[i].position   = bp;
+            _handBalls[i].localScale = Vector3.one * handBallSize;
         }
 
         _legSwing?.Solve();
