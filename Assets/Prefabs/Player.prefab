@@ -56,7 +56,7 @@ MonoBehaviour:
   - {fileID: 5660697575791568425}
   - {fileID: 5818136804985342730}
   visualRig: {fileID: 6703148051062251491}
-  armLength: 0.744
+  armLength: 0.85
   tetherStrength: 200
   tetherDamping: 23.333332
   pullStrength: 150
@@ -66,12 +66,12 @@ MonoBehaviour:
   danglingRest: 0.75
   bodyMass: 10
   bodyAngularDamp: 0.5
-  padMass: 0.15
+  padMass: 5
   padFollowSpeed: 20
-  uprightStrength: 20
-  uprightDamping: 5
-  idleBodyDamping: 4.1666665
-  swingAmount: 0.25
+  uprightStrength: 0
+  uprightDamping: 3
+  idleBodyDamping: 2
+  swingAmount: 0.6
   breakEnabled: 1
   breakFactor: 0.95
   breakHoldTime: 0.5
@@ -88,6 +88,8 @@ MonoBehaviour:
   handBallSize: 0.36
   startSnapRange: 0.36
   grabTolerance: 0.15
+  handReach: 0
+  ballDepth: 0.3
   showArmLines: 0
   debugLog: 0
   debugVerbose: 0

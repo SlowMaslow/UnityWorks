@@ -663,17 +663,19 @@ public class ClimbController : MonoBehaviour
                 armDir = armDir.sqrMagnitude > 1e-6f ? armDir.normalized : Vector3.down;
                 _ikTarget[i].position = new Vector3(G.x - armDir.x * handReach, G.y - armDir.y * handReach, G.z);
                 ik.Solve();
+                // ДОСНАП КИСТИ: после IK двигаем саму кисть так, чтобы её грип-точка (handBallLocalPos)
+                // легла ТОЧНО на контроллер. Прямой снап (не петля) → шар и в ладони, и на поверхности.
+                // Цена: возможен лёгкий разрыв запястье↔предплечье, если снап велик (замеряем).
+                Vector3 grip = handBallLocalPos; if (i == 1) grip.x = -grip.x;
+                ik.hand.position += G - ik.hand.TransformPoint(grip);
             }
 
         // Шар = контроллер: жёстко в позиции пэда (без люфта), любой кадр.
         for (int i = 0; i < 2; i++)
         {
             if (_handBalls[i] == null) continue;
-            // Шар = контроллер по XY/Y (без люфта/провала); ГЛУБИНУ берём от кисти, чтобы рука держала шар.
-            Vector3 bp = padRb[i].position;
-            var ikb = _armIK[i];
-            if (ikb != null && ikb.hand != null) bp.z = ikb.hand.position.z + ballDepth;
-            _handBalls[i].position   = bp;
+            // Шар = контроллер (на поверхности). Кисть доснаплена так, что её ладонь = контроллер → шар в ладони.
+            _handBalls[i].position   = padRb[i].position;
             _handBalls[i].localScale = Vector3.one * handBallSize;
         }
 
