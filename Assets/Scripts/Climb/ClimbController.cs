@@ -105,8 +105,8 @@ public class ClimbController : MonoBehaviour
     [Header("Грип-IK (рука держит контроллер)")]
     [Tooltip("На сколько отвести ЗАПЯСТЬЕ назад от контроллера вдоль плечо→контроллер, чтобы ЛАДОНЬ села на контроллер (~длина кисти). Подбирай, чтобы ладонь точно держала шар. Без петли обратной связи → без дрожи.")]
     [Range(0f, 0.6f)] public float handReach = 0f;
-    [Tooltip("Тонкая подстройка ГЛУБИНЫ шара: шар садится на глубину кисти + это значение (чтобы рука держала шар, а не была перед/за ним). XY шара остаётся ровно на контроллере.")]
-    [Range(-0.5f, 0.5f)] public float ballDepth = 0.3f;
+    [Tooltip("Распределение снапа кисти (stretchy IK): доля идёт в ЛОКОТЬ (растягивает плечо-локоть), остальное — в запястье (предплечье). 0.5 = поровну, деформация размазана по руке → почти незаметна. 0 = всё в запястье.")]
+    [Range(0f, 1f)] public float stretchToElbow = 0.5f;
 
     [Header("Отладка")]
     public bool showArmLines = false;   // отладочные верёвки плечо→пэд
@@ -598,7 +598,10 @@ public class ClimbController : MonoBehaviour
             }
         }
 
-        // Мягкий кламп: если плечо ушло за длину опорной руки — корректируем позицию частично.
+        // Удержание на пределе: опорная рука держит тело ТРОС-СИЛОЙ (выше). Здесь только мягко гасим
+        // скорость ВЫХОДА за предел — стабильно. Прямой позиционный кламп (MovePosition / position +=)
+        // УБРАН: он драйвил вибрацию тела на пределе растяжки (замер: с ним bodyVel≈0.69, без него 0.00 —
+        // трос-сила сама держит тело у предела). НЕ возвращать позиционный кламп.
         for (int i = 0; i < 2; i++)
         {
             if (state[i] == PadState.Dangling) continue;
@@ -607,8 +610,6 @@ public class ClimbController : MonoBehaviour
             float   d       = spToPad.magnitude;
             if (d > armLength)
             {
-                Vector3 correction = spToPad.normalized * (d - armLength) * 0.5f;
-                bodyRb.position += correction;
                 float vAlong2 = Vector3.Dot(bodyRb.linearVelocity, spToPad.normalized);
                 if (vAlong2 < 0f)
                     bodyRb.linearVelocity -= spToPad.normalized * vAlong2 * 0.5f;
@@ -663,11 +664,14 @@ public class ClimbController : MonoBehaviour
                 armDir = armDir.sqrMagnitude > 1e-6f ? armDir.normalized : Vector3.down;
                 _ikTarget[i].position = new Vector3(G.x - armDir.x * handReach, G.y - armDir.y * handReach, G.z);
                 ik.Solve();
-                // ДОСНАП КИСТИ: после IK двигаем саму кисть так, чтобы её грип-точка (handBallLocalPos)
+                // ДОСНАП КИСТИ: после IK двигаем руку так, чтобы её грип-точка (handBallLocalPos)
                 // легла ТОЧНО на контроллер. Прямой снап (не петля) → шар и в ладони, и на поверхности.
-                // Цена: возможен лёгкий разрыв запястье↔предплечье, если снап велик (замеряем).
+                // Растяжение РАЗМАЗЫВАЕМ по руке (stretchy IK): часть в локоть, часть в запястье →
+                // деформация на сустав вдвое меньше, почти незаметна.
                 Vector3 grip = handBallLocalPos; if (i == 1) grip.x = -grip.x;
-                ik.hand.position += G - ik.hand.TransformPoint(grip);
+                Vector3 snap = G - ik.hand.TransformPoint(grip);
+                if (ik.lower != null) ik.lower.position += snap * stretchToElbow; // локоть+кисть → тянет плечо-локоть
+                ik.hand.position += snap * (1f - stretchToElbow);                 // остаток → предплечье
             }
 
         // Шар = контроллер: жёстко в позиции пэда (без люфта), любой кадр.

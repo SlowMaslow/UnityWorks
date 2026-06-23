@@ -89,7 +89,7 @@ MonoBehaviour:
   startSnapRange: 0.36
   grabTolerance: 0.15
   handReach: 0
-  ballDepth: 0.3
+  stretchToElbow: 0.5
   showArmLines: 0
   debugLog: 0
   debugVerbose: 0
