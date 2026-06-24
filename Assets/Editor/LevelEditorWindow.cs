@@ -355,27 +355,39 @@ public class LevelEditorWindow : EditorWindow
             var newPos = Handles.PositionHandle(t.position, Quaternion.identity);
             if (EditorGUI.EndChangeCheck())
             {
-                Undo.RecordObject(t, "Move (Snapped)");
+                // Тайлы снапятся по СВОЕЙ сетке TileCell (по ЦЕНТРУ — как при размещении);
+                // остальные объекты — по PIVOT (угол/ребро) к общей сетке _grid.
+                bool isTile = t.parent != null && t.parent.name == "Tiles";
+                Vector3 snapped;
+                if (isTile)
+                {
+                    snapped = new Vector3(
+                        Mathf.Round(newPos.x / TileCell) * TileCell,
+                        Mathf.Round(newPos.y / TileCell) * TileCell,
+                        t.position.z);
+                }
+                else
+                {
+                    var pivotOffset = new Vector3(
+                        (0.5f - _pivotX) * t.localScale.x,
+                        (0.5f - _pivotY) * t.localScale.y,
+                        0f);
+                    var pivotInWorld = newPos - pivotOffset;
+                    var snappedPivot = new Vector3(
+                        Mathf.Round(pivotInWorld.x / _grid) * _grid,
+                        Mathf.Round(pivotInWorld.y / _grid) * _grid,
+                        t.position.z);
+                    snapped = snappedPivot + pivotOffset;
+                }
 
-                // Снапим PIVOT POINT (угол/ребро) а не центр объекта.
-                // Это гарантирует что после перемещения объект остаётся на сетке
-                // так же как при размещении.
-                var pivotOffset = new Vector3(
-                    (0.5f - _pivotX) * t.localScale.x,
-                    (0.5f - _pivotY) * t.localScale.y,
-                    0f);
-
-                // Где оказался pivot в новой позиции
-                var pivotInWorld = newPos - pivotOffset;
-
-                // Снапим pivot к сетке
-                var snappedPivot = new Vector3(
-                    Mathf.Round(pivotInWorld.x / _grid) * _grid,
-                    Mathf.Round(pivotInWorld.y / _grid) * _grid,
-                    t.position.z);
-
-                // Восстанавливаем центр из снапнутого pivot
-                t.position = snappedPivot + pivotOffset;
+                // Дельта снапнутого перемещения активного объекта — применяем ко ВСЕМ выделенным
+                // объектам уровня (множественное перемещение по сетке, относит. позиции сохраняются).
+                Vector3 delta = snapped - t.position;
+                var selT = Selection.transforms;
+                Undo.RecordObjects(selT, "Move (Snapped)");
+                foreach (var st in selT)
+                    if (IsPartOfLevel(st.gameObject))
+                        st.position += delta;
 
                 EditorSceneManager.MarkSceneDirty(
                     UnityEngine.SceneManagement.SceneManager.GetActiveScene());
@@ -383,8 +395,10 @@ public class LevelEditorWindow : EditorWindow
         }
         else
         {
-            // Возвращаем стандартные handles когда snap off или объект не наш
-            Tools.hidden = false;
+            // Для инструментов РАЗМЕЩЕНИЯ (Tile/Platform/…) прячем стандартный гизмо — иначе активный
+            // Move/Rect-тул Unity перехватывает клик (рамка-выделение) и объект НЕ ставится.
+            // Для Select (snap off) — стандартные handles видны.
+            Tools.hidden = (_tool != Tool.Select);
         }
 
         if (_tool == Tool.Select || _root == null) return;
@@ -420,6 +434,16 @@ public class LevelEditorWindow : EditorWindow
         if (_hovering && e.type == EventType.MouseDown && e.button == 0 && !e.alt)
         {
             PlaceObject(_previewPos);
+            e.Use();
+        }
+
+        // ПКМ — удалить объект под курсором (в 2D-режиме ПКМ свободна; быстрое удаление при постройке)
+        if (_hovering && e.type == EventType.MouseDown && e.button == 1 && !e.alt)
+        {
+            Vector3 raw = _previewPos;
+            var dray = HandleUtility.GUIPointToWorldRay(e.mousePosition);
+            if (dray.direction.z != 0f) { float dt = -dray.origin.z / dray.direction.z; raw = dray.origin + dray.direction * dt; raw.z = 0f; }
+            DeleteAtCursor(raw);
             e.Use();
         }
 
@@ -564,6 +588,33 @@ public class LevelEditorWindow : EditorWindow
             EditorApplication.QueuePlayerLoopUpdate();
         }
 
+        Repaint();
+    }
+
+    // Удаляет объект уровня под курсором (ПКМ). Находит ближайший рендерер, чьи XY-границы
+    // накрывают точку, поднимается до объекта-ребёнка группы и удаляет (с Undo). Игрока не трогает.
+    private void DeleteAtCursor(Vector3 world)
+    {
+        if (_root == null) return;
+        GameObject best = null; float bestDist = float.MaxValue;
+        foreach (var r in _root.GetComponentsInChildren<Renderer>())
+        {
+            var b = r.bounds;
+            if (world.x < b.min.x || world.x > b.max.x || world.y < b.min.y || world.y > b.max.y) continue;
+            float d = ((Vector2)(b.center - world)).sqrMagnitude;
+            if (d < bestDist) { bestDist = d; best = r.gameObject; }
+        }
+        if (best == null) return;
+        // Поднимаемся до объекта, лежащего прямо в группе (а не его дочернего меша/спрайта).
+        Transform t = best.transform;
+        while (t.parent != null && t.parent != _root.transform && !IsGroup(t.parent.name))
+            t = t.parent;
+        var go = t.gameObject;
+        if (go.name.Contains("Player")) return;   // игрока не удаляем
+        Undo.DestroyObjectImmediate(go);
+        EditorSceneManager.MarkSceneDirty(
+            UnityEngine.SceneManagement.SceneManager.GetActiveScene());
+        SceneView.RepaintAll();
         Repaint();
     }
 

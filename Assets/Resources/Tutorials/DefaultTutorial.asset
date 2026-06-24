@@ -19,44 +19,10 @@ MonoBehaviour:
   - id: drag_red
     hintText: 'DRAG THE
 
-      RED PAD!'
-    subText: 
-    condition:
-      rid: 7932376582882853240
-    autoAdvanceDelay: 0
-    highlights:
-    - targetId: red_pad
-      color: {r: 1, g: 0.85, b: 0.1, a: 1}
-    actions: []
-    setFlagOnEnter: 
-    setFlagOnComplete: 
-    skipIfFlagSet: TutorialTrollTriggered
-    stopAfterComplete: 0
-  - id: place_red
-    hintText: 'PLACE IT IN
-
-      THE ZONE!'
-    subText: 
-    condition:
-      rid: 7932376582882853241
-    autoAdvanceDelay: 0
-    highlights:
-    - targetId: red_pad
-      color: {r: 1, g: 0.85, b: 0.1, a: 1}
-    - targetId: zone_1
-      color: {r: 1, g: 0.25, b: 0.25, a: 0.55}
-    actions: []
-    setFlagOnEnter: 
-    setFlagOnComplete: 
-    skipIfFlagSet: TutorialTrollTriggered
-    stopAfterComplete: 0
-  - id: drag_blue
-    hintText: 'NOW DRAG THE
-
       BLUE PAD!'
     subText: 
     condition:
-      rid: 7932376582882853242
+      rid: 7932376582882853240
     autoAdvanceDelay: 0
     highlights:
     - targetId: blue_pad
@@ -72,10 +38,44 @@ MonoBehaviour:
       THE ZONE!'
     subText: 
     condition:
-      rid: 7932376582882853243
+      rid: 7932376582882853241
     autoAdvanceDelay: 0
     highlights:
     - targetId: blue_pad
+      color: {r: 1, g: 0.85, b: 0.1, a: 1}
+    - targetId: zone_1
+      color: {r: 1, g: 0.25, b: 0.25, a: 0.55}
+    actions: []
+    setFlagOnEnter: 
+    setFlagOnComplete: 
+    skipIfFlagSet: TutorialTrollTriggered
+    stopAfterComplete: 0
+  - id: drag_red
+    hintText: 'NOW DRAG THE
+
+      RED PAD!'
+    subText: 
+    condition:
+      rid: 7932376582882853242
+    autoAdvanceDelay: 0
+    highlights:
+    - targetId: red_pad
+      color: {r: 1, g: 0.85, b: 0.1, a: 1}
+    actions: []
+    setFlagOnEnter: 
+    setFlagOnComplete: 
+    skipIfFlagSet: TutorialTrollTriggered
+    stopAfterComplete: 0
+  - id: place_red
+    hintText: 'PLACE IT IN
+
+      THE ZONE!'
+    subText: 
+    condition:
+      rid: 7932376582882853243
+    autoAdvanceDelay: 0
+    highlights:
+    - targetId: red_pad
       color: {r: 1, g: 0.85, b: 0.1, a: 1}
     - targetId: zone_2
       color: {r: 0.25, g: 0.55, b: 1, a: 0.55}
@@ -93,7 +93,7 @@ MonoBehaviour:
       rid: 7932376582882853244
     autoAdvanceDelay: 0
     highlights:
-    - targetId: red_pad
+    - targetId: blue_pad
       color: {r: 1, g: 0.85, b: 0.1, a: 1}
     - targetId: zone_3
       color: {r: 1, g: 0.25, b: 0.25, a: 0.55}
@@ -184,7 +184,7 @@ MonoBehaviour:
       type: {class: EventTutorialCondition, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
       data:
         eventId: pad_drag_start
-        payloadFilter: Pad_1
+        payloadFilter: Pad_0
     - rid: 7932376582882853241
       type: {class: EventTutorialCondition, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
       data:
@@ -194,7 +194,7 @@ MonoBehaviour:
       type: {class: EventTutorialCondition, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
       data:
         eventId: pad_drag_start
-        payloadFilter: Pad_0
+        payloadFilter: Pad_1
     - rid: 7932376582882853243
       type: {class: EventTutorialCondition, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
       data:
