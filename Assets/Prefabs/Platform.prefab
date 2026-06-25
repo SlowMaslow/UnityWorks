@@ -78,9 +78,8 @@ GameObject:
   - component: {fileID: 5198401712930442185}
   - component: {fileID: 5198401712930442186}
   - component: {fileID: 5198401712930442187}
-  - component: {fileID: 5847209127375072681}
   m_Layer: 7
-  m_Name: Platform_BAK
+  m_Name: Platform
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -117,7 +116,7 @@ MeshRenderer:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 5198401712930442180}
-  m_Enabled: 0
+  m_Enabled: 1
   m_CastShadows: 1
   m_ReceiveShadows: 1
   m_DynamicOccludee: 1
@@ -176,19 +175,3 @@ BoxCollider:
   serializedVersion: 3
   m_Size: {x: 1, y: 1, z: 1}
   m_Center: {x: 0, y: 0, z: 0}
---- !u!114 &5847209127375072681
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 5198401712930442180}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: dedeabd8a8eae4d42b6bb2a83fb75138, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  blockMaterial: {fileID: 2100000, guid: 631a8e2e7507a0142a6632f8b57a99c4, type: 2}
-  visualHeight: 0.9
-  depth: 0.7
-  frontZ: 0.02

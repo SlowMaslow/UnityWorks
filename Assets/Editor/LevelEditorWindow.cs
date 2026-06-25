@@ -74,7 +74,8 @@ public class LevelEditorWindow : EditorWindow
     private Sprite[]   _tileSprites = {};
     private int        _selTile = 0;
     private Vector2    _tileScroll;
-    private const float TileCell = 0.56f; // шаг сетки < размера тайла (0.6) → лёгкое перекрытие, плотные швы
+    private float _tileCell = 0.56f; // шаг сетки тайлов (редактируется в SETTINGS). < размера тайла (0.58) = лёгкое перекрытие, плотные швы
+    private bool  _tileGridView = true; // показывать тайловую сетку (по галочке) в ЛЮБОМ инструменте
 
     // ─── Menu ─────────────────────────────────────────────────────────────────
     [MenuItem("Tools/Level Editor %#e")]
@@ -88,6 +89,8 @@ public class LevelEditorWindow : EditorWindow
     private void OnEnable()
     {
         SceneView.duringSceneGui += OnSceneGUI;
+        UnityEditor.SceneManagement.PrefabStage.prefabStageOpened += OnPrefabStageOpened;
+        EditorSceneManager.sceneClosing += OnSceneClosing;
         LoadPrefabs();
         AutoLevelName();
         RefreshExistingLevels();
@@ -96,7 +99,37 @@ public class LevelEditorWindow : EditorWindow
     private void OnDisable()
     {
         SceneView.duringSceneGui -= OnSceneGUI;
+        UnityEditor.SceneManagement.PrefabStage.prefabStageOpened -= OnPrefabStageOpened;
+        EditorSceneManager.sceneClosing -= OnSceneClosing;
         _tool = Tool.Select;
+    }
+
+    // Уход в ПРЕФАБ или закрытие СЦЕНЫ с загруженным уровнем → предложить сохранить и ВЫГРУЗИТЬ
+    // уровень (грид/инструменты в сцене отключаются, т.к. рисуются только при _root != null).
+    private void OnPrefabStageOpened(UnityEditor.SceneManagement.PrefabStage stage)
+    {
+        if (EditorApplication.isPlayingOrWillChangePlaymode || _root == null) return;
+        PromptSaveLevel();
+        DestroyImmediate(_root);
+        _root = null;
+        Repaint();
+    }
+
+    private void OnSceneClosing(UnityEngine.SceneManagement.Scene scene, bool removing)
+    {
+        if (EditorApplication.isPlayingOrWillChangePlaymode || _root == null || _root.scene != scene) return;
+        PromptSaveLevel();
+        _root = null;   // сцена закрывается — объект уничтожится сам
+        Repaint();
+    }
+
+    private void PromptSaveLevel()
+    {
+        if (_root == null) return;
+        if (EditorUtility.DisplayDialog("Level Editor",
+                $"Уровень '{_levelName}' будет выгружен.\nСохранить изменения в Level_XX.prefab?",
+                "Сохранить", "Не сохранять"))
+            SaveLevel();
     }
 
     private void OnGUI()
@@ -169,6 +202,14 @@ public class LevelEditorWindow : EditorWindow
         _snapGrid  = EditorGUILayout.Toggle("Snap on place", _snapGrid);
         _snapMove  = EditorGUILayout.Toggle("Snap on move",  _snapMove);
         _showGrid  = EditorGUILayout.Toggle("Show grid",     _showGrid);
+        if (_showGrid)
+            _tileGridView = EditorGUILayout.Toggle(
+                new GUIContent("Tile grid", "Рисовать грид по тайловой клетке (по границам клеток) в ЛЮБОМ инструменте. Выкл — обычный Grid size."),
+                _tileGridView);
+        if (_showGrid && _tileGridView)
+            _tileCell = EditorGUILayout.Slider(
+                new GUIContent("Tile cell", "Шаг тайловой сетки (постановка + snap-move + грид)."),
+                _tileCell, 0.3f, 2f);
         if (_snapGrid || _snapMove)
         {
             _grid = EditorGUILayout.Slider("Grid size", _grid, 0.25f, 2f);
@@ -215,8 +256,11 @@ public class LevelEditorWindow : EditorWindow
         {
             if (i % cols == 0) GUILayout.BeginHorizontal();
 
-            Texture tex = AssetPreview.GetAssetPreview(_tileSprites[i]);
-            if (tex == null) tex = _tileSprites[i].texture;
+            // НЕ используем AssetPreview.GetAssetPreview — он генерит превью АСИНХРОННО и заставляет
+            // окно перерисовываться БЕСКОНЕЧНО, пока превью «грузятся»/инвалидируются (особенно после
+            // входа/выхода из префаба = сброс кэша превью) — это и есть петля. Спрайт тайла = своя
+            // текстура (512²), берём её напрямую: всегда готова, без асинхронной генерации.
+            Texture tex = _tileSprites[i].texture;
 
             var prev = GUI.backgroundColor;
             if (i == _selTile) GUI.backgroundColor = new Color(0.4f, 0.8f, 1f);
@@ -355,15 +399,15 @@ public class LevelEditorWindow : EditorWindow
             var newPos = Handles.PositionHandle(t.position, Quaternion.identity);
             if (EditorGUI.EndChangeCheck())
             {
-                // Тайлы снапятся по СВОЕЙ сетке TileCell (по ЦЕНТРУ — как при размещении);
+                // Тайлы снапятся по СВОЕЙ сетке _tileCell (по ЦЕНТРУ — как при размещении);
                 // остальные объекты — по PIVOT (угол/ребро) к общей сетке _grid.
                 bool isTile = t.parent != null && t.parent.name == "Tiles";
                 Vector3 snapped;
                 if (isTile)
                 {
                     snapped = new Vector3(
-                        Mathf.Round(newPos.x / TileCell) * TileCell,
-                        Mathf.Round(newPos.y / TileCell) * TileCell,
+                        Mathf.Round(newPos.x / _tileCell) * _tileCell,
+                        Mathf.Round(newPos.y / _tileCell) * _tileCell,
                         t.position.z);
                 }
                 else
@@ -415,8 +459,8 @@ public class LevelEditorWindow : EditorWindow
             pos.z     = 0f;
             if (_tool == Tool.Tile)
             {
-                pos.x = Mathf.Round(pos.x / TileCell) * TileCell;
-                pos.y = Mathf.Round(pos.y / TileCell) * TileCell;
+                pos.x = Mathf.Round(pos.x / _tileCell) * _tileCell;
+                pos.y = Mathf.Round(pos.y / _tileCell) * _tileCell;
             }
             else if (_snapGrid || _snapMove) pos = Snap(pos);
             _previewPos = pos;
@@ -456,7 +500,6 @@ public class LevelEditorWindow : EditorWindow
         }
 
         // Repaint только когда активен инструмент размещения (показываем ghost).
-        // В DrawGrid sv.Repaint() НЕ вызываем — это вызывало бесконечный цикл.
         if (_hovering)
             sv.Repaint();
     }
@@ -497,7 +540,7 @@ public class LevelEditorWindow : EditorWindow
                 break;
             case Tool.Tile:
                 Handles.color = new Color(0.5f, 1f, 0.5f, 0.7f);
-                Handles.DrawWireCube(pos, new Vector3(TileCell, TileCell, 0.1f));
+                Handles.DrawWireCube(pos, new Vector3(_tileCell, _tileCell, 0.1f));
                 break;
         }
 
@@ -893,7 +936,8 @@ public class LevelEditorWindow : EditorWindow
     // ─── Grid drawing ─────────────────────────────────────────────────────────
     private void DrawGrid(SceneView sv)
     {
-        if (!_showGrid) return;
+        // Грид рисуем ТОЛЬКО когда есть активно загруженный уровень — иначе редактор пассивен в сцене.
+        if (!_showGrid || _root == null) return;
 
         var cam = sv.camera;
 
@@ -907,35 +951,43 @@ public class LevelEditorWindow : EditorWindow
         Vector3 center = cam.transform.position;
         center.z = 0f;
 
-        // Ограничиваем сетку видимой областью + 1 клетка запаса
-        float x0 = Mathf.Floor((center.x - halfW - _grid) / _grid) * _grid;
-        float x1 = Mathf.Ceil ((center.x + halfW + _grid) / _grid) * _grid;
-        float y0 = Mathf.Floor((center.y - halfH - _grid) / _grid) * _grid;
-        float y1 = Mathf.Ceil ((center.y + halfH + _grid) / _grid) * _grid;
+        // Шаг сетки: для Tile-тула — по тайловой клетке, со сдвигом на ПОЛКЛЕТКИ, чтобы линии шли
+        // по ГРАНИЦАМ клеток (центр тайла = центр клетки → клик в клетку заполняет её). Для прочих — _grid.
+        bool tileGrid = _tileGridView;
+        float step = tileGrid ? _tileCell : _grid;
+        float off  = tileGrid ? step * 0.5f : 0f;
+
+        // Ограничиваем сетку видимой областью + 1 клетка запаса (линии на k*step + off)
+        float x0 = Mathf.Floor((center.x - halfW - step - off) / step) * step + off;
+        float x1 = Mathf.Ceil ((center.x + halfW + step - off) / step) * step + off;
+        float y0 = Mathf.Floor((center.y - halfH - step - off) / step) * step + off;
+        float y1 = Mathf.Ceil ((center.y + halfH + step - off) / step) * step + off;
 
         // Защита от слишком мелкой сетки (перфоманс)
-        int maxLines = 200;
-        if ((x1 - x0) / _grid > maxLines || (y1 - y0) / _grid > maxLines)
+        int maxLines = 300;
+        if ((x1 - x0) / step > maxLines || (y1 - y0) / step > maxLines)
             return;
 
-        // Определяем шаг крупных линий (каждые 4 мелких)
-        float bigStep = _grid * 4f;
+        // Крупные линии каждые 4 клетки
+        float bigStep = step * 4f;
 
-        for (float x = x0; x <= x1 + 0.001f; x += _grid)
+        for (float x = x0; x <= x1 + 0.001f; x += step)
         {
-            bool big = Mathf.Abs(x % bigStep) < 0.001f || Mathf.Abs(x % bigStep - bigStep) < 0.001f;
+            float m = (x - off) % bigStep;
+            bool big = Mathf.Abs(m) < 0.001f || Mathf.Abs(m - bigStep) < 0.001f;
             Handles.color = big
-                ? new Color(1f, 1f, 1f, 0.20f)
-                : new Color(1f, 1f, 1f, 0.07f);
+                ? new Color(1f, 1f, 1f, tileGrid ? 0.35f : 0.20f)
+                : new Color(1f, 1f, 1f, tileGrid ? 0.15f : 0.07f);
             Handles.DrawLine(new Vector3(x, y0, 0f), new Vector3(x, y1, 0f));
         }
 
-        for (float y = y0; y <= y1 + 0.001f; y += _grid)
+        for (float y = y0; y <= y1 + 0.001f; y += step)
         {
-            bool big = Mathf.Abs(y % bigStep) < 0.001f || Mathf.Abs(y % bigStep - bigStep) < 0.001f;
+            float m = (y - off) % bigStep;
+            bool big = Mathf.Abs(m) < 0.001f || Mathf.Abs(m - bigStep) < 0.001f;
             Handles.color = big
-                ? new Color(1f, 1f, 1f, 0.20f)
-                : new Color(1f, 1f, 1f, 0.07f);
+                ? new Color(1f, 1f, 1f, tileGrid ? 0.35f : 0.20f)
+                : new Color(1f, 1f, 1f, tileGrid ? 0.15f : 0.07f);
             Handles.DrawLine(new Vector3(x0, y, 0f), new Vector3(x1, y, 0f));
         }
 

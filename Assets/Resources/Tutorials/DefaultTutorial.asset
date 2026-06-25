@@ -44,7 +44,7 @@ MonoBehaviour:
     - targetId: blue_pad
       color: {r: 1, g: 0.85, b: 0.1, a: 1}
     - targetId: zone_1
-      color: {r: 1, g: 0.25, b: 0.25, a: 0.55}
+      color: {r: 0.2509804, g: 0.54901963, b: 1, a: 0.54901963}
     actions: []
     setFlagOnEnter: 
     setFlagOnComplete: 
@@ -78,7 +78,7 @@ MonoBehaviour:
     - targetId: red_pad
       color: {r: 1, g: 0.85, b: 0.1, a: 1}
     - targetId: zone_2
-      color: {r: 0.25, g: 0.55, b: 1, a: 0.55}
+      color: {r: 1, g: 0.2509804, b: 0.2509804, a: 0.55}
     actions: []
     setFlagOnEnter: 
     setFlagOnComplete: 
