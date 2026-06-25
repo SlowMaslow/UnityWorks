@@ -75,7 +75,6 @@ public class LevelEditorWindow : EditorWindow
     private int        _selTile = 0;
     private Vector2    _tileScroll;
     private float _tileCell = 0.56f; // шаг сетки тайлов (редактируется в SETTINGS). < размера тайла (0.58) = лёгкое перекрытие, плотные швы
-    private bool  _tileGridView = true; // показывать тайловую сетку (по галочке) в ЛЮБОМ инструменте
 
     // ─── Menu ─────────────────────────────────────────────────────────────────
     [MenuItem("Tools/Level Editor %#e")]
@@ -202,13 +201,9 @@ public class LevelEditorWindow : EditorWindow
         _snapGrid  = EditorGUILayout.Toggle("Snap on place", _snapGrid);
         _snapMove  = EditorGUILayout.Toggle("Snap on move",  _snapMove);
         _showGrid  = EditorGUILayout.Toggle("Show grid",     _showGrid);
-        if (_showGrid)
-            _tileGridView = EditorGUILayout.Toggle(
-                new GUIContent("Tile grid", "Рисовать грид по тайловой клетке (по границам клеток) в ЛЮБОМ инструменте. Выкл — обычный Grid size."),
-                _tileGridView);
-        if (_showGrid && _tileGridView)
+        if (_showGrid && _tool == Tool.Tile)
             _tileCell = EditorGUILayout.Slider(
-                new GUIContent("Tile cell", "Шаг тайловой сетки (постановка + snap-move + грид)."),
+                new GUIContent("Tile cell", "Шаг тайловой сетки (постановка + snap-move + грид). Грид рисуется автоматически в Tile-инструменте."),
                 _tileCell, 0.3f, 2f);
         if (_snapGrid || _snapMove)
         {
@@ -953,7 +948,9 @@ public class LevelEditorWindow : EditorWindow
 
         // Шаг сетки: для Tile-тула — по тайловой клетке, со сдвигом на ПОЛКЛЕТКИ, чтобы линии шли
         // по ГРАНИЦАМ клеток (центр тайла = центр клетки → клик в клетку заполняет её). Для прочих — _grid.
-        bool tileGrid = _tileGridView;
+        // Грид автоматически по активному инструменту: Tile → тайловая клетка (_tileCell),
+        // Platform/PlatformWall и пр. → общая сетка (_grid). Видимый грид всегда = шагу снапа инструмента.
+        bool tileGrid = (_tool == Tool.Tile);
         float step = tileGrid ? _tileCell : _grid;
         float off  = tileGrid ? step * 0.5f : 0f;
 
