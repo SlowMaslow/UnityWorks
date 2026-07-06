@@ -177,5 +177,5 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 5ca8a790b16aba74fbf328c08380b3be, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  spawnPoint: {fileID: 0}
-  spawnOffset: {x: 0, y: -1.2, z: 0}
+  spawnPoint: {fileID: 2619933202711734449}
+  spawnOffset: {x: 0, y: 0, z: 0}

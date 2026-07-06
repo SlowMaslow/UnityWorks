@@ -197,9 +197,15 @@ public class ClimbController : MonoBehaviour
         transform.position = worldPos;
         if (bodyRb != null)
         {
-            bodyRb.position = worldPos;          // тело — дочерний в (0,0,0), мир = корень
+            // Телепорт тела БЕЗ интерполяции: иначе оно ЛЕРПИТ из старой (упавшей) позиции, пока пэды
+            // телепортируются мгновенно → тело «догоняет» рывком. Выключаем на кадр, потом возвращаем.
+            var savedInterp = bodyRb.interpolation;
+            bodyRb.interpolation   = RigidbodyInterpolation.None;
+            bodyRb.position        = worldPos;
+            bodyRb.transform.position = worldPos; // синхр. рендер-transform с физикой
             bodyRb.linearVelocity  = Vector3.zero;
             bodyRb.angularVelocity = Vector3.zero;
+            if (isActiveAndEnabled) StartCoroutine(RestoreInterp(savedInterp));
         }
         // Сброс пэдов: УЗКИЙ разброс по X (оба пэда гарантированно на платформе под маркером → не свисают
         // с края и не свингуют = без растяжения рук на спавне). Y/Z — авторские.
@@ -210,7 +216,15 @@ public class ClimbController : MonoBehaviour
             padRb[i].transform.localPosition = lp;
             padRb[i].position = padRb[i].transform.position;
         }
+        Physics.SyncTransforms(); // разом синхронизируем всё тело+пэды в физике
         if (isActiveAndEnabled) StartCoroutine(DeferredInitialGrip());
+    }
+
+    private IEnumerator RestoreInterp(RigidbodyInterpolation interp)
+    {
+        yield return new WaitForFixedUpdate();
+        yield return null;
+        if (bodyRb != null) bodyRb.interpolation = interp;
     }
 
     /// <summary>Принудительно выставляет физ-параметры тела (надёжно, независимо от авторинга префаба).</summary>

@@ -93,6 +93,7 @@ MonoBehaviour:
   showArmLines: 0
   debugLog: 0
   debugVerbose: 0
+  spawnPadHalfSpread: 0.5
 --- !u!114 &3206093109535588886
 MonoBehaviour:
   m_ObjectHideFlags: 0
