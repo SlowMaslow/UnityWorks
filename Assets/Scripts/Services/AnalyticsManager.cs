@@ -35,7 +35,7 @@ public class AnalyticsManager : MonoBehaviour
     public void LevelStart(int level) => _service?.LevelStart(level);
 
     public void LevelComplete(LevelResult r)
-        => _service?.LevelComplete(r.levelIndex, r.stars, r.time, r.coinsCollected);
+        => _service?.LevelComplete(r.levelIndex, r.starsThisRun, r.time, r.coinsCollected);
 
     public void LevelFail(int level)
         => _service?.LevelFail(level, LevelManager.Instance != null ? LevelManager.Instance.ElapsedTime : 0f);

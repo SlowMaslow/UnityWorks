@@ -41,18 +41,39 @@ public static class SaveSystem
         }
     }
 
-    // ─── Звёзды по уровням ───────────────────────────────────────────────────
-    public static int GetLevelStars(int levelIndex)
-        => PlayerPrefs.GetInt($"Stars_{levelIndex}", 0);
+    // ─── Звёзды/задачи по уровням (маска выполненных задач) ──────────────────
+    // Храним БИТОВУЮ МАСКУ выполненных задач (бит = (int)LevelConfig.StarTaskType),
+    // а не число звёзд. Звёзды = кол-во выполненных задач. Маска нужна, чтобы финалка
+    // показывала РЕКОРД (не регрессировала) и для per-task галочек в карточке/сайдбаре.
+    public static int GetLevelTaskMask(int levelIndex)
+        => PlayerPrefs.GetInt($"TaskMask_{levelIndex}", 0);
 
-    /// <summary>Сохраняет результат только если он лучше предыдущего.</summary>
-    public static void TrySetLevelStars(int levelIndex, int stars)
+    /// <summary>Число звёзд уровня = кол-во когда-либо выполненных задач.</summary>
+    public static int GetLevelStars(int levelIndex)
+        => CountBits(GetLevelTaskMask(levelIndex));
+
+    /// <summary>
+    /// Мержит (OR) маску выполненных в забеге задач в сохранённый рекорд.
+    /// Возвращает СТАРУЮ маску (до мержа) — чтобы узнать, какие задачи выполнены ВПЕРВЫЕ.
+    /// </summary>
+    public static int MergeLevelTaskMask(int levelIndex, int runMask)
     {
-        if (stars > GetLevelStars(levelIndex))
+        int old    = GetLevelTaskMask(levelIndex);
+        int merged = old | runMask;
+        if (merged != old)
         {
-            PlayerPrefs.SetInt($"Stars_{levelIndex}", Mathf.Clamp(stars, 0, 3));
+            PlayerPrefs.SetInt($"TaskMask_{levelIndex}", merged);
             PlayerPrefs.Save();
         }
+        return old;
+    }
+
+    /// <summary>Кол-во установленных бит (популяция). Утилита для звёзд/масок.</summary>
+    public static int CountBits(int v)
+    {
+        int c = 0;
+        while (v != 0) { c += v & 1; v >>= 1; }
+        return c;
     }
 
     // ─── Лучшее время ────────────────────────────────────────────────────────
@@ -67,6 +88,29 @@ public static class SaveSystem
             PlayerPrefs.SetFloat($"BestTime_{levelIndex}", time);
             PlayerPrefs.Save();
         }
+    }
+
+    // ─── Артефакты по уровням (собираются в картинку-мир) ────────────────────
+    public static int GetLevelArtifacts(int levelIndex)
+        => PlayerPrefs.GetInt($"Artifacts_{levelIndex}", 0);
+
+    /// <summary>Best-kept (как звёзды) — исключает фарм повторным прохождением уровня.</summary>
+    public static void TrySetLevelArtifacts(int levelIndex, int count)
+    {
+        if (count > GetLevelArtifacts(levelIndex))
+        {
+            PlayerPrefs.SetInt($"Artifacts_{levelIndex}", Mathf.Max(0, count));
+            PlayerPrefs.Save();
+        }
+    }
+
+    /// <summary>Сумма собранных артефактов по диапазону уровней пака (прогресс картинки-мира).</summary>
+    public static int GetPackArtifacts(int firstLevelIndex, int lastLevelIndex)
+    {
+        int sum = 0;
+        for (int i = firstLevelIndex; i <= lastLevelIndex; i++)
+            sum += GetLevelArtifacts(i);
+        return sum;
     }
 
     // ─── Апгрейды ────────────────────────────────────────────────────────────

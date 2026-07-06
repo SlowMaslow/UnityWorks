@@ -56,13 +56,20 @@ public class WinScreenController : MonoBehaviour
     // ─── Show ────────────────────────────────────────────────────────────────
     private void Show(LevelResult result)
     {
-        // Звёзды
+        // Звёзды: заполняем по РЕКОРДУ (result.stars), НЕ по текущему заходу → нет регресса
+        int newCount = SaveSystem.CountBits(result.newTasksMask);
+        int firstNew = result.stars - newCount; // [firstNew, result.stars) — впервые в этом заходе
+
         for (int i = 0; i < starTexts.Length; i++)
         {
             if (starTexts[i] == null) continue;
             starTexts[i].text  = "★";
             starTexts[i].color = i < result.stars ? StarFilled : StarEmpty;
+            starTexts[i].transform.localScale = Vector3.one;
         }
+
+        // Подсветка ВПЕРВЫЕ заработанных в этом заходе звёзд (pop-анимация)
+        if (newCount > 0) StartCoroutine(PopNewStars(firstNew, result.stars));
 
         // Монеты
         if (coinsText != null)
@@ -85,6 +92,25 @@ public class WinScreenController : MonoBehaviour
     {
         yield return new WaitForSecondsRealtime(0.5f);
         VFXManager.Instance?.PlayWinVFX();
+    }
+
+    private IEnumerator PopNewStars(int fromIndex, int toIndex)
+    {
+        yield return new WaitForSecondsRealtime(1.0f); // ждём, пока панель выедет
+        for (int i = fromIndex; i < toIndex && i < starTexts.Length; i++)
+        {
+            if (i < 0 || starTexts[i] == null) continue;
+            var   tr  = starTexts[i].transform;
+            float dur = 0.35f, el = 0f;
+            while (el < dur)
+            {
+                el += Time.unscaledDeltaTime;
+                float t = Mathf.Clamp01(el / dur);
+                tr.localScale = Vector3.one * (1f + 0.6f * Mathf.Sin(t * Mathf.PI));
+                yield return null;
+            }
+            tr.localScale = Vector3.one;
+        }
     }
 
     private IEnumerator SlideIn()

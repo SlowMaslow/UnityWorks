@@ -129,10 +129,28 @@ public class ClimbController : MonoBehaviour
     private Camera  cam;
     private float   _logTimer;
     private readonly float[] gripSurfaceY = new float[2];
+    // На какой платформе пэд сейчас захвачен — чтобы сорвать пэд при её исчезновении (#7).
+    private readonly PlatformCollisionLogic[] _gripTop = new PlatformCollisionLogic[2];
+    private Coroutine _failRoutine;   // корутина FailWhenFallen — останавливаем при оживлении
+
+    /// <summary>Мировая позиция тела (для трекинга чекпоинтов в LevelManager).</summary>
+    public Vector3 BodyPosition => bodyRb != null ? bodyRb.position : transform.position;
+
+    private readonly Vector3[] _padAuthoredLocal = new Vector3[2]; // авторские локальные позиции пэдов (сброс при спавне)
+    [Tooltip("Полуразброс пэдов по X при спавне (уже плеч — чтобы оба сели на платформу под маркером, без свиса с края).")]
+    public float spawnPadHalfSpread = 0.15f;
     private float _padRadius = 0.15f;   // вычисляется из коллайдера пэда в EnforcePadConfig (следует за масштабом)
     private int   _blockerMask;         // слои о которые пэд НЕ должен проходить (платформы + стены-коллайдеры)
 
     // ─── Unity ───────────────────────────────────────────────────────────────
+    private void Awake()
+    {
+        // Захват авторских локальных позиций пэдов ДО любых Start: LevelManager.Start зовёт MoveTo
+        // (со сбросом пэдов) и может опередить ClimbController.Start → иначе сброс нулём = пэды в центр.
+        if (padRb != null && padRb.Length >= 2 && padRb[0] != null && padRb[1] != null)
+            for (int i = 0; i < 2; i++) _padAuthoredLocal[i] = padRb[i].transform.localPosition;
+    }
+
     private void Start()
     {
         cam = Camera.main;
@@ -182,6 +200,15 @@ public class ClimbController : MonoBehaviour
             bodyRb.position = worldPos;          // тело — дочерний в (0,0,0), мир = корень
             bodyRb.linearVelocity  = Vector3.zero;
             bodyRb.angularVelocity = Vector3.zero;
+        }
+        // Сброс пэдов: УЗКИЙ разброс по X (оба пэда гарантированно на платформе под маркером → не свисают
+        // с края и не свингуют = без растяжения рук на спавне). Y/Z — авторские.
+        for (int i = 0; i < 2; i++)
+        {
+            var lp = _padAuthoredLocal[i];
+            lp.x = (i == 0 ? -spawnPadHalfSpread : spawnPadHalfSpread);
+            padRb[i].transform.localPosition = lp;
+            padRb[i].position = padRb[i].transform.position;
         }
         if (isActiveAndEnabled) StartCoroutine(DeferredInitialGrip());
     }
@@ -333,33 +360,23 @@ public class ClimbController : MonoBehaviour
     }
 
     /// <summary>
-    /// Стартовый захват: для каждого пэда ищем платформу под ним (в пределах startSnapRange),
-    /// приклеиваем к поверхности и фиксируем как Gripped. Если платформы нет — пэд просто
-    /// остаётся в авторской позиции захваченным (тело подтянется).
+    /// Спавн: отпускаем пэды в Dangling — персонаж САМ падает и цепляется за платформу под собой
+    /// (болтающийся пэд ловится TryGrip в FixedUpdate при касании). Без поиска/снапа — просто и надёжно,
+    /// маркер спавна не обязан быть идеально по высоте, лишь бы под ним была платформа.
     /// </summary>
     private void InitialGrip()
     {
         for (int i = 0; i < 2; i++)
         {
-            float? surf = FindStartSurface(padRb[i].position);
-            if (surf.HasValue)
-            {
-                float restY = surf.Value + _padRadius;
-                Vector3 p = padRb[i].position; p.y = restY;   // дно сферы на поверхности, без проникновения
-                padRb[i].position = p;
-                padRb[i].transform.position = p;   // синхронизируем visual transform с физикой
-                gripSurfaceY[i] = p.y;
-            }
-            else
-            {
-                gripSurfaceY[i] = padRb[i].position.y;
-            }
-            SetState(i, PadState.Gripped);
+            _gripTop[i] = null;
+            SetState(i, PadState.Dangling);
         }
     }
 
     /// <summary>Ищет верхнюю поверхность платформы рядом с пэдом по X в пределах startSnapRange по Y.</summary>
-    private float? FindStartSurface(Vector3 padPos)
+    private float? FindStartSurface(Vector3 padPos) => FindStartSurface(padPos, startSnapRange);
+
+    private float? FindStartSurface(Vector3 padPos, float range)
     {
         float best = float.NegativeInfinity;
         bool found = false;
@@ -367,8 +384,8 @@ public class ClimbController : MonoBehaviour
         {
             if (top == null || !top.WithinXBounds(padPos.x, 0.01f)) continue;
             float surf = top.SurfaceY;
-            // поверхность должна быть около пэда (чуть ниже / на уровне)
-            if (surf <= padPos.y + 0.2f && surf >= padPos.y - startSnapRange && surf > best)
+            // поверхность должна быть около пэда (чуть ниже / на уровне), в пределах range
+            if (surf <= padPos.y + 0.2f && surf >= padPos.y - range && surf > best)
             {
                 best = surf; found = true;
             }
@@ -467,6 +484,10 @@ public class ClimbController : MonoBehaviour
     private bool TryGrip(int i)
     {
         Vector3 pad = padRb[i].position;
+        // Выбираем БЛИЖАЙШУЮ по высоте подходящую поверхность (а не первую попавшуюся): иначе,
+        // отпустив пэд над кнопкой/выступом, можно «примагнититься» к платформе НИЖЕ сквозь него.
+        PlatformCollisionLogic best = null;
+        float bestRestY = 0f, bestDist = float.MaxValue;
         foreach (var top in PlatformCollisionLogic.All)
         {
             if (top == null) continue;
@@ -477,28 +498,49 @@ public class ClimbController : MonoBehaviour
             bool viaTrigger = top.Contains(padRb[i]);
             if (!nearSurface && !viaTrigger) continue;
 
-            if (debugLog)
-            {
-                var bodyCol = top.BodyCollider;
-                float colTop  = bodyCol != null ? bodyCol.bounds.max.y : -999f;
-                Debug.Log($"[Grip] Pad{i} -> '{top.transform.parent?.name}' | SurfaceY={top.SurfaceY:F3} colTopLive={colTop:F3} padR={_padRadius:F3} " +
-                          $"=> restY={restY:F3} | padWas=({pad.x:F2},{pad.y:F3}) resultBottom={(restY - _padRadius):F3} gapToSurface={(restY - _padRadius - top.SurfaceY):F3} | match={(nearSurface ? "geom" : "trigger")}");
-            }
-
-            Vector3 p = padRb[i].position;
-            p.y = restY;   // дно сферы-контроллера на поверхности, без проникновения
-            padRb[i].position = p;
-            padRb[i].transform.position = p;   // синхронизируем visual transform с физикой
-            gripSurfaceY[i] = p.y;
-            SetState(i, PadState.Gripped);
-            return true;
+            float dist = Mathf.Abs(pad.y - restY);
+            if (dist < bestDist) { bestDist = dist; best = top; bestRestY = restY; }
         }
-        return false;
+        if (best == null) return false;
+
+        if (debugLog) Debug.Log($"[Grip] Pad{i} -> '{best.transform.parent?.name}' restY={bestRestY:F3} padY={pad.y:F3}");
+
+        Vector3 p = padRb[i].position;
+        p.y = bestRestY;   // дно сферы-контроллера на поверхности, без проникновения
+        padRb[i].position = p;
+        padRb[i].transform.position = p;   // синхронизируем visual transform с физикой
+        gripSurfaceY[i] = p.y;
+        _gripTop[i] = best;   // запоминаем платформу — для срыва при её исчезновении (#7)
+        SetState(i, PadState.Gripped);
+        return true;
     }
 
     private void FixedUpdate()
     {
         if (broken) return;
+
+        // #7 Срыв при исчезновении платформы: пэд был Gripped, а его платформа деактивировалась
+        // (исчезающая платформа ушла в preview) → отпускаем в Dangling. Дальше — обычная физика:
+        // 1 рука → повисаем на второй (маятник); 2 руки → тело падает (перехват ниже / зона смерти).
+        for (int i = 0; i < 2; i++)
+            if (state[i] == PadState.Gripped && _gripTop[i] != null && !_gripTop[i].isActiveAndEnabled)
+            {
+                _gripTop[i] = null;
+                SetState(i, PadState.Dangling);
+                if (debugLog) Debug.Log($"[Climb] Pad{i} сорван — платформа под рукой исчезла → Dangling");
+            }
+
+        // Грип на ДВИЖУЩЕЙСЯ поверхности (напр. вдавливаемая кнопка): пэд следует за её SurfaceY.
+        // Только для dynamicSurface — статичные платформы не трогаем (климб-фил цел).
+        for (int i = 0; i < 2; i++)
+            if (state[i] == PadState.Gripped && _gripTop[i] != null && _gripTop[i].dynamicSurface)
+            {
+                Vector3 pos = padRb[i].position;
+                pos.y = _gripTop[i].SurfaceY + _padRadius;
+                padRb[i].position = pos;
+                padRb[i].transform.position = pos;
+                gripSurfaceY[i] = pos.y;
+            }
 
         // Тащим выбранный пэд за пальцем — но кисть НЕ уходит дальше armLength от плеча.
         if (draggingPad >= 0)
@@ -720,7 +762,30 @@ public class ClimbController : MonoBehaviour
             VFXManager.Instance.PlayJointBreakVFX(mid);
         }
 
-        StartCoroutine(FailWhenFallen());
+        _failRoutine = StartCoroutine(FailWhenFallen());
+    }
+
+    /// <summary>
+    /// Оживление (continue): снимает разрыв, ставит пэды обратно на держку, телепортирует к последней
+    /// стабильной точке. Время/ключи сохраняются (LevelManager их не сбрасывал — сброс только в StartLevel).
+    /// </summary>
+    public void Revive(Vector3 spawnPos)
+    {
+        if (_failRoutine != null) { StopCoroutine(_failRoutine); _failRoutine = null; }
+        broken      = false;
+        breakTimer  = 0f;
+        draggingPad = -1;
+
+        bodyRb.constraints = RigidbodyConstraints.FreezePositionZ
+                           | RigidbodyConstraints.FreezeRotationX
+                           | RigidbodyConstraints.FreezeRotationY;
+        bodyRb.linearVelocity  = Vector3.zero;
+        bodyRb.angularVelocity = Vector3.zero;
+        bodyRb.rotation        = Quaternion.identity;
+
+        for (int i = 0; i < 2; i++) { _gripTop[i] = null; SetState(i, PadState.Gripped); }
+
+        MoveTo(spawnPos); // телепорт к чекпоинту + ре-грип (DeferredInitialGrip) — надёжно, как старт-спавн
     }
 
     /// <summary>

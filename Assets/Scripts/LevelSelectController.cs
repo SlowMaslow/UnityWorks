@@ -27,6 +27,7 @@ public class LevelSelectController : MonoBehaviour
 
     private Vector2 _shownPos;
     private Vector2 _hiddenPos;
+    private GameObject _detailOverlay;
 
     // ─── Unity ───────────────────────────────────────────────────────────────
     private void Awake()
@@ -120,7 +121,7 @@ public class LevelSelectController : MonoBehaviour
         if (unlocked)
         {
             int capture = idx;
-            btn.onClick.AddListener(() => LoadLevel(capture));
+            btn.onClick.AddListener(() => ShowDetail(capture));
         }
 
         // Номер уровня
@@ -165,6 +166,172 @@ public class LevelSelectController : MonoBehaviour
             t.alignment = TextAnchor.MiddleCenter;
             t.color     = i < filled ? ColStarFilled : ColStarEmpty;
         }
+    }
+
+    // ─── Detail card (задачи уровня) ─────────────────────────────────────────
+    private static readonly Color ColTaskDone    = new Color(0.32f, 0.82f, 0.32f);
+    private static readonly Color ColTaskPending  = new Color(1f, 1f, 1f, 0.30f);
+    private static readonly Color ColDetailBg     = new Color(0.16f, 0.10f, 0.06f, 0.98f);
+    private static readonly Color ColDimmer       = new Color(0f, 0f, 0f, 0.60f);
+
+    // Кириллица: gameFont (Bangers) её не содержит → детальную карточку рисуем Arial.
+    private static Font UIFont => Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+
+    private void ShowDetail(int idx)
+    {
+        CloseDetail();
+
+        var canvas = cardContainer != null
+            ? cardContainer.GetComponentInParent<Canvas>()
+            : FindFirstObjectByType<Canvas>();
+        if (canvas == null) { LoadLevel(idx); return; }
+
+        // Затемняющий фон (клик по нему = закрыть)
+        _detailOverlay = MakeGO($"DetailOverlay_{idx}", canvas.transform);
+        var ovRt = _detailOverlay.GetComponent<RectTransform>();
+        ovRt.anchorMin = Vector2.zero; ovRt.anchorMax = Vector2.one;
+        ovRt.offsetMin = Vector2.zero; ovRt.offsetMax = Vector2.zero;
+        var dim = _detailOverlay.AddComponent<Image>();
+        dim.color = ColDimmer;
+        var dimBtn = _detailOverlay.AddComponent<Button>();
+        dimBtn.targetGraphic = dim;
+        dimBtn.onClick.AddListener(CloseDetail);
+
+        // Карточка
+        var cardGO = MakeGO("DetailCard", _detailOverlay.transform);
+        var cardRt = cardGO.GetComponent<RectTransform>();
+        cardRt.anchorMin = cardRt.anchorMax = cardRt.pivot = new Vector2(0.5f, 0.5f);
+        cardRt.anchoredPosition = Vector2.zero;
+        cardRt.sizeDelta = new Vector2(460, 400);
+        var cardBg = cardGO.AddComponent<Image>();
+        cardBg.color = ColDetailBg;
+        cardGO.AddComponent<Button>(); // no-op: ловит клик, чтобы карточка не закрывалась
+
+        MakeLabel(cardGO.transform, "Title", $"УРОВЕНЬ {idx}",
+            new Vector2(0.5f, 0.90f), new Vector2(420, 50), 34, FontStyle.Bold, Color.white, TextAnchor.MiddleCenter);
+
+        MakeStarsRowAt(cardGO.transform, SaveSystem.GetLevelStars(idx), new Vector2(0.5f, 0.77f), 30);
+
+        // Задачи (data-driven из LevelConfig)
+        var tasks = LoadLevelTasks(idx);
+        int mask  = SaveSystem.GetLevelTaskMask(idx);
+        float y   = 0.58f;
+        foreach (var task in tasks)
+        {
+            bool done = (mask & (1 << (int)task.type)) != 0;
+            MakeTaskRow(cardGO.transform, task, done, y);
+            y -= 0.12f;
+        }
+
+        MakeButton(cardGO.transform, "PlayBtn", "ИГРАТЬ", new Vector2(0.5f, 0.11f),
+            new Vector2(240, 58), new Color(0.30f, 0.66f, 0.20f), () => { CloseDetail(); LoadLevel(idx); });
+
+        MakeButton(cardGO.transform, "CloseBtn", "X", new Vector2(0.90f, 0.90f),
+            new Vector2(46, 46), new Color(0.62f, 0.20f, 0.15f), CloseDetail);
+    }
+
+    private void CloseDetail()
+    {
+        if (_detailOverlay != null) { Destroy(_detailOverlay); _detailOverlay = null; }
+    }
+
+    /// <summary>Читает задачи уровня из LevelConfig на префабе (без инстанса).</summary>
+    private List<LevelConfig.StarTask> LoadLevelTasks(int idx)
+    {
+        var list   = new List<LevelConfig.StarTask>();
+        var prefab = Resources.Load<GameObject>($"{LevelLoader.ResourcesPath}/{LevelLoader.PrefabName(idx)}");
+        var cfg    = prefab != null ? prefab.GetComponentInChildren<LevelConfig>(true) : null;
+        if (cfg != null && cfg.TaskCount > 0)
+            foreach (var t in cfg.Tasks) list.Add(t);
+        else
+            list.Add(new LevelConfig.StarTask { type = LevelConfig.StarTaskType.Complete });
+        return list;
+    }
+
+    private void MakeTaskRow(Transform parent, LevelConfig.StarTask task, bool done, float anchorY)
+    {
+        // Галочка (Arial поддерживает ✓ и •)
+        MakeLabel(parent, "Check", done ? "✓" : "•",
+            new Vector2(0.13f, anchorY), new Vector2(40, 36), 28, FontStyle.Bold,
+            done ? ColTaskDone : ColTaskPending, TextAnchor.MiddleCenter);
+
+        // Текст задачи (слева)
+        var go = MakeGO("Task", parent);
+        var rt = go.GetComponent<RectTransform>();
+        rt.anchorMin = rt.anchorMax = new Vector2(0.21f, anchorY);
+        rt.pivot = new Vector2(0f, 0.5f);
+        rt.anchoredPosition = Vector2.zero;
+        rt.sizeDelta = new Vector2(330, 36);
+        var txt = go.AddComponent<Text>();
+        txt.text      = LevelConfig.Describe(task);
+        txt.font      = UIFont;
+        txt.fontSize  = 22;
+        txt.alignment = TextAnchor.MiddleLeft;
+        txt.color     = done ? Color.white : new Color(1f, 1f, 1f, 0.6f);
+    }
+
+    private void MakeStarsRowAt(Transform parent, int filled, Vector2 anchor, int starSize)
+    {
+        var row   = MakeGO("StarsRow", parent);
+        var rowRt = row.GetComponent<RectTransform>();
+        rowRt.anchorMin = rowRt.anchorMax = anchor;
+        rowRt.pivot = new Vector2(0.5f, 0.5f);
+        rowRt.anchoredPosition = Vector2.zero;
+        rowRt.sizeDelta = new Vector2(starSize * 3.6f, starSize + 6);
+
+        var hlg = row.AddComponent<HorizontalLayoutGroup>();
+        hlg.childAlignment         = TextAnchor.MiddleCenter;
+        hlg.spacing                = 6f;
+        hlg.childForceExpandWidth   = false;
+        hlg.childForceExpandHeight  = false;
+
+        for (int i = 0; i < 3; i++)
+        {
+            var sGO = MakeGO($"S{i}", row.transform);
+            var le  = sGO.AddComponent<LayoutElement>();
+            le.preferredWidth  = starSize + 2;
+            le.preferredHeight = starSize + 4;
+            var t = sGO.AddComponent<Text>();
+            t.text      = "★";
+            t.font      = UIFont;
+            t.fontSize  = starSize;
+            t.alignment = TextAnchor.MiddleCenter;
+            t.color     = i < filled ? ColStarFilled : ColStarEmpty;
+        }
+    }
+
+    private void MakeButton(Transform parent, string name, string label, Vector2 anchor, Vector2 size, Color color, System.Action onClick)
+    {
+        var go = MakeGO(name, parent);
+        var rt = go.GetComponent<RectTransform>();
+        rt.anchorMin = rt.anchorMax = anchor;
+        rt.pivot = new Vector2(0.5f, 0.5f);
+        rt.anchoredPosition = Vector2.zero;
+        rt.sizeDelta = size;
+        var img = go.AddComponent<Image>();
+        img.color = color;
+        var btn = go.AddComponent<Button>();
+        btn.targetGraphic = img;
+        if (onClick != null) btn.onClick.AddListener(() => onClick());
+        MakeLabel(go.transform, "Label", label, new Vector2(0.5f, 0.5f), size, 26, FontStyle.Bold, Color.white, TextAnchor.MiddleCenter);
+    }
+
+    private void MakeLabel(Transform parent, string name, string content, Vector2 anchor, Vector2 size,
+        int fontSize, FontStyle style, Color color, TextAnchor align)
+    {
+        var go = MakeGO(name, parent);
+        var rt = go.GetComponent<RectTransform>();
+        rt.anchorMin = rt.anchorMax = anchor;
+        rt.pivot = new Vector2(0.5f, 0.5f);
+        rt.anchoredPosition = Vector2.zero;
+        rt.sizeDelta = size;
+        var t = go.AddComponent<Text>();
+        t.text      = content;
+        t.font      = UIFont;
+        t.fontSize  = fontSize;
+        t.fontStyle = style;
+        t.alignment = align;
+        t.color     = color;
     }
 
     private static void LoadLevel(int idx)

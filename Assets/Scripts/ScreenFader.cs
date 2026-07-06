@@ -108,6 +108,41 @@ public class ScreenFader : MonoBehaviour
         SceneManager.LoadScene(sceneIndex);
     }
 
+    /// <summary>Затемнить → выполнить atBlack (напр. телепорт) → растемнить → onComplete. Сцену НЕ грузит.</summary>
+    public void FadeThrough(System.Action atBlack, System.Action onComplete = null)
+    {
+        StartCoroutine(FadeThroughRoutine(atBlack, onComplete));
+    }
+
+    private IEnumerator FadeThroughRoutine(System.Action atBlack, System.Action onComplete)
+    {
+        if (fadeImage != null) { fadeImage.gameObject.SetActive(true); SetAlpha(0f); }
+
+        float e = 0f;
+        while (e < fadeDuration)
+        {
+            e += Mathf.Min(Time.unscaledDeltaTime, 0.05f);
+            SetAlpha(Mathf.Lerp(0f, 1f, Mathf.Clamp01(e / fadeDuration)));
+            yield return null;
+        }
+        SetAlpha(1f);
+
+        atBlack?.Invoke();
+        yield return null;
+        yield return new WaitForSecondsRealtime(0.6f); // осадка (Dangling→грип→вис) проходит ПОД чёрным → проявляется устаканенным
+
+        e = 0f;
+        while (e < fadeDuration)
+        {
+            e += Mathf.Min(Time.unscaledDeltaTime, 0.05f);
+            SetAlpha(Mathf.Lerp(1f, 0f, Mathf.Clamp01(e / fadeDuration)));
+            yield return null;
+        }
+        SetAlpha(0f);
+        if (fadeImage != null) fadeImage.gameObject.SetActive(false);
+        onComplete?.Invoke();
+    }
+
     private void SetAlpha(float a)
     {
         if (fadeImage != null)

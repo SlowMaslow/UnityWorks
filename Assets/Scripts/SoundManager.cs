@@ -30,16 +30,16 @@ public class SoundManager : MonoBehaviour
 
     private void OnEnable()
     {
-        LevelManager.OnCoinCollected  += OnCoin;
-        LevelManager.OnStarCollected  += OnStar;
-        LevelManager.OnLevelCompleted += OnVictory;
+        LevelManager.OnCoinCollected     += OnCoin;
+        LevelManager.OnArtifactCollected += OnArtifact;
+        LevelManager.OnLevelCompleted    += OnVictory;
     }
 
     private void OnDisable()
     {
-        LevelManager.OnCoinCollected  -= OnCoin;
-        LevelManager.OnStarCollected  -= OnStar;
-        LevelManager.OnLevelCompleted -= OnVictory;
+        LevelManager.OnCoinCollected     -= OnCoin;
+        LevelManager.OnArtifactCollected -= OnArtifact;
+        LevelManager.OnLevelCompleted    -= OnVictory;
     }
 
     private void OnDestroy()
@@ -48,9 +48,9 @@ public class SoundManager : MonoBehaviour
     }
 
     // ─── Обработчики событий ─────────────────────────────────────────────────
-    private void OnCoin(int _)                => PlaySFX(coinSound);
-    private void OnStar(int _)                => PlaySFX(starSound);
-    private void OnVictory(LevelResult _)     => PlaySFX(victorySound);
+    private void OnCoin(int _)                  => PlaySFX(coinSound);
+    private void OnArtifact(int c, int t)       => PlaySFX(starSound);
+    private void OnVictory(LevelResult _)       => PlaySFX(victorySound);
 
     // ─── Public API ──────────────────────────────────────────────────────────
     public void PlayButtonSound() => PlaySFX(buttonSound);

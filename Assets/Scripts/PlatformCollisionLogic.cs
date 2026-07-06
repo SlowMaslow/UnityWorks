@@ -24,6 +24,9 @@ public class PlatformCollisionLogic : MonoBehaviour
     /// <summary>Сплошной коллайдер тела платформы (для SlideAroundPlatforms).</summary>
     public Collider BodyCollider { get; private set; }
 
+    [Tooltip("Пересчитывать поверхность каждый кадр — для ДВИЖУЩИХСЯ платформ (напр. анимированная кнопка). Для статичных тайлов false (дешевле).")]
+    public bool dynamicSurface = false;
+
     private Collider _triggerCol;
     private Bounds   _bodyBounds;
     private readonly HashSet<Rigidbody> _pads = new HashSet<Rigidbody>();
@@ -45,6 +48,11 @@ public class PlatformCollisionLogic : MonoBehaviour
     }
 
     private void OnDisable() => All.Remove(this);
+
+    private void FixedUpdate()
+    {
+        if (dynamicSurface) RecomputeSurface(); // движущаяся поверхность → SurfaceY всегда актуальна
+    }
 
     /// <summary>Пересчитывает верхнюю поверхность и X-границы из тела платформы.</summary>
     public void RecomputeSurface()

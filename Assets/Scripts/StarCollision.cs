@@ -15,8 +15,8 @@ public class StarCollision : MonoBehaviour
         if (isCollected) return;
         isCollected = true;
 
-        VFXManager.Instance?.PlayStarVFX(transform.position);
-        LevelManager.Instance?.RegisterStar();
+        // УСТАРЕЛО: звёзды больше не пикапы (заменены Artifact). RegisterStar удалён из LevelManager.
+        // Компонент оставлен инертным, чтобы старые уровни со звёздами компилировались.
         gameObject.SetActive(false);
     }
 }

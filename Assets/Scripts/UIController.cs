@@ -55,8 +55,8 @@ public class UIController : MonoBehaviour
     // ─── Обработчики событий ─────────────────────────────────────────────────
     private void HandleStateChanged(GameState state)
     {
-        if (state == GameState.Fail)
-            StartCoroutine(AutoRestart());
+        // Fail теперь обрабатывает ContinueController (панель «Продолжить?» → оживление / сброс).
+        // Авто-рестарт убран, чтобы не перезагружать сцену пока висит предложение continue.
     }
 
     private IEnumerator AutoRestart()

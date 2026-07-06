@@ -15,10 +15,14 @@ public class StarHUDController : MonoBehaviour
     private const string STAR_CHAR = "★";
 
     // ─── Unity ───────────────────────────────────────────────────────────────
-    private void OnEnable()  => LevelManager.OnStarCollected += Refresh;
-    private void OnDisable() => LevelManager.OnStarCollected -= Refresh;
+    // Переориентирован на артефакты: HUD показывает прогресс сбора артефактов в забеге.
+    // (Провизорно — финальный live-дисплей задач будет в сайдбаре, Task #5.)
+    private void OnEnable()  => LevelManager.OnArtifactCollected += OnArtifact;
+    private void OnDisable() => LevelManager.OnArtifactCollected -= OnArtifact;
 
     private void Start() => Refresh(0);
+
+    private void OnArtifact(int collected, int total) => Refresh(collected);
 
     // ─── Private ─────────────────────────────────────────────────────────────
     private void Refresh(int filledCount)
