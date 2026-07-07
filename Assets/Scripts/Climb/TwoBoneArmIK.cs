@@ -36,6 +36,12 @@ public class TwoBoneArmIK : MonoBehaviour
     private Quaternion _upperOffset, _lowerOffset; // смещение rest-ориентации кости от LookRotation
     private bool       _init;
 
+    // Rest-поза костей (bind), захваченная в Init. Нужна для сброса при оживлении: доснап в
+    // ClimbController.LateUpdate пишет в localPosition локтя/кисти, а Solve его НЕ сбрасывает —
+    // при разрыве оффсет замирает и портит следующий Solve после Revive (искажает форму руки).
+    private Vector3    _upperRestPos, _lowerRestPos, _handRestPos;
+    private Quaternion _upperRestRot, _lowerRestRot, _handRestRot;
+
     public void Init()
     {
         if (upper == null || lower == null || hand == null) return;
@@ -47,7 +53,26 @@ public class TwoBoneArmIK : MonoBehaviour
         _upperOffset = Quaternion.Inverse(Quaternion.LookRotation(upAim, planeNormal)) * upper.rotation;
         _lowerOffset = Quaternion.Inverse(Quaternion.LookRotation(loAim, planeNormal)) * lower.rotation;
 
+        _upperRestPos = upper.localPosition; _upperRestRot = upper.localRotation;
+        _lowerRestPos = lower.localPosition; _lowerRestRot = lower.localRotation;
+        _handRestPos  = hand.localPosition;  _handRestRot  = hand.localRotation;
+
         _init = true;
+    }
+
+    /// <summary>
+    /// Возвращает кости руки в захваченную в Init bind-позу (и rotation, И localPosition).
+    /// ClimbController зовёт это ПЕРЕД каждым Solve: доснап кисти пишет в localPosition локтя/кисти,
+    /// а Solve сам его не сбрасывает → без сброса оффсет НАКАПЛИВАЕТСЯ и садится в равновесие,
+    /// зависящее от истории (после разрыва/оживления давало излом локтя). Сброс в bind делает позу
+    /// детерминированной функцией геометрии → старт и оживление дают одинаковую руку.
+    /// </summary>
+    public void ResetPose()
+    {
+        if (!_init) return;
+        upper.localPosition = _upperRestPos; upper.localRotation = _upperRestRot;
+        lower.localPosition = _lowerRestPos; lower.localRotation = _lowerRestRot;
+        hand.localPosition  = _handRestPos;  hand.localRotation  = _handRestRot;
     }
 
     public void Solve()
