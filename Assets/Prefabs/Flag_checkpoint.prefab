@@ -10,7 +10,7 @@ GameObject:
   m_Component:
   - component: {fileID: 2619933202711734449}
   m_Layer: 0
-  m_Name: SpawnPoint
+  m_Name: CheckpointSpawn
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -45,7 +45,7 @@ GameObject:
   - component: {fileID: 1045339951844039828}
   - component: {fileID: 905415217248056391}
   m_Layer: 0
-  m_Name: Flag
+  m_Name: Flag_checkpoint
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0

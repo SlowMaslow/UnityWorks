@@ -117,10 +117,13 @@ MonoBehaviour:
     setFlagOnComplete: 
     skipIfFlagSet: 
     stopAfterComplete: 0
-  - id: info_star
-    hintText: 'COLLECT ALL 3 STARS
+  - id: info_key
+    hintText: 'COLLECT ALL 3 KEYS
 
-      ON EACH LEVEL!'
+      ON EACH LEVEL TO UNLOCK
+
+      SECRET LEVEL
+      PACK!'
     subText: 
     condition:
       rid: 7932376582882853246
@@ -238,7 +241,7 @@ MonoBehaviour:
     - rid: 7932376582882853436
       type: {class: CameraFocusAction, ns: ClimbUp.Tutorial, asm: Assembly-CSharp}
       data:
-        targetId: tutor_star
+        targetId: tutor_key
         lerpSpeed: 4
         distance: 2
         yOffset: 0
