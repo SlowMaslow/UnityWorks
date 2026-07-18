@@ -81,15 +81,19 @@ public class LevelEditorWindow : EditorWindow
     private string  _schemeText = "";
     private Vector2 _schemeScroll;
     // Радиус дотяжки холд→холд в КЛЕТКАХ (для эвристической проверки проходимости). Тюнить по плейтесту.
-    private float   _schemeReachCells = 2.5f;
+    // Дотяжка холд→холд ПО ОСЯМ (замер игрока, тайлы): climb вверх ≤4, вбок ≤4. НЕ радиус.
+    private float   _reachUpCells   = 4f;
+    private float   _reachSideCells = 4f;
     // Декор/вариация тайлов: off = максимально ровно (одна трава + один камень).
     private bool    _schemeDecorate;
+    // Генератор лабиринта: размер сетки комнат + сид (0 = случайный).
+    private int     _mazeW = 5, _mazeH = 5, _mazeSeed = 0;
 
     // ─── Tiles ────────────────────────────────────────────────────────────────
     private Sprite[]   _tileSprites = {};
     private int        _selTile = 0;
     private Vector2    _tileScroll;
-    private float _tileCell = 0.56f; // шаг сетки тайлов (редактируется в SETTINGS). < размера тайла (0.58) = лёгкое перекрытие, плотные швы
+    private float _tileCell = 0.5f; // шаг сетки тайлов (редактируется в SETTINGS). Текущий тайлсет = шаг 0.5 (при 0.56 были щели)
 
     // ─── Menu ─────────────────────────────────────────────────────────────────
     [MenuItem("Tools/Level Editor %#e")]
@@ -116,6 +120,29 @@ public class LevelEditorWindow : EditorWindow
         UnityEditor.SceneManagement.PrefabStage.prefabStageOpened -= OnPrefabStageOpened;
         EditorSceneManager.sceneClosing -= OnSceneClosing;
         _tool = Tool.Select;
+        Tools.hidden = false; // вернуть стандартный гизмо сцене при закрытии окна
+    }
+
+    /// <summary>Показать нативный гизмо при возврате в Select (placement-тулы его прятали через Tools.hidden).
+    /// Tools.current НЕ трогаем — перемещение объектов уровня идёт нашим handle (см. OnSceneGUI), чтобы
+    /// не было двух активных инструментов/гизмо.</summary>
+    private void EnsureSelectUsable() => Tools.hidden = false;
+
+    /// <summary>Снап позиции при перемещении объекта уровня: тайлы — по _tileCell (центр), прочие — по
+    /// _grid с учётом pivot. Z не трогаем.</summary>
+    private Vector3 SnapMovePos(Transform t, Vector3 newPos)
+    {
+        bool isTile = t.parent != null &&
+            (t.parent.name == "Tiles" || t.parent.GetComponent<DisappearingPlatform>() != null);
+        if (isTile)
+            return new Vector3(Mathf.Round(newPos.x / _tileCell) * _tileCell,
+                               Mathf.Round(newPos.y / _tileCell) * _tileCell, t.position.z);
+        var pivotOffset = new Vector3((0.5f - _pivotX) * t.localScale.x,
+                                      (0.5f - _pivotY) * t.localScale.y, 0f);
+        var pivotInWorld = newPos - pivotOffset;
+        var snappedPivot = new Vector3(Mathf.Round(pivotInWorld.x / _grid) * _grid,
+                                       Mathf.Round(pivotInWorld.y / _grid) * _grid, t.position.z);
+        return snappedPivot + pivotOffset;
     }
 
     // Уход в ПРЕФАБ или закрытие СЦЕНЫ с загруженным уровнем → предложить сохранить и ВЫГРУЗИТЬ
@@ -239,6 +266,7 @@ public class LevelEditorWindow : EditorWindow
             if (GUILayout.Button(ToolLabels[i], GUILayout.Height(28)))
             {
                 _tool = sel ? Tool.Select : t;
+                if (_tool == Tool.Select) EnsureSelectUsable();
                 SceneView.RepaintAll();
             }
             GUI.backgroundColor = prev;
@@ -451,65 +479,33 @@ public class LevelEditorWindow : EditorWindow
     private void OnSceneGUI(SceneView sv)
     {
         DrawGrid(sv);
-        // ── Snap on move: кастомный handle с реальным snap во время drag ──────
-        if (_snapMove && _root != null && Selection.activeTransform != null
-            && _tool == Tool.Select
+        // ── Перемещение объекта уровня СВОИМ handle (единый гизмо; нативный Move скрыт → нет дубля). ──
+        // В Select для любого объекта уровня; снап по сетке — ТОЛЬКО при включённом "Snap on move".
+        if (_tool == Tool.Select && _root != null && Selection.activeTransform != null
             && IsPartOfLevel(Selection.activeTransform.gameObject))
         {
             var t = Selection.activeTransform;
-
-            // Скрываем стандартный Unity handle, рисуем свой
-            Tools.hidden = true;
-
+            Tools.hidden = true; // прячем нативный гизмо — двигаем своим (иначе два гизмо/два тула)
             EditorGUI.BeginChangeCheck();
             var newPos = Handles.PositionHandle(t.position, Quaternion.identity);
             if (EditorGUI.EndChangeCheck())
             {
-                // Тайлы снапятся по СВОЕЙ сетке _tileCell (по ЦЕНТРУ — как при размещении);
-                // остальные объекты — по PIVOT (угол/ребро) к общей сетке _grid.
-                // Тайл = ребёнок группы "Tiles" ИЛИ контейнера DisappearingPlatform (исчезающие тайлы).
-                bool isTile = t.parent != null &&
-                    (t.parent.name == "Tiles" || t.parent.GetComponent<DisappearingPlatform>() != null);
-                Vector3 snapped;
-                if (isTile)
-                {
-                    snapped = new Vector3(
-                        Mathf.Round(newPos.x / _tileCell) * _tileCell,
-                        Mathf.Round(newPos.y / _tileCell) * _tileCell,
-                        t.position.z);
-                }
-                else
-                {
-                    var pivotOffset = new Vector3(
-                        (0.5f - _pivotX) * t.localScale.x,
-                        (0.5f - _pivotY) * t.localScale.y,
-                        0f);
-                    var pivotInWorld = newPos - pivotOffset;
-                    var snappedPivot = new Vector3(
-                        Mathf.Round(pivotInWorld.x / _grid) * _grid,
-                        Mathf.Round(pivotInWorld.y / _grid) * _grid,
-                        t.position.z);
-                    snapped = snappedPivot + pivotOffset;
-                }
-
-                // Дельта снапнутого перемещения активного объекта — применяем ко ВСЕМ выделенным
-                // объектам уровня (множественное перемещение по сетке, относит. позиции сохраняются).
-                Vector3 delta = snapped - t.position;
+                Vector3 target = _snapMove ? SnapMovePos(t, newPos)
+                                           : new Vector3(newPos.x, newPos.y, t.position.z);
+                Vector3 delta = target - t.position;
                 var selT = Selection.transforms;
-                Undo.RecordObjects(selT, "Move (Snapped)");
+                Undo.RecordObjects(selT, "Move");
                 foreach (var st in selT)
-                    if (IsPartOfLevel(st.gameObject))
-                        st.position += delta;
-
+                    if (IsPartOfLevel(st.gameObject)) st.position += delta;
                 EditorSceneManager.MarkSceneDirty(
                     UnityEngine.SceneManagement.SceneManager.GetActiveScene());
             }
         }
-        else
+        else if (_root != null)
         {
-            // Для инструментов РАЗМЕЩЕНИЯ (Tile/Platform/…) прячем стандартный гизмо — иначе активный
-            // Move/Rect-тул Unity перехватывает клик (рамка-выделение) и объект НЕ ставится.
-            // Для Select (snap off) — стандартные handles видны.
+            // Инструменты РАЗМЕЩЕНИЯ прячут нативный гизмо (иначе Move/Rect перехватывает клик-постановку).
+            // Гейт по _root: окно БЕЗ загруженного уровня (напр. фоновый/утёкший инстанс) НЕ трогает
+            // глобальный Tools.hidden — иначе перебивает активное окно (был двойной гизмо).
             Tools.hidden = (_tool != Tool.Select);
         }
 
@@ -563,6 +559,7 @@ public class LevelEditorWindow : EditorWindow
         if (e.type == EventType.KeyDown && e.keyCode == KeyCode.Escape)
         {
             _tool = Tool.Select;
+            EnsureSelectUsable();
             Repaint();
             e.Use();
         }
@@ -890,7 +887,7 @@ public class LevelEditorWindow : EditorWindow
         {
             var fc = (GameObject)PrefabUtility.InstantiatePrefab(_pfFallCollider, root.transform);
             fc.name = "FallCollider";
-            fc.transform.localPosition = new Vector3(0f, -3f, 0f);
+            fc.transform.localPosition = new Vector3(0f, -5f, 0f); // ниже, иначе тело на спавне задевает зону смерти
         }
 
         var sp = new GameObject("SpawnPoint");
@@ -912,9 +909,12 @@ public class LevelEditorWindow : EditorWindow
             ". или пробел = пусто.  Тайлы: авто (трава сверху / камень внутри).",
             MessageType.None);
 
-        _schemeReachCells = EditorGUILayout.Slider(
-            new GUIContent("Reach (клетки)", "Радиус дотяжки холд→холд для проверки проходимости. Эвристика — тюнить по плейтесту."),
-            _schemeReachCells, 1f, 5f);
+        _reachUpCells = EditorGUILayout.Slider(
+            new GUIContent("Reach ↑ (тайлы)", "Макс. разрыв ВВЕРХ холд→холд для проверки проходимости (замер игрока ≈2.5)."),
+            _reachUpCells, 1f, 5f);
+        _reachSideCells = EditorGUILayout.Slider(
+            new GUIContent("Reach ↔ (тайлы)", "Макс. разрыв ВБОК холд→холд (замер игрока ≈4)."),
+            _reachSideCells, 1f, 8f);
         _schemeDecorate = EditorGUILayout.Toggle(
             new GUIContent("Decorate/vary", "off = максимально ровно (одна трава + один камень). on = изредка цветы/кусты + чередование камня."),
             _schemeDecorate);
@@ -933,6 +933,224 @@ public class LevelEditorWindow : EditorWindow
             if (GUILayout.Button("Check reachability", GUILayout.Height(26), GUILayout.Width(150)))
                 CheckSchemeReachability(ParseScheme(_schemeText));
         }
+        // Обратный конвертер: загруженный уровень → схема в поле (для изучения/правки существующих уровней).
+        using (new EditorGUI.DisabledScope(_root == null))
+            if (GUILayout.Button("⤴ Level → схема (в поле выше)", GUILayout.Height(22)))
+                { _schemeText = ExportScheme(_root); Debug.Log("[LevelEditor] Уровень экспортирован в схему (поле Import)."); }
+
+        // ── Генератор лабиринта ──────────────────────────────────────────────
+        GUILayout.Space(4);
+        GUILayout.Label("🌀 MAZE GENERATOR (ветвления + тупики)", EditorStyles.boldLabel);
+        using (new GUILayout.HorizontalScope())
+        {
+            _mazeW    = EditorGUILayout.IntField(new GUIContent("Комнат ↔", "Ширина сетки комнат"), _mazeW);
+            _mazeH    = EditorGUILayout.IntField(new GUIContent("Комнат ↕", "Высота сетки комнат"), _mazeH);
+            _mazeSeed = EditorGUILayout.IntField(new GUIContent("Seed", "0 = случайный каждый раз"), _mazeSeed);
+        }
+        var mprev = GUI.backgroundColor;
+        GUI.backgroundColor = new Color(0.7f, 0.5f, 0.9f);
+        if (GUILayout.Button("🌀 Generate maze → в поле", GUILayout.Height(24)))
+            { _schemeText = GenerateMazeScheme(); Debug.Log("[LevelEditor] Лабиринт сгенерирован в поле Import — жми Import, чтобы построить."); }
+        GUI.backgroundColor = mprev;
+    }
+
+    /// <summary>
+    /// Генератор ЛАБИРИНТА: сетка комнат _mazeW×_mazeH, recursive-backtracker → остовное дерево (ветвления
+    /// + тупики, единственный путь спавн→финиш). Рендер под механику: комната = 3-широкая платформа
+    /// (шаг 4×4 клетки); гор.проход = соседи в дотяжке, гор.стена = тайл-колонна в зазоре; верт.проход =
+    /// промежуточный холд на +2 ряда (лестница), верт.стена = разрыв 4 ряда (>2.5, блок). Финиш — самая
+    /// дальняя комната (BFS), артефакты — в тупиках. Спавн по центру нижне-левой платформы.
+    /// </summary>
+    private string GenerateMazeScheme()
+    {
+        int CW = Mathf.Clamp(_mazeW, 2, 12), CH = Mathf.Clamp(_mazeH, 2, 12);
+        var rng = _mazeSeed == 0 ? new System.Random() : new System.Random(_mazeSeed);
+
+        // Проходы: hPass[x,y] — между (x,y) и (x+1,y); vPass[x,y] — между (x,y) и (x,y+1).
+        var hPass = new bool[CW, CH];
+        var vPass = new bool[CW, CH];
+        var vis   = new bool[CW, CH];
+        var stack = new System.Collections.Generic.Stack<Vector2Int>();
+        vis[0, 0] = true; stack.Push(new Vector2Int(0, 0));
+        while (stack.Count > 0)
+        {
+            var cur = stack.Peek();
+            int x = cur.x, y = cur.y;
+            var nb = new System.Collections.Generic.List<int>(); // 0=R,1=L,2=U,3=D
+            if (x + 1 < CW && !vis[x + 1, y]) nb.Add(0);
+            if (x - 1 >= 0 && !vis[x - 1, y]) nb.Add(1);
+            if (y + 1 < CH && !vis[x, y + 1]) nb.Add(2);
+            if (y - 1 >= 0 && !vis[x, y - 1]) nb.Add(3);
+            if (nb.Count == 0) { stack.Pop(); continue; }
+            int d = nb[rng.Next(nb.Count)];
+            int nx = x, ny = y;
+            if (d == 0) { hPass[x, y] = true; nx = x + 1; }
+            else if (d == 1) { hPass[x - 1, y] = true; nx = x - 1; }
+            else if (d == 2) { vPass[x, y] = true; ny = y + 1; }
+            else { vPass[x, y - 1] = true; ny = y - 1; }
+            vis[nx, ny] = true; stack.Push(new Vector2Int(nx, ny));
+        }
+
+        // BFS от (0,0) по проходам: расстояния + степень (для тупиков) + самая дальняя комната (финиш).
+        var dist = new int[CW, CH]; for (int x = 0; x < CW; x++) for (int y = 0; y < CH; y++) dist[x, y] = -1;
+        var q = new System.Collections.Generic.Queue<Vector2Int>();
+        dist[0, 0] = 0; q.Enqueue(new Vector2Int(0, 0));
+        Vector2Int far = new Vector2Int(0, 0);
+        while (q.Count > 0)
+        {
+            var c = q.Dequeue(); int x = c.x, y = c.y;
+            if (dist[x, y] > dist[far.x, far.y]) far = c;
+            if (x + 1 < CW && hPass[x, y] && dist[x + 1, y] < 0) { dist[x + 1, y] = dist[x, y] + 1; q.Enqueue(new Vector2Int(x + 1, y)); }
+            if (x - 1 >= 0 && hPass[x - 1, y] && dist[x - 1, y] < 0) { dist[x - 1, y] = dist[x, y] + 1; q.Enqueue(new Vector2Int(x - 1, y)); }
+            if (y + 1 < CH && vPass[x, y] && dist[x, y + 1] < 0) { dist[x, y + 1] = dist[x, y] + 1; q.Enqueue(new Vector2Int(x, y + 1)); }
+            if (y - 1 >= 0 && vPass[x, y - 1] && dist[x, y - 1] < 0) { dist[x, y - 1] = dist[x, y] + 1; q.Enqueue(new Vector2Int(x, y - 1)); }
+        }
+
+        // Тупики = комнаты со степенью 1 (кроме спавна и финиша) — туда артефакты.
+        System.Func<int,int,int> degree = (x, y) =>
+        {
+            int deg = 0;
+            if (x + 1 < CW && hPass[x, y]) deg++;
+            if (x - 1 >= 0 && hPass[x - 1, y]) deg++;
+            if (y + 1 < CH && vPass[x, y]) deg++;
+            if (y - 1 >= 0 && vPass[x, y - 1]) deg++;
+            return deg;
+        };
+
+        // ── Рендер v2: «ВЫРЕЗАНО В СКАЛЕ» — сплошной массив, коридоры карвятся. Срезки и мусорные
+        // карманы исключены ПО ПОСТРОЕНИЮ: всё, что не вырезано — камень; движение только по коридорам.
+        const int IW = 4, IH = 4, P = 5;                 // интерьер комнаты 4×4, шаг ячейки 5 (стена 1)
+        int rows = CH * P + 1, cols = CW * P + 1;
+        var g = new char[rows, cols];
+        for (int r = 0; r < rows; r++) for (int c = 0; c < cols; c++) g[r, c] = '#';
+        System.Action<int,int,char> set = (r, c, ch) => { if (r >= 0 && r < rows && c >= 0 && c < cols) g[r, c] = ch; };
+        System.Func<int,int> C0 = cx => cx * P + 1;            // левый столбец интерьера
+        System.Func<int,int> R0 = cy => (CH - 1 - cy) * P + 1; // верхний ряд интерьера (cy=0 — низ)
+
+        for (int cx = 0; cx < CW; cx++)                        // полости комнат
+        for (int cy = 0; cy < CH; cy++)
+            for (int r = 0; r < IH; r++) for (int c = 0; c < IW; c++) set(R0(cy) + r, C0(cx) + c, '.');
+
+        for (int cx = 0; cx < CW - 1; cx++)                    // горизонтальные дверные проёмы (на всю высоту)
+        for (int cy = 0; cy < CH; cy++)
+            if (hPass[cx, cy])
+                for (int r = 0; r < IH; r++) set(R0(cy) + r, C0(cx) + IW, '.');
+
+        for (int cx = 0; cx < CW; cx++)                        // вертикальные шахты: люк в потолке + ступенька
+        for (int cy = 0; cy < CH - 1; cy++)
+            if (vPass[cx, cy])
+            {
+                int ceil = R0(cy) - 1;                         // ряд-стена между cy и cy+1
+                int s = rng.Next(2) == 0 ? 0 : IW - 2;         // сторона люка (лево/право) — вариация паттернов
+                set(ceil, C0(cx) + s, '.'); set(ceil, C0(cx) + s + 1, '.');           // люк 2-шир
+                set(R0(cy) + 1, C0(cx) + s, '#'); set(R0(cy) + 1, C0(cx) + s + 1, '#'); // ступенька под люком
+            }
+
+        // Размещение на полу комнаты: воздух-ряд над полом, колонка с ЦЕЛЫМ полом снизу (не над люком).
+        System.Func<int,int,char,bool> placeOnFloor = (cy, cx2, chr) =>
+        {
+            int rAir = R0(cy) + IH - 1;
+            foreach (int off in new[] { 2, 1, 3, 0 })
+            {
+                int c = C0(cx2) + off;
+                if (g[rAir, c] == '.' && g[rAir + 1, c] == '#') { set(rAir, c, chr); return true; }
+            }
+            return false;
+        };
+        placeOnFloor(0, 0, '@');            // спавн — стартовая комната (низ-лево)
+        placeOnFloor(far.y, far.x, '^');    // финиш — самая дальняя комната (клиренс = сама полость)
+
+        // Артефакты — РОВНО 3: тупики в приоритете (зона интереса в конце тупикового пути), затем любые.
+        int placed = 0;
+        for (int pass = 0; pass < 2 && placed < 3; pass++)
+        for (int cx = 0; cx < CW && placed < 3; cx++)
+        for (int cy = 0; cy < CH && placed < 3; cy++)
+        {
+            if (pass == 0 && degree(cx, cy) != 1) continue;
+            if ((cx == 0 && cy == 0) || (cx == far.x && cy == far.y)) continue;
+            int r = R0(cy) + 2;                                // середина полости (парит, по бокам пусто)
+            foreach (int off in new[] { 2, 1 })
+            {
+                int c = C0(cx) + off;
+                if (g[r, c] == '.' && g[r, c - 1] != '*' && g[r, c + 1] != '*') { set(r, c, '*'); placed++; break; }
+            }
+        }
+
+        var sb = new System.Text.StringBuilder();
+        for (int r = 0; r < rows; r++) { for (int c = 0; c < cols; c++) sb.Append(g[r, c]); sb.Append('\n'); }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Обратный конвертер: уровень (root) → ASCII-схема. Определяет шаг сетки по тайлам, квантует позиции
+    /// объектов в грид, эмитит символы (#/*/$/@/^/=/A-Z/a-z). Для изучения/правки существующих уровней.
+    /// Финиш/чекпоинт помечаются в их позиции (не идеальный round-trip — флаги при реимпорте «падают»).
+    /// </summary>
+    private string ExportScheme(GameObject root)
+    {
+        if (root == null) return "";
+        var tiles = new System.Collections.Generic.List<Transform>();
+        var disTiles = new System.Collections.Generic.Dictionary<Transform, string>();
+        var arts = new System.Collections.Generic.List<Transform>();
+        var coins = new System.Collections.Generic.List<Transform>();
+        var buttons = new System.Collections.Generic.Dictionary<Transform, string>();
+        Transform spawn = null, finish = null, checkp = null;
+        foreach (Transform grp in root.transform)
+        {
+            switch (grp.name)
+            {
+                case "Tiles":     foreach (Transform t in grp) tiles.Add(t); break;
+                case "Artifacts": foreach (Transform t in grp) arts.Add(t);  break;
+                case "Coins":     foreach (Transform t in grp) coins.Add(t); break;
+                case "SpawnPoint": spawn = grp; break;
+                case "Flag_finish": finish = grp; break;
+                case "Disappearing":
+                    foreach (Transform cont in grp)
+                    { var dp = cont.GetComponent<DisappearingPlatform>(); string gid = dp != null ? dp.groupId : "A";
+                      foreach (Transform t in cont) disTiles[t] = gid; }
+                    break;
+                case "Triggers": case "Button":
+                    foreach (Transform t in grp) { var tt = t.GetComponentInChildren<TriggerTile>(true); buttons[t] = tt != null ? tt.groupId : "A"; }
+                    break;
+                case "Checkpoints": case "Flag":
+                    if (grp.childCount > 0) checkp = grp.GetChild(0); break;
+            }
+        }
+        if (finish == null) finish = root.transform.Find("Flag_finish");
+        if (checkp == null) checkp = root.transform.Find("Flag_checkpoint");
+
+        // Шаг сетки = мода дельт X соседних тайлов (иначе _tileCell).
+        var xs = new System.Collections.Generic.List<float>(); foreach (var t in tiles) xs.Add(t.position.x); xs.Sort();
+        var deltas = new System.Collections.Generic.Dictionary<float, int>();
+        for (int i = 1; i < xs.Count; i++)
+        { float d = Mathf.Round((xs[i] - xs[i - 1]) * 100f) / 100f; if (d > 0.05f) deltas[d] = deltas.TryGetValue(d, out int v) ? v + 1 : 1; }
+        float cell = _tileCell; int best = 0; foreach (var kv in deltas) if (kv.Value > best) { best = kv.Value; cell = kv.Key; }
+        if (cell < 0.1f) cell = _tileCell;
+
+        var cells = new System.Collections.Generic.Dictionary<(int, int), char>();
+        int minX = int.MaxValue, maxX = int.MinValue, minY = int.MaxValue, maxY = int.MinValue;
+        System.Action<Transform, char> put = (t, ch) =>
+        {
+            if (t == null) return;
+            int x = Mathf.RoundToInt(t.position.x / cell), y = Mathf.RoundToInt(t.position.y / cell);
+            if (!cells.ContainsKey((x, y)) || ch != '#') cells[(x, y)] = ch; // не-тайл перекрывает тайл
+            if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y;
+        };
+        foreach (var t in tiles) put(t, '#');
+        foreach (var kv in disTiles) put(kv.Key, char.ToLower(kv.Value.Length > 0 ? kv.Value[0] : 'a'));
+        foreach (var t in arts) put(t, '*');
+        foreach (var t in coins) put(t, '$');
+        foreach (var kv in buttons) put(kv.Key, char.ToUpper(kv.Value.Length > 0 ? kv.Value[0] : 'A'));
+        put(spawn, '@'); put(finish, '^'); put(checkp, '=');
+
+        if (minX > maxX) return "";
+        var sb = new System.Text.StringBuilder();
+        for (int y = maxY; y >= minY; y--)
+        {
+            for (int x = minX; x <= maxX; x++) sb.Append(cells.TryGetValue((x, y), out char c) ? c : '.');
+            sb.Append('\n');
+        }
+        return sb.ToString();
     }
 
     // Парсит текст в матрицу символов [row][col]; row 0 = ВЕРХ (первая строка текста).
@@ -1012,7 +1230,9 @@ public class LevelEditorWindow : EditorWindow
             }
             else if (ch >= 'A' && ch <= 'Z')
             {
-                var go = PlaceFromPrefab(_pfButton, p, GetGroup("Triggers"), "Trigger");
+                // Кнопка — на ПОВЕРХНОСТЬ полки под символом (как флаг).
+                Vector3 bp = SurfaceBelow(grid, rows, r, c, cell, world, p);
+                var go = PlaceFromPrefab(_pfButton, bp, GetGroup("Triggers"), "Trigger");
                 var tt = go != null ? go.GetComponentInChildren<TriggerTile>(true) : null;
                 if (tt != null) { tt.groupId = ch.ToString(); EditorUtility.SetDirty(tt); }
                 buttons++;
@@ -1046,9 +1266,9 @@ public class LevelEditorWindow : EditorWindow
             }
         }
 
-        // FallCollider под низ грида
+        // FallCollider под низ грида (ниже пола на запас — иначе тело на спавне сразу в зоне смерти)
         var fall = _root.transform.Find("FallCollider");
-        if (fall != null) fall.position = new Vector3((grid[rows - 1].Length) * cell * 0.5f, -2.5f, 0f);
+        if (fall != null) fall.position = new Vector3((grid[rows - 1].Length) * cell * 0.5f, -5f, 0f);
 
         Undo.RegisterCreatedObjectUndo(_root, "Import scheme");
         EditorSceneManager.MarkSceneDirty(_root.scene);
@@ -1063,7 +1283,30 @@ public class LevelEditorWindow : EditorWindow
 
         CheckSchemeReachability(grid);
         CheckFlagClearance(grid, rows, cell);
+        CheckPlacementRules(grid, rows);
         Repaint();
+    }
+
+    /// <summary>Проверки размещения: ключ (~2 тайла шириной) не в тесноте; спавн не у самого края и с полом под ним.</summary>
+    private void CheckPlacementRules(char[][] grid, int rows)
+    {
+        for (int r = 0; r < rows; r++)
+        for (int c = 0; c < grid[r].Length; c++)
+        {
+            char ch = grid[r][c];
+            if (ch == '*')
+            {
+                if (IsSolidCell(CellAt(grid, r, c - 1)) || IsSolidCell(CellAt(grid, r, c + 1)))
+                    Debug.LogWarning($"[Артефакт] колонка {c}: ключ ~2 тайла шириной, а сбоку тайл — тесно. Оставь пустые клетки по бокам (зазор ≥2).");
+            }
+            else if (ch == '@')
+            {
+                bool floorBelow = IsSolidCell(CellAt(grid, r + 1, c)) || IsSolidCell(CellAt(grid, r + 2, c));
+                bool edge = c <= 0 || c >= grid[r].Length - 1;
+                if (edge || !floorBelow)
+                    Debug.LogWarning($"[Спавн] колонка {c}: не ставь у самого края и без пола под ним — нужен пол снизу и тайлы с обеих сторон.");
+            }
+        }
     }
 
     // Флаг (финиш/чекпоинт) высокий (~2 юнита) — над его полкой нужно свободное место, иначе верхушка
@@ -1164,62 +1407,104 @@ public class LevelEditorWindow : EditorWindow
     }
 
     /// <summary>
-    /// Эвристическая проверка проходимости: BFS по грабельным холдам от спавна к финишу,
-    /// рёбра между холдами в пределах _schemeReachCells. Пишет предупреждения в консоль (НЕ гарантия —
-    /// физика климба сложнее; калибровать Reach по плейтесту).
+    /// Эвристическая проверка проходимости: BFS по грабельным холдам от спавна к финишу. Ребро между
+    /// холдами — если укладываются в дотяжку ПО ОСЯМ: |Δвысота| ≤ _reachUpCells И |Δширина| ≤ _reachSideCells
+    /// (замер игрока: вверх 2.5, вбок 4 тайла). НЕ гарантия (физика сложнее), но ловит явные разрывы.
     /// </summary>
     private void CheckSchemeReachability(char[][] grid)
     {
         if (grid.Length == 0) return;
         int rows = grid.Length;
         float cell = _tileCell;
-        float reach = _schemeReachCells * cell;
+        float maxUp   = _reachUpCells   * cell;   // мир: макс разрыв по Y (вверх И ВНИЗ — ход пэдом ограничен в обе стороны)
+        float maxSide = _reachSideCells * cell;   // мир: макс разрыв по X
+        // Дотяжка СИММЕТРИЧНА: |Δy|≤maxUp (НЕ «падение на любую глубину» — двигаемся пэд-за-пэдом), |Δx|≤maxSide.
+        System.Func<Vector2,Vector2,bool> canReach = (from, to) =>
+            Mathf.Abs(from.x - to.x) <= maxSide + 1e-4f && Mathf.Abs(from.y - to.y) <= maxUp + 1e-4f;
 
-        // Холд = верх грабельного тайла (над клеткой пусто). Позиция = центр-верх клетки.
+        int maxCol = 0; for (int r = 0; r < rows; r++) if (grid[r].Length > maxCol) maxCol = grid[r].Length;
+
+        // Холд = верх грабельного тайла (над клеткой пусто). Храним мир + грид (для стен).
         var holds = new System.Collections.Generic.List<Vector2>();
+        var hCol = new System.Collections.Generic.List<int>();
+        var hRow = new System.Collections.Generic.List<int>();
         Vector2 spawn = new Vector2(float.NaN, float.NaN), finish = new Vector2(float.NaN, float.NaN);
+        int spawnCol = -1, spawnRow = -1, finishCol = -1, finishRow = -1;
+        var artPos = new System.Collections.Generic.List<Vector2>();
+        var artCol = new System.Collections.Generic.List<int>();
+        var artRow = new System.Collections.Generic.List<int>();
         for (int r = 0; r < rows; r++)
         for (int c = 0; c < grid[r].Length; c++)
         {
             char ch = grid[r][c];
             Vector2 wp = new Vector2(c * cell, (rows - 1 - r) * cell);
             if (IsSolidCell(ch) && !IsSolidCell(CellAt(grid, r - 1, c)))
-                holds.Add(wp + Vector2.up * cell * 0.5f);
-            if (ch == '@') spawn  = wp;
-            if (ch == '^') finish = wp;
+            { holds.Add(wp + Vector2.up * cell * 0.5f); hCol.Add(c); hRow.Add(r); }
+            if (ch == '@') { spawn = wp; spawnCol = c; spawnRow = r; }
+            if (ch == '^') { finish = wp; finishCol = c; finishRow = r; }
+            if (ch == '*') { artPos.Add(wp); artCol.Add(c); artRow.Add(r); }
         }
         if (holds.Count == 0) { Debug.LogWarning("[Reach] В схеме нет грабельных холдов."); return; }
-
-        // Стартовые холды = в пределах reach от спавна (или все нижние, если спавна нет).
         int n = holds.Count;
+
+        // Стена блокирует прыжок (лабиринт!): в колонне СТРОГО между холдами есть тайл в КОРИДОРЕ пэда по
+        // высоте [верхний холд..нижний холд]. Проём (нет тайла на этой высоте) = проход сквозь стену.
+        System.Func<int,int,int,int,bool> wallBetween = (ca, ra, cb, rb) =>
+        {
+            int lo = Mathf.Min(ca, cb), hi = Mathf.Max(ca, cb);
+            int top = Mathf.Min(ra, rb), bot = Mathf.Max(ra, rb);
+            for (int c = lo + 1; c < hi; c++)
+                for (int r = top; r <= bot; r++)
+                    if (IsSolidCell(CellAt(grid, r, c))) return true;
+            return false;
+        };
+
         var visited = new bool[n];
         var queue = new System.Collections.Generic.Queue<int>();
-        for (int i = 0; i < n; i++)
-            if (float.IsNaN(spawn.x) || Vector2.Distance(holds[i], spawn) <= reach * 1.5f)
+        for (int i = 0; i < n; i++) // старт: из спавна дотягиваемся до холда И нет стены между
+            if (float.IsNaN(spawn.x) || (canReach(spawn, holds[i]) && !wallBetween(spawnCol, spawnRow, hCol[i], hRow[i])))
             { if (!visited[i]) { visited[i] = true; queue.Enqueue(i); } }
 
         while (queue.Count > 0)
         {
             int i = queue.Dequeue();
             for (int j = 0; j < n; j++)
-                if (!visited[j] && Vector2.Distance(holds[i], holds[j]) <= reach)
+                if (!visited[j] && canReach(holds[i], holds[j]) && !wallBetween(hCol[i], hRow[i], hCol[j], hRow[j]))
                 { visited[j] = true; queue.Enqueue(j); }
         }
 
-        int reachable = 0; foreach (var v in visited) if (v) reachable++;
-        int isolated = n - reachable;
+        int reachableCount = 0; foreach (var v in visited) if (v) reachableCount++;
+        int isolated = n - reachableCount;
 
         bool finishOk = false;
         if (!float.IsNaN(finish.x))
             for (int i = 0; i < n; i++)
-                if (visited[i] && Vector2.Distance(holds[i], finish) <= reach) { finishOk = true; break; }
+                if (visited[i] && canReach(holds[i], finish) && !wallBetween(hCol[i], hRow[i], finishCol, finishRow))
+                { finishOk = true; break; }
 
-        string msg = $"[Reach] Холдов: {n}, достижимо от спавна: {reachable}, изолировано: {isolated}. " +
-                     $"Reach={_schemeReachCells:F1} клетки ({reach:F2}u).";
-        if (isolated > 0 || (!float.IsNaN(finish.x) && !finishOk)) Debug.LogWarning(msg);
-        else Debug.Log(msg);
-        if (!float.IsNaN(finish.x) && !finishOk)
-            Debug.LogWarning("[Reach] ⚠ ФИНИШ не достижим от спавна по холдам — есть непроходимый разрыв (увеличь Reach или добавь холды).");
+        // Артефакт (коллектибл в воздухе) достижим, если рядом ДОСТИЖИМЫЙ холд в дотяжке без стены.
+        int artTotal = artPos.Count, artUnreach = 0;
+        for (int a = 0; a < artTotal; a++)
+        {
+            bool ok = false;
+            for (int i = 0; i < n && !ok; i++)
+                if (visited[i] && canReach(holds[i], artPos[a]) && !wallBetween(hCol[i], hRow[i], artCol[a], artRow[a]))
+                    ok = true;
+            if (!ok) artUnreach++;
+        }
+
+        // КРИТЕРИЙ ТРЕВОГИ = игровое: финиш + все артефакты достижимы. Изолированные холды сами по себе
+        // НЕ тревога (это часто внешний каркас/крыша лабиринта, куда и не надо лезть) — только инфо.
+        bool badFinish = !float.IsNaN(finish.x) && !finishOk;
+        bool critical  = badFinish || artUnreach > 0;
+        string msg = $"[Reach] Холдов: {n}, достижимо: {reachableCount}, изолировано: {isolated} " +
+                     $"(изолир. ≠ проблема, если это каркас). Финиш={(badFinish ? "НЕДОСТ." : "ok")}, " +
+                     $"артефакты {artTotal - artUnreach}/{artTotal}. Reach ↑{_reachUpCells:F1} ↔{_reachSideCells:F1}.";
+        if (critical) Debug.LogWarning(msg); else Debug.Log(msg);
+        if (badFinish)
+            Debug.LogWarning("[Reach] ⚠ ФИНИШ не достижим от спавна — разрыв больше дотяжки (↑" + _reachUpCells.ToString("F1") + "/↔" + _reachSideCells.ToString("F1") + "). Сдвинь/добавь холды.");
+        if (artUnreach > 0)
+            Debug.LogWarning($"[Reach] ⚠ {artUnreach} артефакт(ов) недостижимы от спавна — перенеси их на достижимый путь.");
     }
 
     private void LoadLevel(string levelName)
