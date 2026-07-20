@@ -44,10 +44,21 @@ public class PlatformCollisionLogic : MonoBehaviour
     private void OnEnable()
     {
         if (!All.Contains(this)) All.Add(this);
+        _pads.Clear();          // стартуем с чистым списком — см. пояснение в OnDisable
         RecomputeSurface();
     }
 
-    private void OnDisable() => All.Remove(this);
+    private void OnDisable()
+    {
+        All.Remove(this);
+        // ⚠️ Unity НЕ гарантирует OnTriggerExit при ВЫКЛЮЧЕНИИ коллайдера/компонента, а исчезающая
+        // платформа гаснет именно так. Пэд оставался в _pads навсегда → после повторного включения
+        // Contains() был истинным независимо от того, где рука, и TryGrip (быстрый путь viaTrigger)
+        // ТЕЛЕПОРТИРОВАЛ пэд на поверхность платформы. Игрок описал это как «рука магнитится на
+        // невидимую платформу» (плейтест 2026-07-18). Законный захват при этом не страдает: он идёт
+        // геометрическим путём (nearSurface), которому список не нужен.
+        _pads.Clear();
+    }
 
     private void FixedUpdate()
     {

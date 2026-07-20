@@ -584,6 +584,23 @@ public class ClimbController : MonoBehaviour
             if (i != draggingPad && state[i] == PadState.Dangling)
                 TryGrip(i);
 
+        // #8 Потеря ОПОРЫ во время перетаскивания (баг с плейтеста 2026-07-18): пэд стоял на исчезающей
+        // платформе, второй тащили по воздуху. Платформа исчезла → опорный пэд ушёл в Dangling, но
+        // ТАЩИМЫЙ остаётся кинематическим, и тело продолжало висеть на пальце — игрока можно было
+        // волочить по воздуху до первого зацепа. Причина: правило «тащить можно только имея опору»
+        // проверялось ТОЛЬКО в момент начала драга (Update), а не всё время. Теперь проверяем каждый
+        // кадр — но ПОСЛЕ авто-грипа выше, иначе сорванный пэд не успел бы перехватиться за соседнюю
+        // поверхность и драг рвался бы зря. ReleasePad сначала пробует зацепиться (игрок всё же успел
+        // поставить пэд), иначе Dangling → оба пэда динамические с гравитацией = свободное падение.
+        if (draggingPad >= 0 && state[1 - draggingPad] != PadState.Gripped)
+        {
+            if (debugLog) Debug.Log($"[Climb] Опора потеряна (Pad{1 - draggingPad}) → Pad{draggingPad} отпущен");
+            ClimbUp.Tutorial.TutorialEvents.Raise(
+                ClimbUp.Tutorial.TutorialEventIds.PadDragEnd, padRb[draggingPad].gameObject);
+            ReleasePad(draggingPad);
+            draggingPad = -1;
+        }
+
         // Свинг: тело наклоняется ВДОЛЬ направления "от опоры к телу".
         if (uprightStrength > 0f)
         {
