@@ -48,6 +48,18 @@ public class LevelEditorWindow : EditorWindow
     private bool    _snapGrid  = true;
     private bool    _snapMove  = false;
     private bool    _showGrid  = true;  // отрисовка сетки в Scene View
+    // [SerializeField] — иначе значение слетает при каждой перекомпиляции (см. гочу про поля EditorWindow).
+    [SerializeField] private bool _showGroupColors = true;  // подсветка групп триггеров цветом в сцене
+    [SerializeField] private float _groupWindow = 5f;       // окно активации для НОВЫХ групп (панель рядом с Group ID)
+    // ── Маршрут глазами МОДЕЛИ (для отладки самой модели, а не уровня) ──
+    [SerializeField] private bool _showRoute = true;
+    [SerializeField] private bool _routeStrict = true;   // учитывать перекрытия при вертикальном движении
+    [SerializeField] private string _routeExclude = "";  // считать маршрут БЕЗ этой группы (пусто = все включены)
+    private System.Collections.Generic.List<Vector3> _routePath;    // спавн → финиш по мнению модели
+    private System.Collections.Generic.List<Vector3> _routeReach;   // все холды, что модель считает достижимыми
+    private System.Collections.Generic.List<Vector3> _routeDead;    // холды, до которых модель НЕ дотягивается
+    private System.Collections.Generic.List<Vector3> _routePress;   // где жмётся кнопка
+    private string _routeInfo = "";
     private float   _grid      = 0.25f;
     // Pivot: (0=left/bottom, 0.5=center, 1=right/top)
     // Center snap (0.5,0.5) = старое поведение без смещения
@@ -94,8 +106,14 @@ public class LevelEditorWindow : EditorWindow
     private Vector2 _schemeScroll;
     // Радиус дотяжки холд→холд в КЛЕТКАХ (для эвристической проверки проходимости). Тюнить по плейтесту.
     // Дотяжка холд→холд ПО ОСЯМ (замер игрока, тайлы): climb вверх ≤4, вбок ≤4. НЕ радиус.
-    private float   _reachUpCells   = 4f;
-    private float   _reachSideCells = 4f;
+    // ⭐ ЗАМЕР НА КАЛИБРОВОЧНОМ УРОВНЕ (2026-08-18, Level_07, 15 станций):
+    //   подъём 1,2,3 клетки — берётся ВСЕГДА, при смещении вбок от 0 до 6;
+    //   подъём 4 клетки  — НЕ берётся НИ ПРИ КАКОМ смещении, включая нулевое.
+    // Значит граница чисто вертикальная, диагонального штрафа НЕТ: шаг (4,3) длиной 5 клеток
+    // проходит, а (2,4) длиной 4.5 — нет. Форма дотяжки = КОРОБКА (гипотеза про эллипс отвергнута
+    // замером). Прежнее ↑4 было завышено и стояло во ВСЕХ проверках с июля.
+    private float   _reachUpCells   = 3f;
+    private float   _reachSideCells = 6f;   // 5 и 6 взялись с запасом; выше 6 не измеряли
     // Декор/вариация тайлов: off = максимально ровно (одна трава + один камень).
     private bool    _schemeDecorate;
     // Генератор лабиринта: размер сетки комнат + сид (0 = случайный).
@@ -288,13 +306,46 @@ public class LevelEditorWindow : EditorWindow
     private void DrawSettings()
     {
         GUILayout.Label("SETTINGS", EditorStyles.boldLabel);
+        // ⚠️ Тумблеры, влияющие на ОТРИСОВКУ В СЦЕНЕ, оборачиваем в change-check: без явного
+        // SceneView.RepaintAll() сцена не перерисовывается, и выключенный грид ПРОДОЛЖАЕТ висеть на
+        // экране старой картинкой (игрок поймал 2026-08-18: «включаю/выключаю грид — не реагирует»).
+        // Это НЕ та петля, из-за которой убрали sv.Repaint(): та была ВНУТРИ OnSceneGUI (перерисовка
+        // вызывала перерисовку). Здесь — разовый репейнт из OnGUI окна и только по факту изменения.
+        EditorGUI.BeginChangeCheck();
         _snapGrid  = EditorGUILayout.Toggle("Snap on place", _snapGrid);
         _snapMove  = EditorGUILayout.Toggle("Snap on move",  _snapMove);
         _showGrid  = EditorGUILayout.Toggle("Show grid",     _showGrid);
+        _showGroupColors = EditorGUILayout.Toggle(
+            new GUIContent("Цвет групп", "Подсветить исчезающие платформы и кнопки цветом их группы (a-z) прямо в сцене"),
+            _showGroupColors);
         if (_showGrid && IsTileTool)
             _tileCell = EditorGUILayout.Slider(
                 new GUIContent("Tile cell", "Шаг тайловой сетки (постановка + snap-move + грид). Грид рисуется автоматически в тайл-инструментах."),
                 _tileCell, 0.3f, 2f);
+        if (EditorGUI.EndChangeCheck()) SceneView.RepaintAll();
+
+        // ── Маршрут глазами модели: отладка САМОЙ модели проходимости ──
+        using (new GUILayout.HorizontalScope())
+        {
+            using (new EditorGUI.DisabledScope(_root == null))
+                if (GUILayout.Button(new GUIContent("🧭 Маршрут модели",
+                    "Показать в сцене путь спавн→финиш так, как его видит модель проходимости"), GUILayout.Height(22)))
+                    ComputeRoute();
+            bool prevShow = _showRoute;
+            _showRoute = EditorGUILayout.ToggleLeft("показывать", _showRoute, GUILayout.Width(95));
+            if (prevShow != _showRoute) SceneView.RepaintAll();
+        }
+        bool prevStrict = _routeStrict;
+        _routeStrict = EditorGUILayout.ToggleLeft(
+            new GUIContent("учитывать перекрытия (иначе модель лезет сквозь пол)"), _routeStrict);
+        if (prevStrict != _routeStrict && _root != null) ComputeRoute();
+        string prevExc = _routeExclude;
+        _routeExclude = EditorGUILayout.TextField(
+            new GUIContent("Без группы", "Ключ группы, которую считать ВЫКЛЮЧЕННОЙ — видно, что именно она открывает. Пусто = все включены"),
+            _routeExclude);
+        if (prevExc != _routeExclude && _root != null) ComputeRoute();
+        if (!string.IsNullOrEmpty(_routeInfo))
+            GUILayout.Label(_routeInfo + "   (синие точки — модель достаёт, серые — нет)", EditorStyles.miniLabel);
 
         // Ключ группы: связывает Trigger-кнопку с её группой исчезающих тайлов (одинаковый groupId).
         if (_tool == Tool.TriggerButton || _tool == Tool.DisappearTile)
@@ -304,6 +355,36 @@ public class LevelEditorWindow : EditorWindow
                 new GUIContent("Group ID", "Ключ пары триггер↔исчезающие тайлы. Кнопка и её тайлы должны иметь ОДИНАКОВЫЙ Group ID."),
                 _groupId);
             if (string.IsNullOrWhiteSpace(_groupId)) _groupId = "A";
+
+            // Окно активации ЭТОЙ группы — правим прямо здесь, не выискивая компонент в иерархии.
+            // Если группа уже есть в уровне — показываем и пишем её реальное значение; если ещё нет,
+            // значение запомнится и применится при создании группы (GetOrCreateDisappearGroup).
+            var dpCur = FindDisappearGroup(_groupId);
+            float shown = dpCur != null ? dpCur.activeWindow : _groupWindow;
+            EditorGUI.BeginChangeCheck();
+            float edited = EditorGUILayout.FloatField(
+                new GUIContent("Окно, с", "Сколько секунд платформы группы твёрдые после нажатия кнопки"),
+                shown);
+            if (EditorGUI.EndChangeCheck())
+            {
+                edited = Mathf.Max(0.5f, edited);
+                _groupWindow = edited;
+                if (dpCur != null)
+                {
+                    Undo.RecordObject(dpCur, "Change active window");
+                    dpCur.activeWindow = edited;
+                    // warningTime не должен превышать окно — иначе вибрация начинается до активации.
+                    dpCur.warningTime = Mathf.Min(dpCur.warningTime, edited * 0.5f);
+                    EditorUtility.SetDirty(dpCur);
+                    EditorSceneManager.MarkSceneDirty(
+                        UnityEngine.SceneManagement.SceneManager.GetActiveScene());
+                    SceneView.RepaintAll();   // подпись секунд под кнопкой обновится сразу
+                }
+            }
+            if (dpCur == null)
+                GUILayout.Label($"Группы '{_groupId}' в уровне ещё нет — окно применится при создании.",
+                    EditorStyles.miniLabel);
+
             GUILayout.Label(_tool == Tool.TriggerButton
                     ? "🔘 Кнопка активирует тайлы с этим Group ID"
                     : "👻 Тайлы уйдут в группу с этим Group ID (полупрозрачные до нажатия)",
@@ -491,6 +572,8 @@ public class LevelEditorWindow : EditorWindow
     private void OnSceneGUI(SceneView sv)
     {
         DrawGrid(sv);
+        DrawGroupColors();
+        DrawRoute();
         // ── Перемещение объекта уровня СВОИМ handle (единый гизмо; нативный Move скрыт → нет дубля). ──
         // В Select для любого объекта уровня; снап по сетке — ТОЛЬКО при включённом "Snap on move".
         if (_tool == Tool.Select && _root != null && Selection.activeTransform != null
@@ -765,8 +848,14 @@ public class LevelEditorWindow : EditorWindow
         }
         if (best == null) return;
         // Поднимаемся до объекта, лежащего прямо в группе (а не его дочернего меша/спрайта).
+        // ⚠️ Исчезающие тайлы вложены ГЛУБЖЕ обычных: _root/Disappearing/Disappear_A/Tile. Имени
+        // «Disappear_A» в IsGroup нет, а «Disappearing» есть — поэтому подъём проскакивал сам тайл и
+        // останавливался на КОНТЕЙНЕРЕ, и ПКМ сносил всю группу разом (баг, пойман игроком 2026-08-18).
+        // Останавливаемся ещё и на контейнере группы: у него есть DisappearingPlatform.
         Transform t = best.transform;
-        while (t.parent != null && t.parent != _root.transform && !IsGroup(t.parent.name))
+        while (t.parent != null && t.parent != _root.transform
+               && !IsGroup(t.parent.name)
+               && t.parent.GetComponent<DisappearingPlatform>() == null)
             t = t.parent;
         var go = t.gameObject;
         if (go.name.Contains("Player")) return;   // игрока не удаляем
@@ -792,6 +881,373 @@ public class LevelEditorWindow : EditorWindow
     /// Находит/создаёт контейнер DisappearingPlatform с данным groupId (под группой "Disappearing").
     /// Все исчезающие тайлы одного groupId = дети одного контейнера (он же вибрирует/скрывает их вместе).
     /// </summary>
+    /// <summary>
+    /// Считает маршрут спавн→финиш ТАК, КАК ЕГО ВИДИТ МОДЕЛЬ проходимости, и запоминает для отрисовки.
+    /// Смысл не в проверке уровня, а в проверке САМОЙ МОДЕЛИ: где нарисованная линия пройдёт сквозь
+    /// потолок или перепрыгнет невозможное — там модель и врёт. Числами это искали три захода и не нашли.
+    /// ⚠️ Сетку строим НАПРЯМУЮ из объектов уровня, а не через ExportScheme: тот кладёт всё в одну карту,
+    /// и монета затирает тайл (в Level_06 так терялось ~77 камней → в платформах появлялись дыры).
+    /// </summary>
+    /// <summary>
+    /// Дотяжка — ЭЛЛИПС, а не коробка. Замеры «вверх 4» и «вбок 4» делались по отдельности, а в модель
+    /// попали как «можно и то, и другое ОДНОВРЕМЕННО»: шаг (4,3) проходил проверку `|Δx|≤4 && |Δy|≤4`,
+    /// хотя это дистанция 5 клеток — рука столько не тянет. Игрок поймал это на маршрутах A и D
+    /// (2026-08-18): модель прыгала по длинным диагоналям там, где реально лезут короткими шагами.
+    /// </summary>
+    /// <summary>Насколько близко надо подойти, чтобы нажать кнопку (клеток). Кнопку давят пэдом
+    /// вплотную — это НЕ та же дистанция, что дотяжка до холда.</summary>
+    private const int PressCells = 2;
+
+    /// <summary>Насколько траектория может отклоняться от прямой холд→цель (клеток). Это люфт руки:
+    /// чуть обойти угол можно, обвиться вокруг полки — нет (тело одно, пэда два).</summary>
+    // ⚠️ ЧИСЛО ПОДОБРАНО, А НЕ ИЗМЕРЕНО — единственный такой параметр в модели. Проверка на шести
+    // уровнях (2026-08-18): при 1.2 Level_04 объявлялся непроходимым, хотя игрок его прошёл, и
+    // терялась почти половина холдов (132 из 240). При 2.0 и выше проходятся все шесть.
+    // Ставим минимум, удовлетворяющий известно-проходимым уровням. Совсем убирать нельзя: без
+    // ограничения Level_05 разбухает со 114 холдов до 204, то есть модель начинает лазить сквозь.
+    // Мерить честно — станциями, где цель требует обхода края полки на N клеток.
+    private static float BodyCorridor = 2.0f;
+
+    private static float DistToSegment(Vector2 p, Vector2 a, Vector2 b)
+    {
+        Vector2 ab = b - a;
+        float len2 = ab.sqrMagnitude;
+        if (len2 < 1e-6f) return Vector2.Distance(p, a);
+        float t = Mathf.Clamp01(Vector2.Dot(p - a, ab) / len2);
+        return Vector2.Distance(p, a + ab * t);
+    }
+
+    /// <summary>
+    /// Форма дотяжки — ВОСЬМИУГОЛЬНИК: пределы по осям + срезанные углы. Замерено на калибровочных
+    /// уровнях (Level_07/08, 28 станций, 2026-08-18): вбок ≤6, вверх ≤3, и сумма ≤7.
+    /// Совпало 13 из 13 замеров второго уровня + потолок вверх с первого.
+    /// ⛔ Прежняя коробка (↑4 ↔4, «можно и то и другое разом») давала невозможные диагонали вроде
+    /// (4,4); гипотеза про эллипс тоже отвергнута замером — она резала законные (4,3) и (2,3).
+    /// ⚠️ Горизонталь мерилась только на висящих полках: если под целью пол, игрок просто ДОЙДЁТ
+    /// пешком, и никакая дотяжка не нужна — на этом первый калибровочный уровень и обманул.
+    /// </summary>
+    private static bool InReach(int dx, int dy, int rs, int ru)
+    {
+        int ax = Mathf.Abs(dx), ay = Mathf.Abs(dy);
+        return ax <= rs && ay <= ru && ax + ay <= ReachSumCells;
+    }
+    private const int ReachSumCells = 7;
+
+    /// <summary>
+    /// Шаг влезает в коробку, но НЕ влезает в эллипс — то есть модель разрешила длинную диагональ
+    /// вроде (4,3), а это дистанция 5 клеток. Форма дотяжки пока не измерена (замеры ↑4 и ↔4 делались
+    /// по отдельности), поэтому такие шаги не запрещаем, а ПОДСВЕЧИВАЕМ: где линия оранжевая — там
+    /// модель могла соврать, и это надо проверить руками.
+    /// </summary>
+    private static bool SuspiciousStep(int dx, int dy, int rs, int ru)
+    {
+        float ex = dx / (float)Mathf.Max(1, rs), ey = dy / (float)Mathf.Max(1, ru);
+        return ex * ex + ey * ey > 1f + 1e-4f;
+    }
+
+    private void ComputeRoute()
+    {
+        _routePath = new System.Collections.Generic.List<Vector3>();
+        _routeReach = new System.Collections.Generic.List<Vector3>();
+        _routeDead = new System.Collections.Generic.List<Vector3>();
+        _routePress = new System.Collections.Generic.List<Vector3>();
+        _routeInfo = "";
+        if (_root == null) { _routeInfo = "уровень не загружен"; return; }
+
+        float cell = _tileCell;
+        System.Func<Vector3, Vector2Int> K = p => new Vector2Int(
+            Mathf.RoundToInt(p.x / cell), Mathf.RoundToInt(p.y / cell));
+        int RU = Mathf.RoundToInt(_reachUpCells), RS = Mathf.RoundToInt(_reachSideCells);
+
+        var rock = new System.Collections.Generic.HashSet<Vector2Int>();
+        var tilesG = _root.transform.Find("Tiles");
+        if (tilesG != null) foreach (Transform t in tilesG) rock.Add(K(t.position));
+
+        var gids = new System.Collections.Generic.List<string>();
+        var gTiles = new System.Collections.Generic.List<System.Collections.Generic.List<Vector2Int>>();
+        var dis = _root.transform.Find("Disappearing");
+        if (dis != null) foreach (Transform c in dis)
+        {
+            var dpc = c.GetComponent<DisappearingPlatform>(); if (dpc == null) continue;
+            if (!string.IsNullOrEmpty(_routeExclude)
+                && dpc.groupId.Equals(_routeExclude, System.StringComparison.OrdinalIgnoreCase)) continue;
+            int gi = gids.IndexOf(dpc.groupId);
+            if (gi < 0) { gids.Add(dpc.groupId); gTiles.Add(new System.Collections.Generic.List<Vector2Int>()); gi = gids.Count - 1; }
+            foreach (Transform tl in c) gTiles[gi].Add(K(tl.position));
+        }
+        var gButtons = new System.Collections.Generic.List<System.Collections.Generic.List<Vector2Int>>();
+        for (int i = 0; i < gids.Count; i++) gButtons.Add(new System.Collections.Generic.List<Vector2Int>());
+        var trig = _root.transform.Find("Triggers");
+        if (trig != null) foreach (Transform b in trig)
+        {
+            var tt = b.GetComponentInChildren<TriggerTile>(true); if (tt == null) continue;
+            int gi = gids.IndexOf(tt.groupId); if (gi < 0) continue;
+            gButtons[gi].Add(K(b.position));
+        }
+
+        var spawn = _root.transform.Find("SpawnPoint");
+        var finish = _root.transform.Find("Flag_finish");
+        if (spawn == null || finish == null) { _routeInfo = "нет спавна или финиша"; return; }
+        Vector2Int spK = K(spawn.position), fnK = K(finish.position);
+
+        int G = gids.Count;
+        if (G > 12) { _routeInfo = "слишком много групп (" + G + ") для точного поиска"; return; }
+        int MASKS = 1 << G;
+
+        // solid по маске: камень + тайлы включённых групп
+        var solidCache = new System.Collections.Generic.Dictionary<int, System.Collections.Generic.HashSet<Vector2Int>>();
+        System.Func<int, System.Collections.Generic.HashSet<Vector2Int>> SolidFor = m =>
+        {
+            System.Collections.Generic.HashSet<Vector2Int> got;
+            if (solidCache.TryGetValue(m, out got)) return got;
+            var s = new System.Collections.Generic.HashSet<Vector2Int>(rock);
+            for (int g = 0; g < G; g++) if ((m & (1 << g)) != 0) foreach (var k in gTiles[g]) s.Add(k);
+            solidCache[m] = s; return s;
+        };
+
+        // глобальный список клеток, которые когда-либо твёрдые (индексация состояний)
+        var allCells = new System.Collections.Generic.List<Vector2Int>(SolidFor(MASKS - 1));
+        var cellIdx = new System.Collections.Generic.Dictionary<Vector2Int, int>();
+        for (int i = 0; i < allCells.Count; i++) cellIdx[allCells[i]] = i;
+        int N = allCells.Count;
+
+        // ⭐ ПЕРЕХОД ВОЗМОЖЕН, ТОЛЬКО ЕСЛИ ТУДА ПРОЙДУТ ОБА ПЭДА (объяснение игрока 2026-08-18).
+        // Игрок — не точка, а связка из двух пэдов на плечах: даже если один обогнёт край полки,
+        // второму туда уже не дотянуться, телом вокруг платформы не вывернуться. Поэтому траектория
+        // может отклоняться от прямой холд→цель лишь на BodyCorridor клеток (люфт руки), а не змейкой.
+        // Именно свободный разлив «как угодно» и порождал те диагонали, что игрок забраковал.
+        var stepCache = new System.Collections.Generic.Dictionary<long, bool>();
+        System.Func<int, Vector2Int, Vector2Int, bool> CanStep = (m, a, b) =>
+        {
+            if (!InReach(b.x - a.x, b.y - a.y, RS, RU)) return false;
+            long key = ((long)m << 48) ^ ((long)(a.x + 512) << 36) ^ ((long)(a.y + 512) << 24)
+                     ^ ((long)(b.x + 512) << 12) ^ (long)(b.y + 512);
+            bool cached;
+            if (stepCache.TryGetValue(key, out cached)) return cached;
+            var solid = SolidFor(m);
+            var from = new Vector2Int(a.x, a.y + 1);
+            var to   = new Vector2Int(b.x, b.y + 1);
+            bool ok = false;
+            if (!solid.Contains(from) && !solid.Contains(to))
+            {
+                var p1 = new Vector2(from.x, from.y);
+                var p2 = new Vector2(to.x, to.y);
+                var seen = new System.Collections.Generic.HashSet<Vector2Int> { from };
+                var qq = new System.Collections.Generic.Queue<Vector2Int>();
+                qq.Enqueue(from);
+                while (qq.Count > 0 && !ok)
+                {
+                    var c0 = qq.Dequeue();
+                    for (int k = 0; k < 4; k++)
+                    {
+                        var nb = new Vector2Int(c0.x + (k == 2 ? -1 : k == 3 ? 1 : 0),
+                                                c0.y + (k == 0 ? -1 : k == 1 ? 1 : 0));
+                        if (seen.Contains(nb) || solid.Contains(nb)) continue;
+                        if (DistToSegment(new Vector2(nb.x, nb.y), p1, p2) > BodyCorridor) continue;
+                        if (nb == to) { ok = true; break; }
+                        seen.Add(nb); qq.Enqueue(nb);
+                    }
+                }
+            }
+            stepCache[key] = ok; return ok;
+        };
+
+        System.Func<int, Vector2Int, bool> IsHold = (m, k) =>
+        { var s = SolidFor(m); return s.Contains(k) && !s.Contains(new Vector2Int(k.x, k.y + 1)); };
+
+        // ── ПОИСК ПО СОСТОЯНИЯМ (позиция, маска включённых групп) ────────────────────────────────
+        // Жать все кнопки подряд НЕ нужно: обязательны только те, без которых не добраться до финиша
+        // (замечание игрока 2026-08-18 — прошлая версия тащила маршрут через кнопки веток за ключами).
+        // Поиск сам находит минимальный набор: нажатие — такой же ход, как перемещение, и BFS
+        // предпочтёт маршрут с меньшим числом ходов.
+        int TOTAL = MASKS * N;
+        var prevState = new int[TOTAL]; var prevKind = new byte[TOTAL];   // 0 = ход, 1 = нажатие
+        var seenState = new bool[TOTAL];
+        var q = new System.Collections.Generic.Queue<int>();
+        // ⚠️ НЕ полагаемся на то, что маркер спавна попал ровно в клетку пола: в Level_01 он стоит на
+        // y=2.25, вне сетки 0.5 (уровень собран до нынешней сетки), и округление давало пустую клетку —
+        // модель не стартовала вовсе, 0 достижимых холдов. Берём ближайшую ОПОРУ под спавном.
+        {
+            var below = spK;
+            bool found = false;
+            for (int d = 0; d <= 4 && !found; d++)
+            {
+                var cand = new Vector2Int(spK.x, spK.y - d);
+                if (SolidFor(0).Contains(cand)) { below = cand; found = true; }
+            }
+            if (!found)   // совсем ничего под ногами — берём ближайший холд по расстоянию
+            {
+                int bi = -1; float bd = float.MaxValue;
+                for (int i = 0; i < N; i++)
+                {
+                    if (!IsHold(0, allCells[i])) continue;
+                    float d2 = (allCells[i] - spK).sqrMagnitude;
+                    if (d2 < bd) { bd = d2; bi = i; }
+                }
+                if (bi >= 0) below = allCells[bi];
+            }
+            spK = below;
+        }
+        for (int i = 0; i < N; i++)
+            if (IsHold(0, allCells[i]) && CanStep(0, spK, allCells[i]))
+            { int st0 = i; if (!seenState[st0]) { seenState[st0] = true; prevState[st0] = -1; q.Enqueue(st0); } }
+
+        int goal = -1;
+        while (q.Count > 0 && goal < 0)
+        {
+            int cur = q.Dequeue();
+            int m = cur / N, ci = cur % N;
+            var hc = allCells[ci];
+            if (CanStep(m, hc, fnK))
+            { goal = cur; break; }
+            // Нажать кнопку доступной группы. ⚠️ Радиус нажатия ЖЁСТЧЕ, чем дотяжка до холда: кнопку
+            // давят пэдом, стоя рядом, а не тянутся к ней через полкомнаты. При общей дотяжке (4 клетки)
+            // модель «нажимала» с 2 юнитов, маршрут проходил мимо кнопки, и это читалось как игнор
+            // кнопок (фидбэк игрока 2026-08-18).
+            for (int g = 0; g < G; g++)
+            {
+                if ((m & (1 << g)) != 0) continue;
+                bool near = false;
+                foreach (var btn in gButtons[g])
+                    if (Mathf.Abs(btn.x - hc.x) <= PressCells && Mathf.Abs(btn.y - hc.y) <= PressCells)
+                    { near = true; break; }
+                if (!near) continue;
+                int nm = m | (1 << g); int ns = nm * N + ci;
+                if (seenState[ns]) continue;
+                seenState[ns] = true; prevState[ns] = cur; prevKind[ns] = 1; q.Enqueue(ns);
+            }
+            // перейти на другой холд
+            for (int j = 0; j < N; j++)
+            {
+                int ns = m * N + j; if (seenState[ns]) continue;
+                var t2 = allCells[j];
+                if (!IsHold(m, t2)) continue;
+                if (!CanStep(m, hc, t2)) continue;
+                seenState[ns] = true; prevState[ns] = cur; prevKind[ns] = 0; q.Enqueue(ns);
+            }
+        }
+
+        var waypoints = new System.Collections.Generic.List<Vector2Int> { spK };
+        var pressed = new System.Collections.Generic.List<string>();
+        int finalMask = 0;
+        if (goal >= 0)
+        {
+            var chain = new System.Collections.Generic.List<int>();
+            for (int s = goal; s >= 0; s = prevState[s]) { chain.Add(s); if (prevState[s] < 0) break; }
+            chain.Reverse();
+            finalMask = goal / N;
+            for (int i = 0; i < chain.Count; i++)
+            {
+                int m = chain[i] / N, ci = chain[i] % N;
+                if (i > 0 && prevKind[chain[i]] == 1)
+                {
+                    int pm = chain[i - 1] / N, added = m & ~pm;
+                    for (int g = 0; g < G; g++)
+                        if ((added & (1 << g)) != 0)
+                        {
+                            pressed.Add(gids[g]);
+                            // Заводим линию НА кнопку и обратно: иначе нажатие происходило «на месте»,
+                            // маршрут визуально проходил мимо, и было не видно, что кнопку вообще жали.
+                            Vector2Int best = gButtons[g][0]; int bd3 = int.MaxValue;
+                            foreach (var btn in gButtons[g])
+                            { int d3 = Mathf.Abs(btn.x - allCells[ci].x) + Mathf.Abs(btn.y - allCells[ci].y);
+                              if (d3 < bd3) { bd3 = d3; best = btn; } }
+                            _routePress.Add(new Vector3(best.x * cell, best.y * cell + cell * 0.5f, 0f));
+                            waypoints.Add(best);
+                            waypoints.Add(allCells[ci]);
+                        }
+                    continue;
+                }
+                waypoints.Add(allCells[ci]);
+            }
+            waypoints.Add(fnK);
+        }
+
+        System.Func<Vector2Int, Vector3> W = k => new Vector3(k.x * cell, k.y * cell + cell * 0.5f, 0f);
+        foreach (var k in waypoints) _routePath.Add(W(k));
+
+        // достижимое в ИТОГОВОЙ маске (что видно игроку, прошедшему обязательный маршрут)
+        {
+            var solid = SolidFor(finalMask);
+            var hs = new System.Collections.Generic.List<Vector2Int>();
+            foreach (var k in solid) if (!solid.Contains(new Vector2Int(k.x, k.y + 1))) hs.Add(k);
+            var seen2 = new System.Collections.Generic.HashSet<Vector2Int>();
+            var q2 = new System.Collections.Generic.Queue<Vector2Int>();
+            foreach (var h in hs) if (CanStep(finalMask, spK, h) && seen2.Add(h)) q2.Enqueue(h);
+            while (q2.Count > 0)
+            { var a = q2.Dequeue();
+              foreach (var h in hs) if (!seen2.Contains(h) && CanStep(finalMask, a, h)) { seen2.Add(h); q2.Enqueue(h); } }
+            foreach (var h in hs) { if (seen2.Contains(h)) _routeReach.Add(W(h)); else _routeDead.Add(W(h)); }
+        }
+
+        var optional = new System.Collections.Generic.List<string>();
+        for (int g = 0; g < G; g++) if ((finalMask & (1 << g)) == 0) optional.Add(gids[g]);
+        _routeInfo = "финиш " + (goal >= 0 ? "ok" : "НЕ достигнут")
+            + ", шагов " + Mathf.Max(0, _routePath.Count - 1)
+            + (pressed.Count > 0 ? "  |  ОБЯЗАТЕЛЬНЫЕ кнопки: " + string.Join("→", pressed.ToArray())
+                                 : "  |  кнопки не нужны")
+            + (optional.Count > 0 ? "  |  необязательные: " + string.Join(",", optional.ToArray()) : "");
+        SceneView.RepaintAll();
+    }
+
+    /// <summary>Рисует маршрут модели: красная линия спавн→финиш, точки — что модель считает достижимым.</summary>
+    private void DrawRoute()
+    {
+        if (!_showRoute || _root == null || _routePath == null) return;
+        if (Event.current.type != EventType.Repaint) return;
+
+        if (_routeDead != null)
+        {
+            Handles.color = new Color(0.45f, 0.45f, 0.45f, 0.55f);   // модель сюда не дотянулась
+            foreach (var p in _routeDead) Handles.DrawSolidDisc(p, Vector3.forward, _tileCell * 0.10f);
+        }
+        if (_routeReach != null)
+        {
+            Handles.color = new Color(0.3f, 0.8f, 1f, 0.55f);        // достижимо по мнению модели
+            foreach (var p in _routeReach) Handles.DrawSolidDisc(p, Vector3.forward, _tileCell * 0.12f);
+        }
+        if (_routePress != null)
+        {
+            Handles.color = new Color(1f, 0.95f, 0.2f, 1f);   // жёлтое кольцо = здесь жмём кнопку
+            foreach (var p in _routePress)
+            {
+                Handles.DrawWireDisc(p, Vector3.forward, _tileCell * 0.75f);
+                Handles.DrawWireDisc(p, Vector3.forward, _tileCell * 0.95f);
+            }
+        }
+        if (_routePath.Count > 1)
+        {
+            int RS = Mathf.RoundToInt(_reachSideCells), RU = Mathf.RoundToInt(_reachUpCells);
+            for (int i = 1; i < _routePath.Count; i++)
+            {
+                int dx = Mathf.RoundToInt((_routePath[i].x - _routePath[i - 1].x) / _tileCell);
+                int dy = Mathf.RoundToInt((_routePath[i].y - _routePath[i - 1].y) / _tileCell);
+                // Диагонального штрафа НЕТ (замер на Level_07): граница чисто вертикальная, поэтому
+                // подсветка «подозрительных диагоналей» больше не нужна — модель либо разрешает шаг,
+                // либо нет, и оба случая теперь измерены.
+                bool bad = Mathf.Abs(dy) > RU || Mathf.Abs(dx) > RS;
+                Handles.color = bad ? new Color(1f, 0.55f, 0f, 1f) : new Color(1f, 0.15f, 0.15f, 0.95f);
+                Handles.DrawAAPolyLine(bad ? 7f : 5f, _routePath[i - 1], _routePath[i]);
+                Handles.DrawSolidDisc(_routePath[i], Vector3.forward, _tileCell * 0.16f);
+            }
+        }
+        Handles.color = Color.white;
+    }
+
+    /// <summary>Контейнер группы по ключу, или null. Для показа/правки её окна в панели.</summary>
+    private DisappearingPlatform FindDisappearGroup(string groupId)
+    {
+        if (_root == null) return null;
+        var parent = _root.transform.Find("Disappearing");
+        if (parent == null) return null;
+        foreach (Transform c in parent)
+        {
+            var dp = c.GetComponent<DisappearingPlatform>();
+            if (dp != null && dp.groupId == groupId) return dp;
+        }
+        return null;
+    }
+
     private GameObject GetOrCreateDisappearGroup(string groupId)
     {
         var parent = GetGroup("Disappearing");
@@ -805,6 +1261,8 @@ public class LevelEditorWindow : EditorWindow
         go.transform.localPosition = Vector3.zero; // контейнер в origin группы → _home корректен для вибрации
         var comp = go.AddComponent<DisappearingPlatform>();
         comp.groupId = groupId;
+        comp.activeWindow = Mathf.Max(0.5f, _groupWindow);           // окно, выставленное в панели
+        comp.warningTime  = Mathf.Min(comp.warningTime, comp.activeWindow * 0.5f);
         Undo.RegisterCreatedObjectUndo(go, "Create Disappear group");
         return go;
     }
@@ -2629,178 +3087,175 @@ public class LevelEditorWindow : EditorWindow
     /// холдами — если укладываются в дотяжку ПО ОСЯМ: |Δвысота| ≤ _reachUpCells И |Δширина| ≤ _reachSideCells
     /// (замер игрока: вверх 2.5, вбок 4 тайла). НЕ гарантия (физика сложнее), но ловит явные разрывы.
     /// </summary>
+    /// <summary>
+    /// ⭐ ЕДИНСТВЕННОЕ МЕСТО, ГДЕ ЖИВЁТ ПРАВИЛО ПЕРЕХОДА. Им пользуются и рисование маршрута, и все
+    /// проверки схем — специально одной функцией: когда одно правило считалось двумя способами
+    /// (makesPinch против CheckDiagonalPinch, база клиренса флага), они расходились и давали баги.
+    ///
+    /// Правило: цель в пределах дотяжки (восьмиугольник, замер на Level_07/08) И до неё есть проход
+    /// по свободным клеткам, не отклоняющийся от прямой больше чем на BodyCorridor.
+    /// Позиция стояния = клетка холда + 1 (стоим НАД тайлом).
+    /// </summary>
+    private static bool StepPossible(System.Func<Vector2Int, bool> solid,
+                                     Vector2Int a, Vector2Int b, int rs, int ru)
+    {
+        if (!InReach(b.x - a.x, b.y - a.y, rs, ru)) return false;
+        var from = new Vector2Int(a.x, a.y + 1);
+        var to   = new Vector2Int(b.x, b.y + 1);
+        if (solid(from) || solid(to)) return false;
+        if (from == to) return true;
+        var p1 = new Vector2(from.x, from.y);
+        var p2 = new Vector2(to.x, to.y);
+        var seen = new System.Collections.Generic.HashSet<Vector2Int> { from };
+        var q = new System.Collections.Generic.Queue<Vector2Int>();
+        q.Enqueue(from);
+        while (q.Count > 0)
+        {
+            var c0 = q.Dequeue();
+            for (int k = 0; k < 4; k++)
+            {
+                var nb = new Vector2Int(c0.x + (k == 2 ? -1 : k == 3 ? 1 : 0),
+                                        c0.y + (k == 0 ? -1 : k == 1 ? 1 : 0));
+                if (seen.Contains(nb) || solid(nb)) continue;
+                if (DistToSegment(new Vector2(nb.x, nb.y), p1, p2) > BodyCorridor) continue;
+                if (nb == to) return true;
+                seen.Add(nb); q.Enqueue(nb);
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Проверка проходимости схемы по ИЗМЕРЕННОЙ модели (дотяжка-восьмиугольник + коридор + порядок
+    /// кнопок). До 2026-08-18 здесь была коробка ↑4 ↔4 без учёта кнопок: она пропускала подъёмы на 4
+    /// клетки, которых в игре нет, и считала платформы групп вечно твёрдыми. Все прежние «0 проблемных»
+    /// получены той моделью и доверия не заслуживают.
+    /// </summary>
     private void CheckSchemeReachability(char[][] grid)
     {
         if (grid.Length == 0) return;
-        int rows = grid.Length;
-        float cell = _tileCell;
-        float maxUp   = _reachUpCells   * cell;   // мир: макс разрыв по Y (вверх И ВНИЗ — ход пэдом ограничен в обе стороны)
-        float maxSide = _reachSideCells * cell;   // мир: макс разрыв по X
-        // Дотяжка СИММЕТРИЧНА: |Δy|≤maxUp (НЕ «падение на любую глубину» — двигаемся пэд-за-пэдом), |Δx|≤maxSide.
-        System.Func<Vector2,Vector2,bool> canReach = (from, to) =>
-            Mathf.Abs(from.x - to.x) <= maxSide + 1e-4f && Mathf.Abs(from.y - to.y) <= maxUp + 1e-4f;
+        int rows = grid.Length, maxCol = 0;
+        for (int r = 0; r < rows; r++) if (grid[r].Length > maxCol) maxCol = grid[r].Length;
+        int RS = Mathf.RoundToInt(_reachSideCells), RU = Mathf.RoundToInt(_reachUpCells);
 
-        int maxCol = 0; for (int r = 0; r < rows; r++) if (grid[r].Length > maxCol) maxCol = grid[r].Length;
+        // Схема: строка 0 — верх. Переводим в клетки, где Y растёт ВВЕРХ (как в мире).
+        System.Func<int, int> toY = r => rows - 1 - r;
+        var rock = new System.Collections.Generic.HashSet<Vector2Int>();
+        var groupTiles = new System.Collections.Generic.Dictionary<char, System.Collections.Generic.List<Vector2Int>>();
+        var groupButtons = new System.Collections.Generic.Dictionary<char, System.Collections.Generic.List<Vector2Int>>();
+        var arts = new System.Collections.Generic.List<Vector2Int>();
+        var checkpoints = new System.Collections.Generic.List<Vector2Int>();
+        Vector2Int spawn = new Vector2Int(-9999, -9999), finish = new Vector2Int(-9999, -9999);
 
-        // Холд = верх грабельного тайла (над клеткой пусто). Храним мир + грид (для стен).
-        var holds = new System.Collections.Generic.List<Vector2>();
-        var hCol = new System.Collections.Generic.List<int>();
-        var hRow = new System.Collections.Generic.List<int>();
-        Vector2 spawn = new Vector2(float.NaN, float.NaN), finish = new Vector2(float.NaN, float.NaN);
-        int spawnCol = -1, spawnRow = -1, finishCol = -1, finishRow = -1;
-        var artPos = new System.Collections.Generic.List<Vector2>();
-        var artCol = new System.Collections.Generic.List<int>();
-        var artRow = new System.Collections.Generic.List<int>();
-        var keyPos = new System.Collections.Generic.List<Vector2>();   // чекпоинт и кнопки-триггеры
-        var keyCol = new System.Collections.Generic.List<int>();
-        var keyRow = new System.Collections.Generic.List<int>();
-        var keyChar = new System.Collections.Generic.List<char>();
         for (int r = 0; r < rows; r++)
         for (int c = 0; c < grid[r].Length; c++)
         {
             char ch = grid[r][c];
-            Vector2 wp = new Vector2(c * cell, (rows - 1 - r) * cell);
-            if (IsSolidCell(ch) && !IsSolidCell(CellAt(grid, r - 1, c)))
-            { holds.Add(wp + Vector2.up * cell * 0.5f); hCol.Add(c); hRow.Add(r); }
-            if (ch == '@') { spawn = wp; spawnCol = c; spawnRow = r; }
-            if (ch == '^') { finish = wp; finishCol = c; finishRow = r; }
-            if (ch == '*') { artPos.Add(wp); artCol.Add(c); artRow.Add(r); }
-            // Чекпоинт и кнопки-триггеры тоже критичны: до кнопки без пути не нажать, а значит
-            // появляющиеся платформы не включить и ключ за ними не взять.
-            if (ch == '=' || (ch >= 'A' && ch <= 'Z'))
-            { keyPos.Add(wp); keyCol.Add(c); keyRow.Add(r); keyChar.Add(ch); }
+            var k = new Vector2Int(c, toY(r));
+            if (ch == '#') rock.Add(k);
+            else if (ch >= 'a' && ch <= 'z')
+            {
+                if (!groupTiles.TryGetValue(ch, out var l))
+                { l = new System.Collections.Generic.List<Vector2Int>(); groupTiles[ch] = l; }
+                l.Add(k);
+            }
+            else if (ch >= 'A' && ch <= 'Z')
+            {
+                char g = char.ToLower(ch);
+                if (!groupButtons.TryGetValue(g, out var l))
+                { l = new System.Collections.Generic.List<Vector2Int>(); groupButtons[g] = l; }
+                l.Add(k);
+            }
+            else if (ch == '@') spawn = k;
+            else if (ch == '^') finish = k;
+            else if (ch == '*') arts.Add(k);
+            else if (ch == '=') checkpoints.Add(k);
         }
-        // ⚠️ Схема без спавна/финиша — это НЕ «всё достижимо», это невалидная схема. Раньше при
-        // отсутствии '@' обход стартовал со ВСЕХ холдов сразу и проверка рапортовала «всё ок».
-        if (spawnCol < 0)
-            Debug.LogWarning("[Reach] ⚠ В схеме НЕТ спавна '@' — проверка достижимости бессмысленна, поставь спавн.");
-        if (finishCol < 0)
+
+        if (spawn.x < -9000)
+        { Debug.LogWarning("[Reach] ⚠ В схеме НЕТ спавна '@' — проверять нечего."); return; }
+        if (finish.x < -9000)
             Debug.LogWarning("[Reach] ⚠ В схеме НЕТ финиша '^'.");
-        if (holds.Count == 0) { Debug.LogWarning("[Reach] В схеме нет грабельных холдов."); return; }
-        int n = holds.Count;
 
-        // ── СВЯЗНОСТЬ ВОЗДУХА (4 направления) ────────────────────────────────────────────────────
-        // Игрок перемещается ПО ВОЗДУХУ; сквозь пол/потолок хода нет, по диагонали пэд не пролезает.
-        // ⚠️ БЕЗ ЭТОГО МОДЕЛЬ ПРОПУСКАЛА ЗАПЕЧАТАННЫЕ КОМНАТЫ (фидбэк игрока 2026-07-18): wallBetween
-        // смотрит колонки МЕЖДУ холдами, а у холдов в одной колонке их нет — «подъём сквозь потолок»
-        // считался возможным, и глухой карман с ключом выглядел достижимым.
-        // ⚠️ Исчезающие тайлы (`a`-`z`) для ВОЗДУХА проходимы: по умолчанию DisappearingPlatform в
-        // preview — прозрачная и СКВОЗНАЯ, твёрдой становится лишь на activeWindow сек после кнопки.
-        // Холдом она при этом остаётся (её и цепляют, пока активна) — поэтому в дотяжке считается, а
-        // воздух через неё течёт. Иначе валидатор счёл бы комнату за такой платформой запечатанной.
-        System.Func<char,bool> blocksAir = ch => ch == '#';
-        var comp = new int[rows, maxCol];
-        for (int r = 0; r < rows; r++) for (int c = 0; c < maxCol; c++) comp[r, c] = blocksAir(CellAt(grid, r, c)) ? -1 : 0;
-        int compCount = 0;
-        for (int r = 0; r < rows; r++)
-        for (int c = 0; c < maxCol; c++)
+        // Спавн ведёт себя как холд (маркер лежит В клетке пола); если под ним пусто — ищем опору.
+        if (!rock.Contains(spawn))
+            for (int d = 1; d <= 4; d++)
+            { var cand = new Vector2Int(spawn.x, spawn.y - d); if (rock.Contains(cand)) { spawn = cand; break; } }
+
+        // Активация групп: платформы нельзя использовать, пока не нажата кнопка. Активация только
+        // ДОБАВЛЯЕТ поверхности, значит достижимость растёт монотонно — крутим неподвижную точку.
+        var active = new System.Collections.Generic.HashSet<char>();
+        var order = new System.Collections.Generic.List<char>();
+        System.Collections.Generic.HashSet<Vector2Int> reach = null;
+
+        for (int iter = 0; iter <= groupTiles.Count; iter++)
         {
-            if (comp[r, c] != 0) continue;
-            compCount++;
-            var fq = new System.Collections.Generic.Queue<Vector2Int>();
-            comp[r, c] = compCount; fq.Enqueue(new Vector2Int(c, r));
-            while (fq.Count > 0)
+            var solidSet = new System.Collections.Generic.HashSet<Vector2Int>(rock);
+            foreach (var g in active)
+                if (groupTiles.TryGetValue(g, out var l)) foreach (var k in l) solidSet.Add(k);
+            System.Func<Vector2Int, bool> solid = k => solidSet.Contains(k);
+
+            var holds = new System.Collections.Generic.List<Vector2Int>();
+            foreach (var k in solidSet) if (!solid(new Vector2Int(k.x, k.y + 1))) holds.Add(k);
+
+            reach = new System.Collections.Generic.HashSet<Vector2Int>();
+            var q = new System.Collections.Generic.Queue<Vector2Int>();
+            foreach (var h in holds)
+                if (StepPossible(solid, spawn, h, RS, RU) && reach.Add(h)) q.Enqueue(h);
+            while (q.Count > 0)
             {
-                var cur = fq.Dequeue();
-                for (int k = 0; k < 4; k++)
+                var cur = q.Dequeue();
+                foreach (var h in holds)
+                    if (!reach.Contains(h) && StepPossible(solid, cur, h, RS, RU))
+                    { reach.Add(h); q.Enqueue(h); }
+            }
+
+            // цель достижима, если рядом есть достижимый холд
+            System.Func<Vector2Int, bool> canGet = target =>
+            {
+                foreach (var h in reach) if (StepPossible(solid, h, target, RS, RU)) return true;
+                return false;
+            };
+
+            char opened = '\0';
+            foreach (var kv in groupButtons)
+            {
+                if (active.Contains(kv.Key) || !groupTiles.ContainsKey(kv.Key)) continue;
+                foreach (var btn in kv.Value)
                 {
-                    int nr = cur.y + (k == 0 ? -1 : k == 1 ? 1 : 0), nc = cur.x + (k == 2 ? -1 : k == 3 ? 1 : 0);
-                    if (nr < 0 || nr >= rows || nc < 0 || nc >= maxCol || comp[nr, nc] != 0) continue;
-                    comp[nr, nc] = compCount; fq.Enqueue(new Vector2Int(nc, nr));
+                    bool near = false;
+                    foreach (var h in reach)
+                        if (Mathf.Abs(btn.x - h.x) <= PressCells && Mathf.Abs(btn.y - h.y) <= PressCells)
+                        { near = true; break; }
+                    if (near) { opened = kv.Key; break; }
                 }
+                if (opened != '\0') break;
             }
-        }
-        // Воздух холда — клетка НАД ним (там висит игрок). Для спавна/финиша/артефакта — их собственная.
-        System.Func<int,int,int> compAt = (r, c) =>
-            (r < 0 || r >= rows || c < 0 || c >= maxCol) ? -1 : comp[r, c];
-        var holdComp = new int[n];
-        for (int i = 0; i < n; i++) holdComp[i] = compAt(hRow[i] - 1, hCol[i]);
-        int spawnComp  = spawnCol  >= 0 ? compAt(spawnRow,  spawnCol)  : -1;
-        int finishComp = finishCol >= 0 ? compAt(finishRow, finishCol) : -1;
-        System.Func<int,int,bool> sameAir = (a, b) => a > 0 && b > 0 && a == b;
-
-        // Стена блокирует прыжок (лабиринт!): в колонне СТРОГО между холдами есть тайл в КОРИДОРЕ пэда по
-        // высоте [верхний холд..нижний холд]. Проём (нет тайла на этой высоте) = проход сквозь стену.
-        System.Func<int,int,int,int,bool> wallBetween = (ca, ra, cb, rb) =>
-        {
-            int lo = Mathf.Min(ca, cb), hi = Mathf.Max(ca, cb);
-            int top = Mathf.Min(ra, rb), bot = Mathf.Max(ra, rb);
-            for (int c = lo + 1; c < hi; c++)
-                for (int r = top; r <= bot; r++)
-                    if (IsSolidCell(CellAt(grid, r, c))) return true;
-            return false;
-        };
-
-        var visited = new bool[n];
-        var queue = new System.Collections.Generic.Queue<int>();
-        for (int i = 0; i < n; i++) // старт: из спавна дотягиваемся до холда, нет стены И общий воздух
-            if (float.IsNaN(spawn.x) || (canReach(spawn, holds[i]) && !wallBetween(spawnCol, spawnRow, hCol[i], hRow[i])
-                                         && sameAir(spawnComp, holdComp[i])))
-            { if (!visited[i]) { visited[i] = true; queue.Enqueue(i); } }
-
-        while (queue.Count > 0)
-        {
-            int i = queue.Dequeue();
-            for (int j = 0; j < n; j++)
-                if (!visited[j] && canReach(holds[i], holds[j]) && !wallBetween(hCol[i], hRow[i], hCol[j], hRow[j])
-                    && sameAir(holdComp[i], holdComp[j]))
-                { visited[j] = true; queue.Enqueue(j); }
-        }
-
-        int reachableCount = 0; foreach (var v in visited) if (v) reachableCount++;
-        int isolated = n - reachableCount;
-
-        bool finishOk = false;
-        if (!float.IsNaN(finish.x))
-            for (int i = 0; i < n; i++)
-                if (visited[i] && canReach(holds[i], finish) && !wallBetween(hCol[i], hRow[i], finishCol, finishRow)
-                    && sameAir(holdComp[i], finishComp))
-                { finishOk = true; break; }
-
-        // Артефакт (коллектибл в воздухе) достижим, если рядом ДОСТИЖИМЫЙ холд в дотяжке без стены.
-        int artTotal = artPos.Count, artUnreach = 0;
-        for (int a = 0; a < artTotal; a++)
-        {
-            bool ok = false;
-            int aComp = compAt(artRow[a], artCol[a]);
-            for (int i = 0; i < n && !ok; i++)
-                if (visited[i] && canReach(holds[i], artPos[a]) && !wallBetween(hCol[i], hRow[i], artCol[a], artRow[a])
-                    && sameAir(holdComp[i], aComp))
-                    ok = true;
-            if (!ok) artUnreach++;
-        }
-
-        // Чекпоинт и кнопки — по той же логике, что артефакты.
-        int keyUnreach = 0;
-        for (int k = 0; k < keyPos.Count; k++)
-        {
-            bool ok = false;
-            int kComp = compAt(keyRow[k], keyCol[k]);
-            for (int i = 0; i < n && !ok; i++)
-                if (visited[i] && canReach(holds[i], keyPos[k]) && !wallBetween(hCol[i], hRow[i], keyCol[k], keyRow[k])
-                    && sameAir(holdComp[i], kComp))
-                    ok = true;
-            if (!ok)
+            if (opened == '\0')
             {
-                keyUnreach++;
-                Debug.LogWarning($"[Reach] ⚠ {(keyChar[k] == '=' ? "Чекпоинт" : $"Кнопка '{keyChar[k]}'")} " +
-                    $"(ряд {keyRow[k]}, колонка {keyCol[k]}) недостижим(а) от спавна." +
-                    (keyChar[k] == '=' ? "" : " Без неё появляющиеся платформы не включить."));
-            }
-        }
+                // фиксированная точка: считаем итог
+                bool finOk = finish.x < -9000 || canGet(finish);
+                int artOk = 0; foreach (var a in arts) if (canGet(a)) artOk++;
+                int cpOk = 0;  foreach (var cp in checkpoints) if (canGet(cp)) cpOk++;
+                var deadG = new System.Collections.Generic.List<string>();
+                foreach (var kv in groupTiles) if (!active.Contains(kv.Key)) deadG.Add(char.ToUpper(kv.Key).ToString());
 
-        // КРИТЕРИЙ ТРЕВОГИ = игровое: финиш + все артефакты достижимы. Изолированные холды сами по себе
-        // НЕ тревога (это часто внешний каркас/крыша лабиринта, куда и не надо лезть) — только инфо.
-        bool badFinish = !float.IsNaN(finish.x) && !finishOk;
-        bool critical  = badFinish || artUnreach > 0 || keyUnreach > 0 || spawnCol < 0 || finishCol < 0;
-        string msg = $"[Reach] Холдов: {n}, достижимо: {reachableCount}, изолировано: {isolated} " +
-                     $"(изолир. ≠ проблема, если это каркас). Финиш={(badFinish ? "НЕДОСТ." : "ok")}, " +
-                     $"артефакты {artTotal - artUnreach}/{artTotal}. Reach ↑{_reachUpCells:F1} ↔{_reachSideCells:F1}.";
-        if (critical) Debug.LogWarning(msg); else Debug.Log(msg);
-        if (badFinish)
-            Debug.LogWarning("[Reach] ⚠ ФИНИШ не достижим от спавна — разрыв больше дотяжки (↑" + _reachUpCells.ToString("F1") + "/↔" + _reachSideCells.ToString("F1") + "). Сдвинь/добавь холды.");
-        if (artUnreach > 0)
-            Debug.LogWarning($"[Reach] ⚠ {artUnreach} артефакт(ов) недостижимы от спавна — перенеси их на достижимый путь.");
+                bool bad = !finOk || artOk < arts.Count || cpOk < checkpoints.Count || deadG.Count > 0;
+                string msg = $"[Reach] Холдов достижимо: {reach.Count}. Финиш={(finOk ? "ok" : "НЕДОСТ.")}, "
+                    + $"артефакты {artOk}/{arts.Count}, чекпоинты {cpOk}/{checkpoints.Count}. "
+                    + $"Дотяжка ↔{RS} ↑{RU} (сумма ≤{ReachSumCells})"
+                    + (order.Count > 0 ? ", кнопки: " + string.Join("→", order.ConvertAll(x => char.ToUpper(x).ToString()).ToArray()) : "");
+                if (bad) Debug.LogWarning(msg); else Debug.Log(msg);
+                if (!finOk) Debug.LogWarning("[Reach] ⚠ ФИНИШ недостижим от спавна.");
+                if (artOk < arts.Count) Debug.LogWarning($"[Reach] ⚠ {arts.Count - artOk} артефакт(ов) недостижимы.");
+                if (cpOk < checkpoints.Count) Debug.LogWarning($"[Reach] ⚠ {checkpoints.Count - cpOk} чекпоинт(ов) недостижимы.");
+                if (deadG.Count > 0)
+                    Debug.LogWarning("[Reach] ⚠ Группы, чьи кнопки недостижимы (платформы мертвы): "
+                        + string.Join(",", deadG.ToArray()));
+                return;
+            }
+            active.Add(opened); order.Add(opened);
+        }
     }
 
     private void LoadLevel(string levelName)
@@ -2831,6 +3286,7 @@ public class LevelEditorWindow : EditorWindow
             UnityEngine.SceneManagement.SceneManager.GetActiveScene());
 
         Debug.Log($"[LevelEditor] Загружен: {path}");
+        ComputeRoute();   // маршрут модели сразу, без лишнего клика (считается за ~40 мс)
         Repaint();
     }
 
@@ -2944,6 +3400,102 @@ public class LevelEditorWindow : EditorWindow
     }
 
     // ─── Grid drawing ─────────────────────────────────────────────────────────
+    /// <summary>
+    /// Цвет группы триггеров по её ключу. Оттенок разносим ЗОЛОТЫМ СЕЧЕНИЕМ (0.618) — при таком шаге
+    /// соседние по алфавиту группы получают максимально далёкие цвета, и 26 групп a-z не сливаются
+    /// (равномерный шаг hue += 1/26 дал бы почти одинаковые соседние оттенки).
+    /// </summary>
+    private static Color GroupColor(string groupId)
+    {
+        char c = string.IsNullOrEmpty(groupId) ? 'A' : char.ToUpperInvariant(groupId[0]);
+        int idx = Mathf.Clamp(c - 'A', 0, 25);
+        float hue = (idx * 0.6180339887f) % 1f;
+        // Одного оттенка мало: на 15-20 группах худшая пара сходится до 12° и цвета путаются. Поэтому
+        // чётные группы — яркие/светлые, нечётные — насыщенные/тёмные. Обе худшие пары (A/N, G/T)
+        // попадают в разную чётность и различаются уже по светлоте, а не только по тону.
+        bool dark = (idx & 1) == 1;
+        return Color.HSVToRGB(hue, dark ? 0.95f : 0.70f, dark ? 0.70f : 1f);
+    }
+
+    private static GUIStyle _groupLabelStyle;   // кэш: OnSceneGUI зовётся каждый repaint, не аллоцируем
+
+    /// <summary>
+    /// Подсветка групп исчезающих платформ прямо в сцене: каждая группа — свой цвет, тайлы залиты
+    /// квадратом, кнопки обведены кругом, у всех подпись с ключом группы. Без этого при 5+ группах
+    /// в редакторе не видно, где чьи тайлы (фидбэк игрока 2026-08-18) — обычные тайлы и триггерные
+    /// выглядят одинаково. Рисуем ТОЛЬКО оверлеем (Handles), сами объекты НЕ трогаем: цвет спрайтов
+    /// принадлежит рантайму (DisappearingPlatform красит их сам через previewAlpha).
+    /// </summary>
+    private void DrawGroupColors()
+    {
+        if (!_showGroupColors || _root == null) return;
+        if (Event.current.type != EventType.Repaint) return;   // не тратим на layout/mouse-события
+
+        float half = _tileCell * 0.5f;
+        if (_groupLabelStyle == null) _groupLabelStyle = new GUIStyle(EditorStyles.boldLabel);
+        var labelStyle = _groupLabelStyle;
+
+        // Окно активации каждой группы — чтобы подписать его под кнопкой. Значение живёт в
+        // DisappearingPlatform (импортёр считает его от длины пути, см. ApplyTriggerWindows),
+        // а кнопка знает только groupId — связываем по ключу.
+        var windows = new System.Collections.Generic.Dictionary<string, float>();
+
+        // ── Тайлы групп: контейнеры Disappear_X под "Disappearing" ──
+        var dis = _root.transform.Find("Disappearing");
+        if (dis != null)
+            foreach (Transform cont in dis)
+            {
+                var dp = cont.GetComponent<DisappearingPlatform>();
+                if (dp == null) continue;
+                windows[dp.groupId] = dp.activeWindow;
+                Color col = GroupColor(dp.groupId);
+                labelStyle.normal.textColor = col;
+
+                foreach (Transform tile in cont)
+                {
+                    Vector3 p = tile.position; p.z = 0f;
+                    var quad = new Vector3[]
+                    {
+                        p + new Vector3(-half, -half), p + new Vector3(-half, half),
+                        p + new Vector3( half,  half), p + new Vector3( half, -half)
+                    };
+                    Handles.DrawSolidRectangleWithOutline(quad,
+                        new Color(col.r, col.g, col.b, 0.30f), new Color(col.r, col.g, col.b, 0.95f));
+                }
+                // Подпись — один раз на группу, у первого тайла (иначе каша из букв на каждой клетке).
+                if (cont.childCount > 0)
+                {
+                    Vector3 lp = cont.GetChild(0).position; lp.z = 0f;
+                    Handles.Label(lp + Vector3.up * (half + 0.12f), dp.groupId, labelStyle);
+                }
+            }
+
+        // ── Кнопки: под "Triggers", цвет по TriggerTile.groupId ──
+        var trig = _root.transform.Find("Triggers");
+        if (trig != null)
+            foreach (Transform btn in trig)
+            {
+                var tt = btn.GetComponentInChildren<TriggerTile>(true);
+                if (tt == null) continue;
+                Color col = GroupColor(tt.groupId);
+                labelStyle.normal.textColor = col;
+                Vector3 p = btn.position; p.z = 0f;
+
+                Handles.color = new Color(col.r, col.g, col.b, 0.95f);
+                Handles.DrawWireDisc(p, Vector3.forward, half * 1.15f);
+                Handles.DrawWireDisc(p, Vector3.forward, half * 0.75f);
+                Handles.Label(p + Vector3.up * (half + 0.12f), tt.groupId, labelStyle);
+
+                // Окно активации ПОД кнопкой. «—» = у группы нет тайлов (кнопка висит впустую,
+                // сразу видно опечатку в groupId).
+                string sec = windows.TryGetValue(tt.groupId, out float w)
+                    ? w.ToString("0.#") + " с" : "—";
+                Handles.Label(p + Vector3.down * (half + 0.34f) + Vector3.left * half * 0.6f, sec, labelStyle);
+            }
+
+        Handles.color = Color.white;
+    }
+
     private void DrawGrid(SceneView sv)
     {
         // Грид рисуем ТОЛЬКО когда есть активно загруженный уровень — иначе редактор пассивен в сцене.
