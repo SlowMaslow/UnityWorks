@@ -1209,6 +1209,11 @@ public class LevelEditorWindow : EditorWindow
                 int keyNo = 0;
                 foreach (Transform a in artsG)
                 {
+                    // ⚠️ КЛЮЧ — НЕ «ВСЁ, ЧТО ЛЕЖИТ В Artifacts». Считаем ключом только то, что несёт
+                    // компонент Artifact (он и даёт подбор через OnTriggerEnter). В Level_01 в этом же
+                    // контейнере лежит TutorArtifact — вещь другой природы, не ключ (уточнил игрок
+                    // 2026-08-31), и из-за него уровень показывал 4 ключа вместо трёх.
+                    if (a.GetComponentInChildren<Artifact>(true) == null) continue;
                     keysTotal++; keyNo++;
                     var ak = K(a.position);
                     // ⚠️ Берём состояние с БЛИЖАЙШИМ К КЛЮЧУ холдом (число ходов — только тай-брейк).
@@ -1559,10 +1564,49 @@ public class LevelEditorWindow : EditorWindow
     /// впритык не берётся (плейтест 2026-07-18). Держим ряд запаса.</summary>
     private const int MazeClimb = 3;
 
+    /// <summary>
+    /// ⭐ ГЕНЕРАТОР НЕ ОТДАЁТ БРАК: строит схему, САМ проверяет её моделью проходимости
+    /// (<see cref="AnalyseScheme"/>) и, если что-то не так, перебрасывает со следующим сидом.
+    /// Требование игрока (2026-08-31): «нужно в целом исключить такие моменты, чтобы генератор
+    /// генерировал только правильные уровни» — точечно чинить конкретный сид бессмысленно.
+    ///
+    /// Почему перебросом, а не починкой на месте: брак редкий (замер — 4 схемы из 405, все одного
+    /// вида: ступенька под люком встала во всю ширину комнаты и запечатала её пол вместе с мостом
+    /// и кнопками), а починка «на месте» правит геометрию уже после всех проходов и легко родит
+    /// новый зажим. Переброс детерминирован: сид n даёт n, n+1, n+2… — один и тот же результат
+    /// при повторе. При _mazeSeed = 0 (случайный) каждая попытка просто случайная.
+    /// </summary>
     private string GenerateMazeScheme()
     {
+        const int MaxTries = 12;
+        string best = null; int bestScore = int.MinValue; int usedTry = 0;
+        for (int tryNo = 0; tryNo < MaxTries; tryNo++)
+        {
+            string scheme = GenerateMazeSchemeOnce(_mazeSeed == 0 ? 0 : _mazeSeed + tryNo);
+            var lines = scheme.Replace("\r", "").Split('\n');
+            var grid = new char[lines.Length][];
+            for (int i = 0; i < lines.Length; i++) grid[i] = lines[i].ToCharArray();
+            var rep = AnalyseScheme(grid);
+            if (!rep.Bad)
+            {
+                if (tryNo > 0)
+                    Debug.Log($"[Maze] Схема принята с попытки {tryNo + 1}: предыдущие забракованы самопроверкой.");
+                return scheme;
+            }
+            // Худшее — недостижимая цель, дальше мёртвые группы, дальше замурованный объём.
+            int score = -1000 * ((rep.finishOk ? 0 : 1) + (rep.artTotal - rep.artOk) + (rep.cpTotal - rep.cpOk))
+                        - 100 * rep.deadGroups.Count - rep.sealedPocket;
+            if (score > bestScore) { bestScore = score; best = scheme; usedTry = tryNo; }
+        }
+        Debug.LogWarning($"[Maze] За {MaxTries} попыток чистая схема не вышла — отдаю лучшую из них "
+            + $"(попытка {usedTry + 1}). Жми «Проверить схему», чтобы увидеть, что именно не так.");
+        return best;
+    }
+
+    private string GenerateMazeSchemeOnce(int seedValue)
+    {
         int CW = Mathf.Clamp(_mazeW, 2, 12), CH = Mathf.Clamp(_mazeH, 2, 12);
-        var rng = _mazeSeed == 0 ? new System.Random() : new System.Random(_mazeSeed);
+        var rng = seedValue == 0 ? new System.Random() : new System.Random(seedValue);
 
         // ── ФОРМА ЛАБИРИНТА (фидбэк игрока: уровни не должны быть все квадратные). Часть клеток
         // сетки объявляется МЁРТВОЙ — комнат там нет, лишний камень обрезается, и силуэт получается
@@ -3232,15 +3276,34 @@ public class LevelEditorWindow : EditorWindow
                                       Vector2Int a, Vector2Int target, int rs, int ru)
     {
         var from = new Vector2Int(a.x, a.y + 1);
-        for (int dx = -1; dx <= 1; dx++)
-        for (int dy = -1; dy <= 1; dy++)
+        var t = target;
+        // ⛔ ОКРЕСТНОСТЬ 3×3 ВОКРУГ ЦЕЛИ — ЗАПРЕЩЁННЫЙ ПРИЁМ, дважды обжёгся за один день (2026-08-31).
+        // Идея была: цель может оказаться В КАМНЕ (ключ вросший в скалу; позиция вне сетки 0.5,
+        // округляемая в тайл) — значит примем касание из любой свободной клетки рядом. Оба раза это
+        // выходило боком, потому что «любая из 9» — это ВЫБОР САМОГО УДОБНОГО варианта:
+        //   1. дотяжка мерилась до клетки окрестности → та работала ПРИБАВКОЙ к вылету (вбок 7, вверх 4);
+        //   2. хуже: клетка бралась С ДРУГОЙ СТОРОНЫ ПЛИТЫ, и модель касалась цели СКВОЗЬ ПОЛ.
+        //      Level_05: флаг стоит на полу, его позиция y=7.25 округлилась в клетку 14 — то есть В САМ
+        //      ПОЛ, — и модель «дотянулась» до него снизу, из-под плиты, через свободный ряд y=12.
+        // Правильно: цель, попавшую в камень, ОДИН РАЗ привести к ближайшей свободной клетке (объекты
+        // стоят НА тайле, поэтому вверх дешевле, чем вбок, и тем более чем вниз), а дальше обычная
+        // проверка — дотяжка до этой клетки и путь ровно в неё.
+        if (solid(t))
         {
-            var t = new Vector2Int(target.x + dx, target.y + dy);
-            if (solid(t)) continue;
-            if (!InReach(t.x - from.x, t.y - from.y, rs, ru)) continue;
-            if (PathPossible(solid, from, t)) return true;
+            int bestCost = int.MaxValue; bool found = false; Vector2Int best = t;
+            for (int dx = -1; dx <= 1; dx++)
+            for (int dy = -1; dy <= 1; dy++)
+            {
+                var c = new Vector2Int(t.x + dx, t.y + dy);
+                if (solid(c)) continue;
+                int cost = Mathf.Abs(dx) * 3 + (dy == 1 ? 0 : dy == 0 ? 2 : 4);
+                if (cost < bestCost) { bestCost = cost; best = c; found = true; }
+            }
+            if (!found) return false;
+            t = best;
         }
-        return false;
+        if (!InReach(t.x - from.x, t.y - from.y, rs, ru)) return false;
+        return PathPossible(solid, from, t);
     }
 
     /// <summary>
@@ -3284,15 +3347,38 @@ public class LevelEditorWindow : EditorWindow
         return false;
     }
 
+    /// <summary>Итог разбора схемы. Одна структура на всех потребителей: и лог валидатора, и
+    /// самопроверка генератора (см. <see cref="AnalyseScheme"/>).</summary>
+    private class SchemeReport
+    {
+        public bool noSpawn, noFinish;
+        public bool finishOk;
+        public int artOk, artTotal, cpOk, cpTotal;
+        public int reachHolds, totalHolds;
+        public int sealedPocket;      // самый большой ЗАМУРОВАННЫЙ карман (внутри массива, не крыша)
+        public System.Collections.Generic.List<string> deadGroups = new System.Collections.Generic.List<string>();
+        public System.Collections.Generic.List<string> pressOrder = new System.Collections.Generic.List<string>();
+        /// <summary>Брак: то, из-за чего уровень нельзя отдавать игроку.</summary>
+        public bool Bad => noSpawn || !finishOk || artOk < artTotal || cpOk < cpTotal
+                        || deadGroups.Count > 0 || sealedPocket > SealedPocketLimit;
+    }
+
+    /// <summary>Замурованный карман крупнее этого — брак. Ноль требовать нельзя: мелкие карманы на
+    /// 1-25 холдов есть у большинства лабиринтов (замер по 36 схемам), это складки рельефа. А вот
+    /// запечатанная КОМНАТА даёт кратно больше — у пойманного случая (8×8 seed 6) их было 90.</summary>
+    private const int SealedPocketLimit = 30;
+
     /// <summary>
-    /// Проверка проходимости схемы по ИЗМЕРЕННОЙ модели (дотяжка-восьмиугольник + бюджет пути + порядок
-    /// кнопок). До 2026-08-18 здесь была коробка ↑4 ↔4 без учёта кнопок: она пропускала подъёмы на 4
+    /// Разбор схемы по ИЗМЕРЕННОЙ модели (дотяжка-восьмиугольник + бюджет пути + порядок кнопок).
+    /// До 2026-08-18 здесь была коробка ↑4 ↔4 без учёта кнопок: она пропускала подъёмы на 4
     /// клетки, которых в игре нет, и считала платформы групп вечно твёрдыми. Все прежние «0 проблемных»
     /// получены той моделью и доверия не заслуживают.
+    /// ⚠️ НИЧЕГО НЕ ЛОГИРУЕТ: генератор гоняет её десятками за одну генерацию.
     /// </summary>
-    private void CheckSchemeReachability(char[][] grid)
+    private SchemeReport AnalyseScheme(char[][] grid)
     {
-        if (grid.Length == 0) return;
+        var rep = new SchemeReport();
+        if (grid.Length == 0) { rep.noSpawn = true; return rep; }
         int rows = grid.Length, maxCol = 0;
         for (int r = 0; r < rows; r++) if (grid[r].Length > maxCol) maxCol = grid[r].Length;
         int RS = Mathf.RoundToInt(_reachSideCells), RU = Mathf.RoundToInt(_reachUpCells);
@@ -3331,10 +3417,9 @@ public class LevelEditorWindow : EditorWindow
             else if (ch == '=') checkpoints.Add(k);
         }
 
-        if (spawn.x < -9000)
-        { Debug.LogWarning("[Reach] ⚠ В схеме НЕТ спавна '@' — проверять нечего."); return; }
-        if (finish.x < -9000)
-            Debug.LogWarning("[Reach] ⚠ В схеме НЕТ финиша '^'.");
+        rep.artTotal = arts.Count; rep.cpTotal = checkpoints.Count;
+        if (spawn.x < -9000) { rep.noSpawn = true; return rep; }
+        if (finish.x < -9000) rep.noFinish = true;
 
         // Спавн ведёт себя как холд (маркер лежит В клетке пола); если под ним пусто — ищем опору.
         if (!rock.Contains(spawn))
@@ -3393,28 +3478,85 @@ public class LevelEditorWindow : EditorWindow
             if (opened == '\0')
             {
                 // фиксированная точка: считаем итог
-                bool finOk = finish.x < -9000 || canGet(finish);
-                int artOk = 0; foreach (var a in arts) if (canGet(a)) artOk++;
-                int cpOk = 0;  foreach (var cp in checkpoints) if (canGet(cp)) cpOk++;
-                var deadG = new System.Collections.Generic.List<string>();
-                foreach (var kv in groupTiles) if (!active.Contains(kv.Key)) deadG.Add(char.ToUpper(kv.Key).ToString());
-
-                bool bad = !finOk || artOk < arts.Count || cpOk < checkpoints.Count || deadG.Count > 0;
-                string msg = $"[Reach] Холдов достижимо: {reach.Count}. Финиш={(finOk ? "ok" : "НЕДОСТ.")}, "
-                    + $"артефакты {artOk}/{arts.Count}, чекпоинты {cpOk}/{checkpoints.Count}. "
-                    + $"Дотяжка ↔{RS} ↑{RU} (сумма ≤{ReachSumCells})"
-                    + (order.Count > 0 ? ", кнопки: " + string.Join("→", order.ConvertAll(x => char.ToUpper(x).ToString()).ToArray()) : "");
-                if (bad) Debug.LogWarning(msg); else Debug.Log(msg);
-                if (!finOk) Debug.LogWarning("[Reach] ⚠ ФИНИШ недостижим от спавна.");
-                if (artOk < arts.Count) Debug.LogWarning($"[Reach] ⚠ {arts.Count - artOk} артефакт(ов) недостижимы.");
-                if (cpOk < checkpoints.Count) Debug.LogWarning($"[Reach] ⚠ {checkpoints.Count - cpOk} чекпоинт(ов) недостижимы.");
-                if (deadG.Count > 0)
-                    Debug.LogWarning("[Reach] ⚠ Группы, чьи кнопки недостижимы (платформы мертвы): "
-                        + string.Join(",", deadG.ToArray()));
-                return;
+                rep.finishOk = finish.x < -9000 || canGet(finish);
+                foreach (var a in arts) if (canGet(a)) rep.artOk++;
+                foreach (var cp in checkpoints) if (canGet(cp)) rep.cpOk++;
+                foreach (var kv in groupTiles)
+                    if (!active.Contains(kv.Key)) rep.deadGroups.Add(char.ToUpper(kv.Key).ToString());
+                foreach (var o in order) rep.pressOrder.Add(char.ToUpper(o).ToString());
+                rep.reachHolds = reach.Count; rep.totalHolds = holds.Count;
+                rep.sealedPocket = LargestSealedPocket(solidSet, holds, reach);
+                return rep;
             }
             active.Add(opened); order.Add(opened);
         }
+        return rep;
+    }
+
+    /// <summary>
+    /// Самый большой ЗАМУРОВАННЫЙ карман: связная группа недостижимых холдов ВНУТРИ массива.
+    /// «Внутри» = выше по колонке есть камень, то есть над холдом потолок, а не небо — иначе в счёт
+    /// попадала бы внешняя крыша лабиринта, которая недостижима по построению и никому не мешает.
+    /// Ловит случай, ради которого и заведена: ступенька под люком встала во всю ширину комнаты и
+    /// запечатала её пол вместе с мостом и кнопками (8×8 seed 6, 12×3 seed 13).
+    /// </summary>
+    private static int LargestSealedPocket(System.Collections.Generic.HashSet<Vector2Int> solid,
+                                           System.Collections.Generic.List<Vector2Int> holds,
+                                           System.Collections.Generic.HashSet<Vector2Int> reach)
+    {
+        int maxY = 0;
+        foreach (var k in solid) if (k.y > maxY) maxY = k.y;
+        var inner = new System.Collections.Generic.HashSet<Vector2Int>();
+        foreach (var h in holds)
+        {
+            if (reach.Contains(h)) continue;
+            for (int y = h.y + 2; y <= maxY; y++)
+                if (solid.Contains(new Vector2Int(h.x, y))) { inner.Add(h); break; }
+        }
+        int best = 0;
+        var seen = new System.Collections.Generic.HashSet<Vector2Int>();
+        foreach (var start in inner)
+        {
+            if (!seen.Add(start)) continue;
+            int size = 0;
+            var q = new System.Collections.Generic.Queue<Vector2Int>();
+            q.Enqueue(start);
+            while (q.Count > 0)
+            {
+                var c = q.Dequeue(); size++;
+                for (int dx = -2; dx <= 2; dx++)
+                for (int dy = -2; dy <= 2; dy++)
+                {
+                    var nb = new Vector2Int(c.x + dx, c.y + dy);
+                    if (inner.Contains(nb) && seen.Add(nb)) q.Enqueue(nb);
+                }
+            }
+            if (size > best) best = size;
+        }
+        return best;
+    }
+
+    /// <summary>Лог-обёртка над <see cref="AnalyseScheme"/> — то, что видит игрок в консоли.</summary>
+    private void CheckSchemeReachability(char[][] grid)
+    {
+        var rep = AnalyseScheme(grid);
+        if (rep.noSpawn) { Debug.LogWarning("[Reach] ⚠ В схеме НЕТ спавна '@' — проверять нечего."); return; }
+        if (rep.noFinish) Debug.LogWarning("[Reach] ⚠ В схеме НЕТ финиша '^'.");
+        int RS = Mathf.RoundToInt(_reachSideCells), RU = Mathf.RoundToInt(_reachUpCells);
+        string msg = $"[Reach] Холдов достижимо: {rep.reachHolds}/{rep.totalHolds}. "
+            + $"Финиш={(rep.finishOk ? "ok" : "НЕДОСТ.")}, артефакты {rep.artOk}/{rep.artTotal}, "
+            + $"чекпоинты {rep.cpOk}/{rep.cpTotal}. Дотяжка ↔{RS} ↑{RU} (сумма ≤{ReachSumCells})"
+            + (rep.pressOrder.Count > 0 ? ", кнопки: " + string.Join("→", rep.pressOrder.ToArray()) : "");
+        if (rep.Bad) Debug.LogWarning(msg); else Debug.Log(msg);
+        if (!rep.finishOk) Debug.LogWarning("[Reach] ⚠ ФИНИШ недостижим от спавна.");
+        if (rep.artOk < rep.artTotal) Debug.LogWarning($"[Reach] ⚠ {rep.artTotal - rep.artOk} артефакт(ов) недостижимы.");
+        if (rep.cpOk < rep.cpTotal) Debug.LogWarning($"[Reach] ⚠ {rep.cpTotal - rep.cpOk} чекпоинт(ов) недостижимы.");
+        if (rep.deadGroups.Count > 0)
+            Debug.LogWarning("[Reach] ⚠ Группы, чьи кнопки недостижимы (платформы мертвы): "
+                + string.Join(",", rep.deadGroups.ToArray()));
+        if (rep.sealedPocket > SealedPocketLimit)
+            Debug.LogWarning($"[Reach] ⚠ Замурованная зона: {rep.sealedPocket} холдов внутри массива, "
+                + "куда не попасть (порог " + SealedPocketLimit + ").");
     }
 
     private void LoadLevel(string levelName)
