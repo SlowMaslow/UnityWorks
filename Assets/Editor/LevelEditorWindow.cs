@@ -59,6 +59,9 @@ public class LevelEditorWindow : EditorWindow
     private System.Collections.Generic.List<Vector3> _routeReach;   // все холды, что модель считает достижимыми
     private System.Collections.Generic.List<Vector3> _routeDead;    // холды, до которых модель НЕ дотягивается
     private System.Collections.Generic.List<Vector3> _routePress;   // где жмётся кнопка
+    private System.Collections.Generic.List<System.Collections.Generic.List<Vector3>> _routeBranch; // ветки к ключам
+    private System.Collections.Generic.List<Vector3> _routeLostKeys;  // ключи, до которых пути нет
+    private System.Collections.Generic.List<Vector3> _routeBranchPress; // кнопки, нужные ТОЛЬКО ради ключа
     private string _routeInfo = "";
     private float   _grid      = 0.25f;
     // Pivot: (0=left/bottom, 0.5=center, 1=right/top)
@@ -898,24 +901,15 @@ public class LevelEditorWindow : EditorWindow
     /// вплотную — это НЕ та же дистанция, что дотяжка до холда.</summary>
     private const int PressCells = 2;
 
-    /// <summary>Насколько траектория может отклоняться от прямой холд→цель (клеток). Это люфт руки:
-    /// чуть обойти угол можно, обвиться вокруг полки — нет (тело одно, пэда два).</summary>
-    // ⚠️ ЧИСЛО ПОДОБРАНО, А НЕ ИЗМЕРЕНО — единственный такой параметр в модели. Проверка на шести
-    // уровнях (2026-08-18): при 1.2 Level_04 объявлялся непроходимым, хотя игрок его прошёл, и
-    // терялась почти половина холдов (132 из 240). При 2.0 и выше проходятся все шесть.
-    // Ставим минимум, удовлетворяющий известно-проходимым уровням. Совсем убирать нельзя: без
-    // ограничения Level_05 разбухает со 114 холдов до 204, то есть модель начинает лазить сквозь.
-    // Мерить честно — станциями, где цель требует обхода края полки на N клеток.
-    private static float BodyCorridor = 2.0f;
-
-    private static float DistToSegment(Vector2 p, Vector2 a, Vector2 b)
-    {
-        Vector2 ab = b - a;
-        float len2 = ab.sqrMagnitude;
-        if (len2 < 1e-6f) return Vector2.Distance(p, a);
-        float t = Mathf.Clamp01(Vector2.Dot(p - a, ab) / len2);
-        return Vector2.Distance(p, a + ab * t);
-    }
+    // ⛔ КОРИДОР (BodyCorridor + DistToSegment) УДАЛЁН 2026-08-31 — НЕ ВОЗВРАЩАТЬ.
+    // Это было единственное подобранное на глаз число модели: «траектория не отклоняется от прямой
+    // холд→цель дальше 2.0 клеток». Заменён БЮДЖЕТОМ ПУТИ в PathPossible (длина обхода ≤ ReachSumCells),
+    // который делает ту же работу, но выводится из ЗАМЕРА, а не из подгонки.
+    // Почему убрали: на Level_03 модель отказала в обычном ходе (2,2) — с полки (26.5,7.0) на (27.5,8.0).
+    // Рука обязана обогнуть саму целевую полку справа: путь 6 шагов, отклонение 2.12 клетки при
+    // разрешённых 2.0. Отказ с запасом в 0.12 клетки; игрок прислал скрин и подтвердил, что ход берётся.
+    // Проверено после удаления: спорный нырок под стену на Level_06 (6 вбок + 2 на обход = 8 > 7)
+    // ПО-ПРЕЖНЕМУ запрещён, то есть послаблением это не стало — просто ограничение стало честным.
 
     /// <summary>
     /// Форма дотяжки — ВОСЬМИУГОЛЬНИК: пределы по осям + срезанные углы. Замерено на калибровочных
@@ -951,6 +945,9 @@ public class LevelEditorWindow : EditorWindow
         _routeReach = new System.Collections.Generic.List<Vector3>();
         _routeDead = new System.Collections.Generic.List<Vector3>();
         _routePress = new System.Collections.Generic.List<Vector3>();
+        _routeBranch = new System.Collections.Generic.List<System.Collections.Generic.List<Vector3>>();
+        _routeLostKeys = new System.Collections.Generic.List<Vector3>();
+        _routeBranchPress = new System.Collections.Generic.List<Vector3>();
         _routeInfo = "";
         if (_root == null) { _routeInfo = "уровень не загружен"; return; }
 
@@ -1013,42 +1010,34 @@ public class LevelEditorWindow : EditorWindow
 
         // ⭐ ПЕРЕХОД ВОЗМОЖЕН, ТОЛЬКО ЕСЛИ ТУДА ПРОЙДУТ ОБА ПЭДА (объяснение игрока 2026-08-18).
         // Игрок — не точка, а связка из двух пэдов на плечах: даже если один обогнёт край полки,
-        // второму туда уже не дотянуться, телом вокруг платформы не вывернуться. Поэтому траектория
-        // может отклоняться от прямой холд→цель лишь на BodyCorridor клеток (люфт руки), а не змейкой.
-        // Именно свободный разлив «как угодно» и порождал те диагонали, что игрок забраковал.
+        // второму туда уже не дотянуться, телом вокруг платформы не вывернуться. Считает это
+        // БЮДЖЕТ ПУТИ в PathPossible: обход стоит клеток, и на растяжке их не остаётся.
+        // ⚠️ Считаем ТЕМИ ЖЕ StepPossible/TouchPossible, что и проверки схем: раньше здесь лежала
+        // своя копия обхода, и правило жило в двух местах — ровно так уже расходились
+        // makesPinch с CheckDiagonalPinch. Кэш остаётся, обход — общий.
+        System.Func<long, int, Vector2Int, Vector2Int, long> ckey = (tag, m, a, b) =>
+            (tag << 60) ^ ((long)m << 48) ^ ((long)(a.x + 512) << 36) ^ ((long)(a.y + 512) << 24)
+            ^ ((long)(b.x + 512) << 12) ^ (long)(b.y + 512);
         var stepCache = new System.Collections.Generic.Dictionary<long, bool>();
         System.Func<int, Vector2Int, Vector2Int, bool> CanStep = (m, a, b) =>
         {
             if (!InReach(b.x - a.x, b.y - a.y, RS, RU)) return false;
-            long key = ((long)m << 48) ^ ((long)(a.x + 512) << 36) ^ ((long)(a.y + 512) << 24)
-                     ^ ((long)(b.x + 512) << 12) ^ (long)(b.y + 512);
+            long key = ckey(0, m, a, b);
             bool cached;
             if (stepCache.TryGetValue(key, out cached)) return cached;
             var solid = SolidFor(m);
-            var from = new Vector2Int(a.x, a.y + 1);
-            var to   = new Vector2Int(b.x, b.y + 1);
-            bool ok = false;
-            if (!solid.Contains(from) && !solid.Contains(to))
-            {
-                var p1 = new Vector2(from.x, from.y);
-                var p2 = new Vector2(to.x, to.y);
-                var seen = new System.Collections.Generic.HashSet<Vector2Int> { from };
-                var qq = new System.Collections.Generic.Queue<Vector2Int>();
-                qq.Enqueue(from);
-                while (qq.Count > 0 && !ok)
-                {
-                    var c0 = qq.Dequeue();
-                    for (int k = 0; k < 4; k++)
-                    {
-                        var nb = new Vector2Int(c0.x + (k == 2 ? -1 : k == 3 ? 1 : 0),
-                                                c0.y + (k == 0 ? -1 : k == 1 ? 1 : 0));
-                        if (seen.Contains(nb) || solid.Contains(nb)) continue;
-                        if (DistToSegment(new Vector2(nb.x, nb.y), p1, p2) > BodyCorridor) continue;
-                        if (nb == to) { ok = true; break; }
-                        seen.Add(nb); qq.Enqueue(nb);
-                    }
-                }
-            }
+            bool ok = StepPossible(k => solid.Contains(k), a, b, RS, RU);
+            stepCache[key] = ok; return ok;
+        };
+
+        // Дотянуться до ТОЧКИ (ключ/флаг), а не до холда — см. TouchPossible.
+        System.Func<int, Vector2Int, Vector2Int, bool> CanTouch = (m, a, t) =>
+        {
+            long key = ckey(1, m, a, t);
+            bool cached;
+            if (stepCache.TryGetValue(key, out cached)) return cached;
+            var solid = SolidFor(m);
+            bool ok = TouchPossible(k => solid.Contains(k), a, t, RS, RU);
             stepCache[key] = ok; return ok;
         };
 
@@ -1063,6 +1052,7 @@ public class LevelEditorWindow : EditorWindow
         int TOTAL = MASKS * N;
         var prevState = new int[TOTAL]; var prevKind = new byte[TOTAL];   // 0 = ход, 1 = нажатие
         var seenState = new bool[TOTAL];
+        var depthState = new int[TOTAL];   // ходов от спавна — по нему выбираем, откуда брать ключ
         var q = new System.Collections.Generic.Queue<int>();
         // ⚠️ НЕ полагаемся на то, что маркер спавна попал ровно в клетку пола: в Level_01 он стоит на
         // y=2.25, вне сетки 0.5 (уровень собран до нынешней сетки), и округление давало пустую клетку —
@@ -1090,16 +1080,21 @@ public class LevelEditorWindow : EditorWindow
         }
         for (int i = 0; i < N; i++)
             if (IsHold(0, allCells[i]) && CanStep(0, spK, allCells[i]))
-            { int st0 = i; if (!seenState[st0]) { seenState[st0] = true; prevState[st0] = -1; q.Enqueue(st0); } }
+            { int st0 = i; if (!seenState[st0]) { seenState[st0] = true; prevState[st0] = -1; depthState[st0] = 0; q.Enqueue(st0); } }
 
+        // ⚠️ ПОИСК ИДЁТ ДО КОНЦА, а не до финиша. Раньше обрывались на первом же состоянии, достающем
+        // флаг, и ветки к ключам считались отдельно — в маске «все достижимые кнопки уже нажаты».
+        // Из-за этого проход за НЕобязательной кнопкой выглядел готовым: не было видно, что кнопку надо
+        // нажать, а холды за ней красились недостижимыми (фидбэк игрока 2026-08-31). Теперь и финиш, и
+        // ключи берутся из ОДНОГО дерева состояний, где нажатие — такой же ход, как перемещение.
         int goal = -1;
-        while (q.Count > 0 && goal < 0)
+        while (q.Count > 0)
         {
             int cur = q.Dequeue();
             int m = cur / N, ci = cur % N;
             var hc = allCells[ci];
-            if (CanStep(m, hc, fnK))
-            { goal = cur; break; }
+            if (goal < 0 && CanTouch(m, hc, fnK))   // флаг — точка касания, а не холд
+                goal = cur;
             // Нажать кнопку доступной группы. ⚠️ Радиус нажатия ЖЁСТЧЕ, чем дотяжка до холда: кнопку
             // давят пэдом, стоя рядом, а не тянутся к ней через полкомнаты. При общей дотяжке (4 клетки)
             // модель «нажимала» с 2 юнитов, маршрут проходил мимо кнопки, и это читалось как игнор
@@ -1114,7 +1109,8 @@ public class LevelEditorWindow : EditorWindow
                 if (!near) continue;
                 int nm = m | (1 << g); int ns = nm * N + ci;
                 if (seenState[ns]) continue;
-                seenState[ns] = true; prevState[ns] = cur; prevKind[ns] = 1; q.Enqueue(ns);
+                seenState[ns] = true; prevState[ns] = cur; prevKind[ns] = 1;
+                depthState[ns] = depthState[cur] + 1; q.Enqueue(ns);
             }
             // перейти на другой холд
             for (int j = 0; j < N; j++)
@@ -1123,19 +1119,29 @@ public class LevelEditorWindow : EditorWindow
                 var t2 = allCells[j];
                 if (!IsHold(m, t2)) continue;
                 if (!CanStep(m, hc, t2)) continue;
-                seenState[ns] = true; prevState[ns] = cur; prevKind[ns] = 0; q.Enqueue(ns);
+                seenState[ns] = true; prevState[ns] = cur; prevKind[ns] = 0;
+                depthState[ns] = depthState[cur] + 1; q.Enqueue(ns);
             }
         }
 
-        var waypoints = new System.Collections.Generic.List<Vector2Int> { spK };
-        var pressed = new System.Collections.Generic.List<string>();
-        int finalMask = 0;
-        if (goal >= 0)
+        // Цепочка состояний от спавна до st (первым идёт стартовое состояние).
+        System.Func<int, System.Collections.Generic.List<int>> ChainTo = st =>
         {
-            var chain = new System.Collections.Generic.List<int>();
-            for (int s = goal; s >= 0; s = prevState[s]) { chain.Add(s); if (prevState[s] < 0) break; }
-            chain.Reverse();
-            finalMask = goal / N;
+            var ch = new System.Collections.Generic.List<int>();
+            for (int s = st; s >= 0; s = prevState[s]) { ch.Add(s); if (prevState[s] < 0) break; }
+            ch.Reverse(); return ch;
+        };
+
+        // Цепочка состояний → путевые точки. Нажатие кнопки разворачивается в заход НА кнопку и
+        // обратно: иначе нажатие происходит «на месте», линия проходит мимо, и не видно, что жали.
+        // Общая на маршрут и на ветки — чтобы кнопки на побочных путях рисовались так же, как на
+        // основном (ровно этого не хватало: ветка к ключу шла сквозь ещё не открытые платформы).
+        System.Func<System.Collections.Generic.List<int>,
+                    System.Collections.Generic.List<Vector2Int>,
+                    System.Collections.Generic.List<string>,
+                    System.Collections.Generic.List<Vector2Int>> Walk = (chain, outWp, outPressed) =>
+        {
+            var btnCells = new System.Collections.Generic.List<Vector2Int>();
             for (int i = 0; i < chain.Count; i++)
             {
                 int m = chain[i] / N, ci = chain[i] % N;
@@ -1145,48 +1151,121 @@ public class LevelEditorWindow : EditorWindow
                     for (int g = 0; g < G; g++)
                         if ((added & (1 << g)) != 0)
                         {
-                            pressed.Add(gids[g]);
-                            // Заводим линию НА кнопку и обратно: иначе нажатие происходило «на месте»,
-                            // маршрут визуально проходил мимо, и было не видно, что кнопку вообще жали.
-                            Vector2Int best = gButtons[g][0]; int bd3 = int.MaxValue;
+                            if (outPressed != null) outPressed.Add(gids[g]);
+                            Vector2Int bbest = gButtons[g][0]; int bd3 = int.MaxValue;
                             foreach (var btn in gButtons[g])
                             { int d3 = Mathf.Abs(btn.x - allCells[ci].x) + Mathf.Abs(btn.y - allCells[ci].y);
-                              if (d3 < bd3) { bd3 = d3; best = btn; } }
-                            _routePress.Add(new Vector3(best.x * cell, best.y * cell + cell * 0.5f, 0f));
-                            waypoints.Add(best);
-                            waypoints.Add(allCells[ci]);
+                              if (d3 < bd3) { bd3 = d3; bbest = btn; } }
+                            btnCells.Add(bbest);
+                            outWp.Add(bbest);
+                            outWp.Add(allCells[ci]);
                         }
                     continue;
                 }
-                waypoints.Add(allCells[ci]);
+                outWp.Add(allCells[ci]);
             }
+            return btnCells;
+        };
+
+        var waypoints = new System.Collections.Generic.List<Vector2Int> { spK };
+        var pressed = new System.Collections.Generic.List<string>();
+        var goalChain = new System.Collections.Generic.List<int>();
+        int finalMask = 0;
+        if (goal >= 0)
+        {
+            goalChain = ChainTo(goal);
+            finalMask = goal / N;
+            foreach (var b in Walk(goalChain, waypoints, pressed))
+                _routePress.Add(new Vector3(b.x * cell, b.y * cell + cell * 0.5f, 0f));
             waypoints.Add(fnK);
         }
 
         System.Func<Vector2Int, Vector3> W = k => new Vector3(k.x * cell, k.y * cell + cell * 0.5f, 0f);
         foreach (var k in waypoints) _routePath.Add(W(k));
 
-        // достижимое в ИТОГОВОЙ маске (что видно игроку, прошедшему обязательный маршрут)
+        // Достижимое — по ВСЕМУ дереву состояний: холд считается взятым, если модель постояла на нём
+        // хоть в каком-то состоянии (в т.ч. открыв группу необязательной кнопкой). Раньше смотрели
+        // только маску обязательных кнопок, и всё за побочной кнопкой краснело как недостижимое.
         {
-            var solid = SolidFor(finalMask);
-            var hs = new System.Collections.Generic.List<Vector2Int>();
-            foreach (var k in solid) if (!solid.Contains(new Vector2Int(k.x, k.y + 1))) hs.Add(k);
-            var seen2 = new System.Collections.Generic.HashSet<Vector2Int>();
-            var q2 = new System.Collections.Generic.Queue<Vector2Int>();
-            foreach (var h in hs) if (CanStep(finalMask, spK, h) && seen2.Add(h)) q2.Enqueue(h);
-            while (q2.Count > 0)
-            { var a = q2.Dequeue();
-              foreach (var h in hs) if (!seen2.Contains(h) && CanStep(finalMask, a, h)) { seen2.Add(h); q2.Enqueue(h); } }
-            foreach (var h in hs) { if (seen2.Contains(h)) _routeReach.Add(W(h)); else _routeDead.Add(W(h)); }
+            var reachedCells = new System.Collections.Generic.HashSet<int>();
+            for (int st = 0; st < TOTAL; st++) if (seenState[st]) reachedCells.Add(st % N);
+            var allSolid = SolidFor(MASKS - 1);
+            foreach (var k in allSolid)
+            {
+                if (allSolid.Contains(new Vector2Int(k.x, k.y + 1))) continue;   // не холд ни при какой маске
+                int ci; if (!cellIdx.TryGetValue(k, out ci)) continue;
+                if (reachedCells.Contains(ci)) _routeReach.Add(W(k)); else _routeDead.Add(W(k));
+            }
+        }
+
+        // ── ВЕТКИ К КЛЮЧАМ (зелёным): видно, что ключ достижим, каким путём к нему идти И КАКУЮ
+        // КНОПКУ ради него надо нажать. Берутся из ТОГО ЖЕ дерева состояний, что и маршрут к финишу.
+        int keysOk = 0, keysTotal = 0;
+        var keyNeeds = new System.Collections.Generic.List<string>();
+        {
+            var artsG = _root.transform.Find("Artifacts");
+            if (artsG != null)
+            {
+                int keyNo = 0;
+                foreach (Transform a in artsG)
+                {
+                    keysTotal++; keyNo++;
+                    var ak = K(a.position);
+                    // ⚠️ Берём состояние с БЛИЖАЙШИМ К КЛЮЧУ холдом (число ходов — только тай-брейк).
+                    // Раньше сравнивали ТОЛЬКО дальность от маршрута, и ветка цеплялась за первый холд
+                    // минимальной дальности: на Level_06 линия шла через пол-экрана на 6 клеток, хотя
+                    // зацеп есть прямо под ключом (фидбэк игрока со скриншотом). Последний отрезок ветки
+                    // игрок читает как «вот так дотянуться» — он обязан показывать самый близкий хват.
+                    int best = -1, bnear = int.MaxValue, bd = int.MaxValue;
+                    for (int st = 0; st < TOTAL; st++)
+                    {
+                        if (!seenState[st]) continue;
+                        var hc = allCells[st % N];
+                        int near = Mathf.Abs(hc.x - ak.x) + Mathf.Abs(hc.y - ak.y);
+                        if (near > bnear || (near == bnear && depthState[st] >= bd)) continue;
+                        if (!CanTouch(st / N, hc, ak)) continue;
+                        bnear = near; bd = depthState[st]; best = st;
+                    }
+                    if (best < 0) { _routeLostKeys.Add(new Vector3(a.position.x, a.position.y, 0f)); continue; }
+                    keysOk++;
+
+                    // Ветку рисуем от места, где она ОТДЕЛЯЕТСЯ от основного маршрута: обе цепочки
+                    // растут из одного BFS-дерева, значит у них общий префикс — его и срезаем.
+                    var chain = ChainTo(best);
+                    int common = 0;
+                    while (common < chain.Count && common < goalChain.Count && chain[common] == goalChain[common])
+                        common++;
+                    int from = Mathf.Max(0, common - 1);
+                    var sub = chain.GetRange(from, chain.Count - from);
+
+                    var wp = new System.Collections.Generic.List<Vector2Int>();
+                    var pr = new System.Collections.Generic.List<string>();
+                    foreach (var b in Walk(sub, wp, pr))
+                        _routeBranchPress.Add(new Vector3(b.x * cell, b.y * cell + cell * 0.5f, 0f));
+
+                    var line = new System.Collections.Generic.List<Vector3>();
+                    foreach (var k in wp) line.Add(W(k));
+                    line.Add(new Vector3(a.position.x, a.position.y, 0f));
+                    if (line.Count > 1) _routeBranch.Add(line);
+
+                    // Кнопки, которых нет на обязательном маршруте — то есть нажимаемые РАДИ КЛЮЧА.
+                    var extra = new System.Collections.Generic.List<string>();
+                    foreach (var g in pr) if (!pressed.Contains(g) && !extra.Contains(g)) extra.Add(g);
+                    if (extra.Count > 0)
+                        keyNeeds.Add("ключ " + keyNo + " ← " + string.Join("→", extra.ToArray()));
+                }
+            }
         }
 
         var optional = new System.Collections.Generic.List<string>();
         for (int g = 0; g < G; g++) if ((finalMask & (1 << g)) == 0) optional.Add(gids[g]);
         _routeInfo = "финиш " + (goal >= 0 ? "ok" : "НЕ достигнут")
+            + ", ключей " + keysOk + "/" + keysTotal
             + ", шагов " + Mathf.Max(0, _routePath.Count - 1)
             + (pressed.Count > 0 ? "  |  ОБЯЗАТЕЛЬНЫЕ кнопки: " + string.Join("→", pressed.ToArray())
                                  : "  |  кнопки не нужны")
-            + (optional.Count > 0 ? "  |  необязательные: " + string.Join(",", optional.ToArray()) : "");
+            + (optional.Count > 0 ? "  |  необязательные: " + string.Join(",", optional.ToArray()) : "")
+            + (keyNeeds.Count > 0 ? "  |  РАДИ КЛЮЧЕЙ: " + string.Join("; ", keyNeeds.ToArray()) : "");
         SceneView.RepaintAll();
     }
 
@@ -1205,6 +1284,37 @@ public class LevelEditorWindow : EditorWindow
         {
             Handles.color = new Color(0.3f, 0.8f, 1f, 0.55f);        // достижимо по мнению модели
             foreach (var p in _routeReach) Handles.DrawSolidDisc(p, Vector3.forward, _tileCell * 0.12f);
+        }
+        // Ветки к ключам — зелёным. Пунктирный вид не нужен: они и так тоньше основного маршрута.
+        if (_routeBranch != null)
+        {
+            Handles.color = new Color(0.25f, 0.95f, 0.35f, 0.9f);
+            foreach (var line in _routeBranch)
+                for (int i = 1; i < line.Count; i++)
+                {
+                    Handles.DrawAAPolyLine(3.5f, line[i - 1], line[i]);
+                    Handles.DrawSolidDisc(line[i], Vector3.forward, _tileCell * 0.10f);
+                }
+        }
+        // Кнопка, которую жмут ТОЛЬКО ради ключа — зелёное кольцо (обязательные остаются жёлтыми).
+        if (_routeBranchPress != null)
+        {
+            Handles.color = new Color(0.25f, 0.95f, 0.35f, 1f);
+            foreach (var p in _routeBranchPress)
+            {
+                Handles.DrawWireDisc(p, Vector3.forward, _tileCell * 0.55f);
+                Handles.DrawWireDisc(p, Vector3.forward, _tileCell * 0.75f);
+            }
+        }
+        if (_routeLostKeys != null)
+        {
+            Handles.color = new Color(1f, 0.2f, 0.2f, 1f);   // ключ, до которого пути НЕТ
+            foreach (var p in _routeLostKeys)
+            {
+                float r = _tileCell * 0.55f;
+                Handles.DrawAAPolyLine(4f, p + new Vector3(-r,-r), p + new Vector3(r,r));
+                Handles.DrawAAPolyLine(4f, p + new Vector3(-r,r),  p + new Vector3(r,-r));
+            }
         }
         if (_routePress != null)
         {
@@ -3093,40 +3203,89 @@ public class LevelEditorWindow : EditorWindow
     /// (makesPinch против CheckDiagonalPinch, база клиренса флага), они расходились и давали баги.
     ///
     /// Правило: цель в пределах дотяжки (восьмиугольник, замер на Level_07/08) И до неё есть проход
-    /// по свободным клеткам, не отклоняющийся от прямой больше чем на BodyCorridor.
+    /// по свободным клеткам, укладывающийся в бюджет пути (см. PathPossible).
     /// Позиция стояния = клетка холда + 1 (стоим НАД тайлом).
     /// </summary>
     private static bool StepPossible(System.Func<Vector2Int, bool> solid,
                                      Vector2Int a, Vector2Int b, int rs, int ru)
     {
         if (!InReach(b.x - a.x, b.y - a.y, rs, ru)) return false;
+        return PathPossible(solid, new Vector2Int(a.x, a.y + 1), new Vector2Int(b.x, b.y + 1));
+    }
+
+    /// <summary>
+    /// ⭐ ДОТЯНУТЬСЯ ДО ТОЧКИ (артефакт, флаг, чекпоинт) — это НЕ то же, что перейти на холд.
+    /// Холд — тайл, на который встают (позиция стояния = клетка+1). Артефакт же висит В ВОЗДУХЕ и
+    /// берётся КАСАНИЕМ любого коллайдера (см. Artifact.OnTriggerEnter), поэтому целимся в саму
+    /// клетку цели, без +1.
+    ///
+    /// 🐞 БАГ, КОТОРЫЙ ЭТИМ ЧИНИТСЯ (найден 2026-08-31): ключи считались недостижимыми там, где игрок
+    /// их спокойно берёт (Level_06 0/3, Level_01 2/4). Причин было ДВЕ, и обе давали ложную тревогу:
+    ///   1) цель мерилась как холд → прицел уезжал на клетку ВВЕРХ, то есть завышал подъём;
+    ///   2) клетка ключа может оказаться ЗАНЯТОЙ (ключ прижат к скале, либо позиция вне сетки 0.5 и
+    ///      округляется в камень) — тогда шаг отвергался сразу, до всякой геометрии.
+    /// Отсюда окрестность 3×3: телом достаточно попасть в любую свободную клетку рядом с ключом
+    /// (радиус касания). Замер на шести уровнях: ключи стали 4/4, 3/3, 3/3, 4/4, 3/3; вердикт по
+    /// финишу не изменился нигде.
+    /// </summary>
+    private static bool TouchPossible(System.Func<Vector2Int, bool> solid,
+                                      Vector2Int a, Vector2Int target, int rs, int ru)
+    {
         var from = new Vector2Int(a.x, a.y + 1);
-        var to   = new Vector2Int(b.x, b.y + 1);
+        for (int dx = -1; dx <= 1; dx++)
+        for (int dy = -1; dy <= 1; dy++)
+        {
+            var t = new Vector2Int(target.x + dx, target.y + dy);
+            if (solid(t)) continue;
+            if (!InReach(t.x - from.x, t.y - from.y, rs, ru)) continue;
+            if (PathPossible(solid, from, t)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Проход между двумя СВОБОДНЫМИ клетками. Общее тело правила для <see cref="StepPossible"/> и
+    /// <see cref="TouchPossible"/> — чтобы обход не считался дважды разными способами (на этом уже
+    /// обжигались: makesPinch против CheckDiagonalPinch).
+    ///
+    /// ⭐ ОГРАНИЧЕНИЕ ОДНО — БЮДЖЕТ ПУТИ: длина обхода ≤ <see cref="ReachSumCells"/>, то есть
+    /// КРЮК СЪЕДАЕТ ДОТЯЖКУ. Обойти угол на пару клеток можно; протащить руку вокруг полки — нет,
+    /// потому что на это уже не хватает вылета.
+    ///
+    /// Число НЕ подобрано: это сумма из ЗАМЕРЕННОГО восьмиугольника (та же, что в InReach) — прямой
+    /// шаг в 7 клеток и путь в 7 клеток стоят одинаково. Оба калибровочных случая от игрока сходятся:
+    ///  • Level_06, ключ (15,12) из холда (8,10): 6 вбок + 2 на нырок под стену = 8 > 7 → ЗАПРЕТ
+    ///    (игрок: «так не дотянуться»). Прежний коридор это пропускал, потому что давал одинаковый
+    ///    допуск на обход и при вылете в 2 клетки, и при вылете в 6 — а на растяжке запаса нет.
+    ///  • Level_03, (26.5,7.0) → (27.5,8.0): ход (2,2), рука огибает целевую полку, путь 6 ≤ 7 → ОК
+    ///    (игрок: «дотягиваемся без проблем»). Прежний коридор резал его с запасом 0.12 клетки.
+    /// </summary>
+    private static bool PathPossible(System.Func<Vector2Int, bool> solid, Vector2Int from, Vector2Int to)
+    {
         if (solid(from) || solid(to)) return false;
         if (from == to) return true;
-        var p1 = new Vector2(from.x, from.y);
-        var p2 = new Vector2(to.x, to.y);
-        var seen = new System.Collections.Generic.HashSet<Vector2Int> { from };
+        var seen = new System.Collections.Generic.Dictionary<Vector2Int, int> { { from, 0 } };
         var q = new System.Collections.Generic.Queue<Vector2Int>();
         q.Enqueue(from);
         while (q.Count > 0)
         {
             var c0 = q.Dequeue();
+            int d0 = seen[c0];
+            if (d0 >= ReachSumCells) continue;      // бюджет исчерпан — дальше не тянемся
             for (int k = 0; k < 4; k++)
             {
                 var nb = new Vector2Int(c0.x + (k == 2 ? -1 : k == 3 ? 1 : 0),
                                         c0.y + (k == 0 ? -1 : k == 1 ? 1 : 0));
-                if (seen.Contains(nb) || solid(nb)) continue;
-                if (DistToSegment(new Vector2(nb.x, nb.y), p1, p2) > BodyCorridor) continue;
+                if (seen.ContainsKey(nb) || solid(nb)) continue;
                 if (nb == to) return true;
-                seen.Add(nb); q.Enqueue(nb);
+                seen[nb] = d0 + 1; q.Enqueue(nb);
             }
         }
         return false;
     }
 
     /// <summary>
-    /// Проверка проходимости схемы по ИЗМЕРЕННОЙ модели (дотяжка-восьмиугольник + коридор + порядок
+    /// Проверка проходимости схемы по ИЗМЕРЕННОЙ модели (дотяжка-восьмиугольник + бюджет пути + порядок
     /// кнопок). До 2026-08-18 здесь была коробка ↑4 ↔4 без учёта кнопок: она пропускала подъёмы на 4
     /// клетки, которых в игре нет, и считала платформы групп вечно твёрдыми. Все прежние «0 проблемных»
     /// получены той моделью и доверия не заслуживают.
@@ -3210,10 +3369,10 @@ public class LevelEditorWindow : EditorWindow
                     { reach.Add(h); q.Enqueue(h); }
             }
 
-            // цель достижима, если рядом есть достижимый холд
+            // Цель (финиш/артефакт/чекпоинт) — ТОЧКА КАСАНИЯ, а не холд: см. TouchPossible.
             System.Func<Vector2Int, bool> canGet = target =>
             {
-                foreach (var h in reach) if (StepPossible(solid, h, target, RS, RU)) return true;
+                foreach (var h in reach) if (TouchPossible(solid, h, target, RS, RU)) return true;
                 return false;
             };
 
