@@ -1030,16 +1030,33 @@ public class LevelEditorWindow : EditorWindow
             stepCache[key] = ok; return ok;
         };
 
-        // Дотянуться до ТОЧКИ (ключ/флаг), а не до холда — см. TouchPossible.
-        System.Func<int, Vector2Int, Vector2Int, bool> CanTouch = (m, a, t) =>
+        // ⭐ ГАБАРИТ ЦЕЛИ, а не точка пивота. Касание в игре — это перекрытие с КОЛЛАЙДЕРОМ
+        // (`Artifact.OnTriggerEnter`), и он совсем не точечный: у артефакта триггер-сфера ~1 юнит,
+        // то есть 2 клетки поперёк, у финишного флага — плоская коробка у основания, у чекпоинта —
+        // высокая. Меряем дотяжку до БЛИЖАЙШЕЙ ТОЧКИ этого габарита и в ДРОБНЫХ клетках.
+        // Зачем дробных: позиции целей ставятся руками и почти все (23 из 30 на шести уровнях) стоят
+        // ровно на границе округления — кто именно из двух соседних клеток достанется цели, решало
+        // правило округления, а не геометрия. Флаг Level_05 так и уехал внутрь пола.
+        System.Func<Transform, (Vector2 c, Vector2 h)> TargetBox = tr =>
         {
-            long key = ckey(1, m, a, t);
-            bool cached;
-            if (stepCache.TryGetValue(key, out cached)) return cached;
-            var solid = SolidFor(m);
-            bool ok = TouchPossible(k => solid.Contains(k), a, t, RS, RU);
-            stepCache[key] = ok; return ok;
+            var cols = tr.GetComponentsInChildren<Collider>(true);
+            if (cols.Length > 0)
+            {
+                var b = cols[0].bounds;
+                for (int i = 1; i < cols.Length; i++) b.Encapsulate(cols[i].bounds);
+                return (new Vector2(b.center.x / cell, b.center.y / cell),
+                        new Vector2(b.extents.x / cell, b.extents.y / cell));
+            }
+            return (new Vector2(tr.position.x / cell, tr.position.y / cell), Vector2.zero);
         };
+        // Кэш не нужен: TouchPossible вызывается на пару порядков реже, чем шаг холд→холд, а путь
+        // внутри ограничен бюджетом в 7 клеток.
+        System.Func<int, Vector2Int, Vector2Int, Vector2, Vector2, bool> CanTouch = (m, a, t, c, h) =>
+        {
+            var solid = SolidFor(m);
+            return TouchPossible(k => solid.Contains(k), a, t, c, h, RS, RU);
+        };
+        var fnBox = TargetBox(finish);
 
         System.Func<int, Vector2Int, bool> IsHold = (m, k) =>
         { var s = SolidFor(m); return s.Contains(k) && !s.Contains(new Vector2Int(k.x, k.y + 1)); };
@@ -1093,7 +1110,7 @@ public class LevelEditorWindow : EditorWindow
             int cur = q.Dequeue();
             int m = cur / N, ci = cur % N;
             var hc = allCells[ci];
-            if (goal < 0 && CanTouch(m, hc, fnK))   // флаг — точка касания, а не холд
+            if (goal < 0 && CanTouch(m, hc, fnK, fnBox.c, fnBox.h))   // флаг — касание габарита, не холд
                 goal = cur;
             // Нажать кнопку доступной группы. ⚠️ Радиус нажатия ЖЁСТЧЕ, чем дотяжка до холда: кнопку
             // давят пэдом, стоя рядом, а не тянутся к ней через полкомнаты. При общей дотяжке (4 клетки)
@@ -1216,6 +1233,7 @@ public class LevelEditorWindow : EditorWindow
                     if (a.GetComponentInChildren<Artifact>(true) == null) continue;
                     keysTotal++; keyNo++;
                     var ak = K(a.position);
+                    var akBox = TargetBox(a);
                     // ⚠️ Берём состояние с БЛИЖАЙШИМ К КЛЮЧУ холдом (число ходов — только тай-брейк).
                     // Раньше сравнивали ТОЛЬКО дальность от маршрута, и ветка цеплялась за первый холд
                     // минимальной дальности: на Level_06 линия шла через пол-экрана на 6 клеток, хотя
@@ -1228,7 +1246,7 @@ public class LevelEditorWindow : EditorWindow
                         var hc = allCells[st % N];
                         int near = Mathf.Abs(hc.x - ak.x) + Mathf.Abs(hc.y - ak.y);
                         if (near > bnear || (near == bnear && depthState[st] >= bd)) continue;
-                        if (!CanTouch(st / N, hc, ak)) continue;
+                        if (!CanTouch(st / N, hc, ak, akBox.c, akBox.h)) continue;
                         bnear = near; bd = depthState[st]; best = st;
                     }
                     if (best < 0) { _routeLostKeys.Add(new Vector3(a.position.x, a.position.y, 0f)); continue; }
@@ -3272,10 +3290,26 @@ public class LevelEditorWindow : EditorWindow
     /// (радиус касания). Замер на шести уровнях: ключи стали 4/4, 3/3, 3/3, 4/4, 3/3; вердикт по
     /// финишу не изменился нигде.
     /// </summary>
+    /// <summary>Клеточный вариант: цель ровно в клетке и без габарита (схемы — там всё по сетке).</summary>
     private static bool TouchPossible(System.Func<Vector2Int, bool> solid,
                                       Vector2Int a, Vector2Int target, int rs, int ru)
+        => TouchPossible(solid, a, target, new Vector2(target.x, target.y), Vector2.zero, rs, ru);
+
+    /// <param name="centerCells">центр ГАБАРИТА цели в клетках (дробный)</param>
+    /// <param name="halfCells">полуразмер габарита в клетках</param>
+    private static bool TouchPossible(System.Func<Vector2Int, bool> solid, Vector2Int a, Vector2Int target,
+                                      Vector2 centerCells, Vector2 halfCells, int rs, int ru)
     {
         var from = new Vector2Int(a.x, a.y + 1);
+        // ⭐ ДОТЯЖКА — до БЛИЖАЙШЕЙ ТОЧКИ габарита, в ДРОБНЫХ клетках, а не до округлённой клетки.
+        // Округление цели в клетку врало на полклетки, и почти все цели (23 из 30) стоят ровно на
+        // его границе: какая из двух соседних клеток достанется цели, решало правило округления.
+        // Габарит берётся из коллайдера, потому что подбор — это перекрытие с ним, а не попадание
+        // в пивот (у артефакта триггер-сфера в 2 клетки поперёк).
+        float dfx = Mathf.Max(0f, Mathf.Abs(centerCells.x - from.x) - halfCells.x);
+        float dfy = Mathf.Max(0f, Mathf.Abs(centerCells.y - from.y) - halfCells.y);
+        const float eps = 1e-3f;
+        if (dfx > rs + eps || dfy > ru + eps || dfx + dfy > ReachSumCells + eps) return false;
         var t = target;
         // ⛔ ОКРЕСТНОСТЬ 3×3 ВОКРУГ ЦЕЛИ — ЗАПРЕЩЁННЫЙ ПРИЁМ, дважды обжёгся за один день (2026-08-31).
         // Идея была: цель может оказаться В КАМНЕ (ключ вросший в скалу; позиция вне сетки 0.5,
