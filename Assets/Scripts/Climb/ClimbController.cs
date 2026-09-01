@@ -765,6 +765,18 @@ public class ClimbController : MonoBehaviour
         _legSwing?.Solve();
     }
 
+    /// <summary>
+    /// Разрыв ПО ВНЕШНЕЙ ПРИЧИНЕ — сейчас это вернувшийся камень инверсной платформы, поймавший пэд
+    /// внутри (см. DisappearingPlatform.CrushCheck). Прямой GameState.Fail там смотрелся резко:
+    /// экран поражения возникал из ниоткуда. Показываем тот же разрыв, что и при перерастяжке, —
+    /// Fail придёт следом сам, из FailWhenFallen (запрос игрока 2026-09-01).
+    /// </summary>
+    public void ForceBreak()
+    {
+        if (broken) return;      // уже разорван — второй кувырок не нужен
+        TriggerBreak();
+    }
+
     private void TriggerBreak()
     {
         if (debugLog) Debug.Log($"[BREAK] t={Time.time:F2}");

@@ -14,10 +14,49 @@ public class TriggerTile : MonoBehaviour
     [Tooltip("Мин. пауза между срабатываниями (сек), чтобы не спамить при контакте.")]
     public float cooldown = 0.3f;
 
+    [Tooltip("Какой рендерер красить в цвет группы (красная шляпка кнопки). " +
+             "Пусто — найдём сам по материалу с 'red' в имени.")]
+    public Renderer colorTarget;
+
     private float _lastFire = -999f;
     private Animator _anim;
 
-    private void Awake() => _anim = GetComponentInParent<Animator>();
+    private void Awake()
+    {
+        _anim = GetComponentInParent<Animator>();
+        TintByGroup();
+    }
+
+    /// <summary>
+    /// Красим шляпку кнопки в цвет её группы (запрос игрока 2026-09-01): при нескольких группах на
+    /// уровне игрок должен видеть, какая кнопка что открывает. Цвет берём из <see cref="GroupPalette"/> —
+    /// ровно тот же, которым Level Editor подсвечивает группы в сцене.
+    ///
+    /// ⚠️ Через MaterialPropertyBlock, а НЕ подменой материала: материал у кнопки общий ассет (покрасив
+    /// его, покрасили бы все кнопки разом), а кроме того DisappearingPlatform подменяет материалы на
+    /// полупрозрачные, когда кнопка лежит ВНУТРИ группы. Блок живёт на рендерере и переживает подмену.
+    /// Альфу здесь не трогаем — её пишет DisappearingPlatform, и каждый правит только свой канал.
+    /// </summary>
+    private void TintByGroup()
+    {
+        var target = colorTarget;
+        if (target == null)
+            foreach (var r in GetComponentsInChildren<Renderer>(true))
+            {
+                var m = r.sharedMaterial;
+                if (m != null && m.name.ToLowerInvariant().Contains("red")) { target = r; break; }
+            }
+        if (target == null) return;
+
+        var mpb = new MaterialPropertyBlock();
+        target.GetPropertyBlock(mpb);
+        var col = GroupPalette.For(groupId);
+        float alpha = mpb.HasColor("_Color") ? mpb.GetColor("_Color").a
+                    : (target.sharedMaterial != null ? target.sharedMaterial.color.a : 1f);
+        col.a = alpha;
+        mpb.SetColor("_Color", col);
+        target.SetPropertyBlock(mpb);
+    }
 
     private void OnEnable()  => DisappearingPlatform.GroupStateChanged += OnGroupState;
     private void OnDisable() => DisappearingPlatform.GroupStateChanged -= OnGroupState;

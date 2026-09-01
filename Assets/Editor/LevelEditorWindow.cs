@@ -51,6 +51,8 @@ public class LevelEditorWindow : EditorWindow
     // [SerializeField] — иначе значение слетает при каждой перекомпиляции (см. гочу про поля EditorWindow).
     [SerializeField] private bool _showGroupColors = true;  // подсветка групп триггеров цветом в сцене
     [SerializeField] private float _groupWindow = 5f;       // окно активации для НОВЫХ групп (панель рядом с Group ID)
+    [SerializeField] private bool  _groupInverted = false;  // режим для НОВЫХ групп: стартует твёрдой, кнопка убирает
+    [SerializeField] private bool  _groupCrush    = true;   // вернувшийся камень убивает (стена); для пола выключить
     // ── Маршрут глазами МОДЕЛИ (для отладки самой модели, а не уровня) ──
     [SerializeField] private bool _showRoute = true;
     [SerializeField] private bool _routeStrict = true;   // учитывать перекрытия при вертикальном движении
@@ -384,13 +386,41 @@ public class LevelEditorWindow : EditorWindow
                     SceneView.RepaintAll();   // подпись секунд под кнопкой обновится сразу
                 }
             }
+            // ⭐ ИНВЕРСИЯ: группа стартует твёрдой, а кнопка её УБИРАЕТ на окно. Правится так же,
+            // как окно: у живой группы пишем сразу, для будущей — запоминаем до создания.
+            bool invShown = dpCur != null ? dpCur.inverted : _groupInverted;
+            EditorGUI.BeginChangeCheck();
+            bool invEdited = EditorGUILayout.Toggle(
+                new GUIContent("Инверсная", "Стартует ТВЁРДОЙ, кнопка убирает её на время (проход в стене / провал в полу)"),
+                invShown);
+            bool crushShown = dpCur != null ? dpCur.crushOnReturn : _groupCrush;
+            bool crushEdited = crushShown;
+            using (new EditorGUI.DisabledScope(!invEdited))
+                crushEdited = EditorGUILayout.Toggle(
+                    new GUIContent("Возврат убивает", "СТЕНА: вернувшийся камень убивает того, кто внутри. Для ПОЛА выключить"),
+                    crushShown);
+            if (EditorGUI.EndChangeCheck())
+            {
+                _groupInverted = invEdited; _groupCrush = crushEdited;
+                if (dpCur != null)
+                {
+                    Undo.RecordObject(dpCur, "Change group mode");
+                    dpCur.inverted = invEdited; dpCur.crushOnReturn = crushEdited;
+                    EditorUtility.SetDirty(dpCur);
+                    EditorSceneManager.MarkSceneDirty(
+                        UnityEngine.SceneManagement.SceneManager.GetActiveScene());
+                    SceneView.RepaintAll();
+                }
+            }
             if (dpCur == null)
-                GUILayout.Label($"Группы '{_groupId}' в уровне ещё нет — окно применится при создании.",
+                GUILayout.Label($"Группы '{_groupId}' в уровне ещё нет — настройки применятся при создании.",
                     EditorStyles.miniLabel);
 
             GUILayout.Label(_tool == Tool.TriggerButton
-                    ? "🔘 Кнопка активирует тайлы с этим Group ID"
-                    : "👻 Тайлы уйдут в группу с этим Group ID (полупрозрачные до нажатия)",
+                    ? "🔘 Кнопка " + (invShown ? "УБИРАЕТ" : "активирует") + " тайлы с этим Group ID"
+                    : invShown
+                        ? "🧱 Тайлы группы твёрдые, кнопка убирает их на время"
+                        : "👻 Тайлы уйдут в группу с этим Group ID (полупрозрачные до нажатия)",
                 EditorStyles.helpBox);
             GUI.color = Color.white;
         }
@@ -494,6 +524,11 @@ public class LevelEditorWindow : EditorWindow
             GUI.backgroundColor = new Color(0.3f, 0.8f, 0.4f);
             if (GUILayout.Button("💾 Save", GUILayout.Height(28)))
                 SaveLevel();
+            GUI.backgroundColor = new Color(0.85f, 0.6f, 0.35f);
+            if (GUILayout.Button(new GUIContent("⏏ Unload",
+                    "Убрать уровень со сцены. Спросит, сохранять ли изменения."),
+                    GUILayout.Width(90), GUILayout.Height(28)))
+                UnloadLevel();
             GUI.backgroundColor = prev;
             GUI.enabled = true;
         }
@@ -962,6 +997,7 @@ public class LevelEditorWindow : EditorWindow
 
         var gids = new System.Collections.Generic.List<string>();
         var gTiles = new System.Collections.Generic.List<System.Collections.Generic.List<Vector2Int>>();
+        var gInverted = new System.Collections.Generic.List<bool>();   // тайлы твёрдые ПОКА кнопку не нажали
         var dis = _root.transform.Find("Disappearing");
         if (dis != null) foreach (Transform c in dis)
         {
@@ -969,17 +1005,37 @@ public class LevelEditorWindow : EditorWindow
             if (!string.IsNullOrEmpty(_routeExclude)
                 && dpc.groupId.Equals(_routeExclude, System.StringComparison.OrdinalIgnoreCase)) continue;
             int gi = gids.IndexOf(dpc.groupId);
-            if (gi < 0) { gids.Add(dpc.groupId); gTiles.Add(new System.Collections.Generic.List<Vector2Int>()); gi = gids.Count - 1; }
-            foreach (Transform tl in c) gTiles[gi].Add(K(tl.position));
+            if (gi < 0)
+            { gids.Add(dpc.groupId); gTiles.Add(new System.Collections.Generic.List<Vector2Int>());
+              gInverted.Add(dpc.inverted); gi = gids.Count - 1; }
+            // ⚠️ Кнопку, лежащую ВНУТРИ группы, тайлом группы считать нельзя — она не поверхность.
+            foreach (Transform tl in c)
+                if (tl.GetComponentInChildren<TriggerTile>(true) == null) gTiles[gi].Add(K(tl.position));
         }
+        // ⭐ КНОПКИ ИЩЕМ ПО ВСЕМУ УРОВНЮ, а не в контейнере "Triggers": игрок кладёт кнопку ВНУТРЬ
+        // группы, чтобы она была недоступна, пока та группа не открыта (Level_07: кнопка C лежит в
+        // Disappear_D). Пока смотрели только в "Triggers", такой кнопки для модели не существовало.
         var gButtons = new System.Collections.Generic.List<System.Collections.Generic.List<Vector2Int>>();
-        for (int i = 0; i < gids.Count; i++) gButtons.Add(new System.Collections.Generic.List<Vector2Int>());
-        var trig = _root.transform.Find("Triggers");
-        if (trig != null) foreach (Transform b in trig)
+        var gButtonHost = new System.Collections.Generic.List<System.Collections.Generic.List<int>>();
+        var gButtonTr = new System.Collections.Generic.List<System.Collections.Generic.List<Transform>>();
+        for (int i = 0; i < gids.Count; i++)
+        { gButtons.Add(new System.Collections.Generic.List<Vector2Int>());
+          gButtonHost.Add(new System.Collections.Generic.List<int>());
+          gButtonTr.Add(new System.Collections.Generic.List<Transform>()); }
+        foreach (var tt in _root.GetComponentsInChildren<TriggerTile>(true))
         {
-            var tt = b.GetComponentInChildren<TriggerTile>(true); if (tt == null) continue;
             int gi = gids.IndexOf(tt.groupId); if (gi < 0) continue;
-            gButtons[gi].Add(K(b.position));
+            // Кнопка внутри группы-хозяина: нажать её можно, только пока ХОЗЯИН твёрдый.
+            int host = -1;
+            for (var p = tt.transform.parent; p != null; p = p.parent)
+            {
+                var owner = p.GetComponent<DisappearingPlatform>();
+                if (owner == null) continue;
+                host = gids.IndexOf(owner.groupId); break;
+            }
+            gButtons[gi].Add(K(tt.transform.position));
+            gButtonHost[gi].Add(host);
+            gButtonTr[gi].Add(tt.transform);
         }
 
         var spawn = _root.transform.Find("SpawnPoint");
@@ -991,19 +1047,27 @@ public class LevelEditorWindow : EditorWindow
         if (G > 12) { _routeInfo = "слишком много групп (" + G + ") для точного поиска"; return; }
         int MASKS = 1 << G;
 
-        // solid по маске: камень + тайлы включённых групп
+        // ⭐ БИТ МАСКИ = «ОКНО ГРУППЫ ИДЁТ» (кнопка нажата), а НЕ «тайлы твёрдые». Для обычной группы
+        // это одно и то же, для ИНВЕРСНОЙ — противоположное: у неё покой = твёрдо, нажатие УБИРАЕТ.
+        // Раньше бит означал «твёрдые», и модель считала стены инверсных групп отсутствующими —
+        // на Level_07 она спускалась к нижнему ключу СКВОЗЬ пробку группы E.
+        System.Func<int, int, bool> TilesSolid = (m, g) =>
+            gInverted[g] ? (m & (1 << g)) == 0 : (m & (1 << g)) != 0;
         var solidCache = new System.Collections.Generic.Dictionary<int, System.Collections.Generic.HashSet<Vector2Int>>();
         System.Func<int, System.Collections.Generic.HashSet<Vector2Int>> SolidFor = m =>
         {
             System.Collections.Generic.HashSet<Vector2Int> got;
             if (solidCache.TryGetValue(m, out got)) return got;
             var s = new System.Collections.Generic.HashSet<Vector2Int>(rock);
-            for (int g = 0; g < G; g++) if ((m & (1 << g)) != 0) foreach (var k in gTiles[g]) s.Add(k);
+            for (int g = 0; g < G; g++) if (TilesSolid(m, g)) foreach (var k in gTiles[g]) s.Add(k);
             solidCache[m] = s; return s;
         };
 
-        // глобальный список клеток, которые когда-либо твёрдые (индексация состояний)
-        var allCells = new System.Collections.Generic.List<Vector2Int>(SolidFor(MASKS - 1));
+        // глобальный список клеток, которые твёрдые ХОТЬ ПРИ КАКОЙ-ТО маске (индексация состояний).
+        // ⚠️ С инверсией одной маски MASKS-1 мало: тайлы инверсных групп в ней как раз отсутствуют.
+        var everSolid = new System.Collections.Generic.HashSet<Vector2Int>(rock);
+        for (int g = 0; g < G; g++) foreach (var k in gTiles[g]) everSolid.Add(k);
+        var allCells = new System.Collections.Generic.List<Vector2Int>(everSolid);
         var cellIdx = new System.Collections.Generic.Dictionary<Vector2Int, int>();
         for (int i = 0; i < allCells.Count; i++) cellIdx[allCells[i]] = i;
         int N = allCells.Count;
@@ -1057,6 +1121,14 @@ public class LevelEditorWindow : EditorWindow
             return TouchPossible(k => solid.Contains(k), a, t, c, h, RS, RU);
         };
         var fnBox = TargetBox(finish);
+        // Габариты кнопок — нажатие это КАСАНИЕ ПЭДОМ (TriggerTile.OnTriggerEnter), см. ниже.
+        var gButtonBox = new System.Collections.Generic.List<System.Collections.Generic.List<(Vector2 c, Vector2 h)>>();
+        for (int g = 0; g < gids.Count; g++)
+        {
+            var l = new System.Collections.Generic.List<(Vector2 c, Vector2 h)>();
+            foreach (var tr in gButtonTr[g]) l.Add(TargetBox(tr));
+            gButtonBox.Add(l);
+        }
 
         System.Func<int, Vector2Int, bool> IsHold = (m, k) =>
         { var s = SolidFor(m); return s.Contains(k) && !s.Contains(new Vector2Int(k.x, k.y + 1)); };
@@ -1099,6 +1171,37 @@ public class LevelEditorWindow : EditorWindow
             if (IsHold(0, allCells[i]) && CanStep(0, spK, allCells[i]))
             { int st0 = i; if (!seenState[st0]) { seenState[st0] = true; prevState[st0] = -1; depthState[st0] = 0; q.Enqueue(st0); } }
 
+        int minY = int.MaxValue;
+        foreach (var c0 in allCells) if (c0.y < minY) minY = c0.y;
+
+        /// <summary>
+        /// Переход со СМЕНОЙ МАСКИ (нажали кнопку или закончилось окно) с разрешением ПАДЕНИЯ.
+        /// ⭐ Падение — новый ход в модели (Level_07, 2026-09-01): если опора под ногами перестала быть
+        /// твёрдой, игрок летит вниз по своей колонке до первой твёрдой клетки. Падать некуда — это
+        /// смерть, и такой ход мы просто не рассматриваем. Если же над головой, наоборот, стало твёрдо
+        /// (вернулась инверсная стена) — стоять там нельзя, ход тоже отбрасываем.
+        /// </summary>
+        System.Action<int,int,int,byte> Enqueue = (from, nm, ci, kind) =>
+        {
+            var pos = allCells[ci];
+            var solidN = SolidFor(nm);
+            int idx = ci;
+            if (!solidN.Contains(pos))
+            {
+                int landY = int.MinValue;
+                for (int y = pos.y - 1; y >= minY; y--)
+                    if (solidN.Contains(new Vector2Int(pos.x, y))) { landY = y; break; }
+                if (landY == int.MinValue) return;                       // лететь до самого низа = смерть
+                int li; if (!cellIdx.TryGetValue(new Vector2Int(pos.x, landY), out li)) return;
+                idx = li;
+            }
+            else if (solidN.Contains(new Vector2Int(pos.x, pos.y + 1))) return;   // замуровало сверху
+            int ns = nm * N + idx;
+            if (seenState[ns]) return;
+            seenState[ns] = true; prevState[ns] = from; prevKind[ns] = kind;
+            depthState[ns] = depthState[from] + 1; q.Enqueue(ns);
+        };
+
         // ⚠️ ПОИСК ИДЁТ ДО КОНЦА, а не до финиша. Раньше обрывались на первом же состоянии, достающем
         // флаг, и ветки к ключам считались отдельно — в маске «все достижимые кнопки уже нажаты».
         // Из-за этого проход за НЕобязательной кнопкой выглядел готовым: не было видно, что кнопку надо
@@ -1120,14 +1223,32 @@ public class LevelEditorWindow : EditorWindow
             {
                 if ((m & (1 << g)) != 0) continue;
                 bool near = false;
-                foreach (var btn in gButtons[g])
-                    if (Mathf.Abs(btn.x - hc.x) <= PressCells && Mathf.Abs(btn.y - hc.y) <= PressCells)
-                    { near = true; break; }
+                for (int bi2 = 0; bi2 < gButtons[g].Count && !near; bi2++)
+                {
+                    // ⭐ Кнопка, лежащая ВНУТРИ другой группы, существует только пока хозяин твёрдый:
+                    // пока он в превью, она полупрозрачная и коллайдера у неё нет (Level_07: кнопка C
+                    // в группе D — сперва надо создать пол D, и только потом её можно нажать).
+                    int host = gButtonHost[g][bi2];
+                    if (host >= 0 && !TilesSolid(m, host)) continue;
+                    // ⭐ НАЖАТИЕ = КАСАНИЕ ПЭДОМ, той же проверкой, что подбор ключа: TriggerTile
+                    // срабатывает на OnTriggerEnter от пэда. Прежний радиус PressCells=2 «вплотную»
+                    // не пускал к кнопкам, до которых ТЯНУТСЯ, — на Level_07 кнопка D висит на ПОТОЛКЕ
+                    // (пол на y=20, кнопка на y=24), и модель не видела к ней подхода вовсе.
+                    if (!CanTouch(m, hc, gButtons[g][bi2], gButtonBox[g][bi2].c, gButtonBox[g][bi2].h)) continue;
+                    near = true;
+                }
                 if (!near) continue;
-                int nm = m | (1 << g); int ns = nm * N + ci;
-                if (seenState[ns]) continue;
-                seenState[ns] = true; prevState[ns] = cur; prevKind[ns] = 1;
-                depthState[ns] = depthState[cur] + 1; q.Enqueue(ns);
+                int nm = m | (1 << g);
+                Enqueue(cur, nm, ci, 1);
+            }
+            // ⭐ ОКНО ГРУППЫ ЗАКОНЧИЛОСЬ. Ход, которого раньше не было вовсе: маска умела только расти.
+            // Он нужен сам по себе (инверсная стена возвращается) и, главное, он единственный законный
+            // способ НАМЕРЕННО УПАСТЬ: встал на платформу группы, дождался конца окна — и полетел вниз
+            // (правило игрока: падение бывает только из-под исчезнувшей платформы).
+            for (int g = 0; g < G; g++)
+            {
+                if ((m & (1 << g)) == 0) continue;
+                Enqueue(cur, m & ~(1 << g), ci, 2);
             }
             // перейти на другой холд
             for (int j = 0; j < N; j++)
@@ -1396,6 +1517,8 @@ public class LevelEditorWindow : EditorWindow
         comp.groupId = groupId;
         comp.activeWindow = Mathf.Max(0.5f, _groupWindow);           // окно, выставленное в панели
         comp.warningTime  = Mathf.Min(comp.warningTime, comp.activeWindow * 0.5f);
+        comp.inverted      = _groupInverted;                         // режим, выставленный в панели
+        comp.crushOnReturn = _groupCrush;
         Undo.RegisterCreatedObjectUndo(go, "Create Disappear group");
         return go;
     }
@@ -3386,6 +3509,7 @@ public class LevelEditorWindow : EditorWindow
     private class SchemeReport
     {
         public bool noSpawn, noFinish;
+        public bool tooManyGroups;    // групп больше 12 — точный поиск по состояниям неподъёмен
         public bool finishOk;
         public int artOk, artTotal, cpOk, cpTotal;
         public int reachHolds, totalHolds;
@@ -3393,7 +3517,7 @@ public class LevelEditorWindow : EditorWindow
         public System.Collections.Generic.List<string> deadGroups = new System.Collections.Generic.List<string>();
         public System.Collections.Generic.List<string> pressOrder = new System.Collections.Generic.List<string>();
         /// <summary>Брак: то, из-за чего уровень нельзя отдавать игроку.</summary>
-        public bool Bad => noSpawn || !finishOk || artOk < artTotal || cpOk < cpTotal
+        public bool Bad => noSpawn || tooManyGroups || !finishOk || artOk < artTotal || cpOk < cpTotal
                         || deadGroups.Count > 0 || sealedPocket > SealedPocketLimit;
     }
 
@@ -3460,70 +3584,137 @@ public class LevelEditorWindow : EditorWindow
             for (int d = 1; d <= 4; d++)
             { var cand = new Vector2Int(spawn.x, spawn.y - d); if (rock.Contains(cand)) { spawn = cand; break; } }
 
-        // Активация групп: платформы нельзя использовать, пока не нажата кнопка. Активация только
-        // ДОБАВЛЯЕТ поверхности, значит достижимость растёт монотонно — крутим неподвижную точку.
-        var active = new System.Collections.Generic.HashSet<char>();
-        var order = new System.Collections.Generic.List<char>();
-        System.Collections.Generic.HashSet<Vector2Int> reach = null;
+        // ⭐ ПОИСК ПО СОСТОЯНИЯМ (позиция + маска групп) — ТОТ ЖЕ, что в ComputeRoute (2026-09-01).
+        // Прежде здесь крутилась НЕПОДВИЖНАЯ ТОЧКА, опиравшаяся на монотонность: «нажатие только
+        // ДОБАВЛЯЕТ поверхности». Монотонность ломают сразу две механики — инверсные группы (нажатие
+        // камень УБИРАЕТ) и намеренное падение из-под исчезнувшей платформы, — то есть схемы
+        // проверялись по другим правилам, чем настоящие уровни. Теперь правило одно.
+        // ⚠️ Инверсию сама СХЕМА пока выразить не может: в ASCII есть только «a-z тайлы, A-Z кнопки».
+        // Здесь все группы считаются обычными; появится обозначение — добавить сюда флаг, как в
+        // ComputeRoute.TilesSolid.
+        var groupList = new System.Collections.Generic.List<char>(groupTiles.Keys);
+        int G = groupList.Count;
+        if (G > 12) { rep.tooManyGroups = true; return rep; }
+        int MASKS = 1 << G;
 
-        for (int iter = 0; iter <= groupTiles.Count; iter++)
+        var union = new System.Collections.Generic.HashSet<Vector2Int>(rock);
+        foreach (var kv in groupTiles) foreach (var k in kv.Value) union.Add(k);
+        var cells = new System.Collections.Generic.List<Vector2Int>(union);
+        var cellIdx = new System.Collections.Generic.Dictionary<Vector2Int, int>();
+        for (int i = 0; i < cells.Count; i++) cellIdx[cells[i]] = i;
+        int N = cells.Count;
+        if (N == 0) return rep;
+
+        var solidCache = new System.Collections.Generic.Dictionary<int, System.Collections.Generic.HashSet<Vector2Int>>();
+        System.Func<int, System.Collections.Generic.HashSet<Vector2Int>> SolidFor = m =>
         {
-            var solidSet = new System.Collections.Generic.HashSet<Vector2Int>(rock);
-            foreach (var g in active)
-                if (groupTiles.TryGetValue(g, out var l)) foreach (var k in l) solidSet.Add(k);
-            System.Func<Vector2Int, bool> solid = k => solidSet.Contains(k);
+            System.Collections.Generic.HashSet<Vector2Int> got;
+            if (solidCache.TryGetValue(m, out got)) return got;
+            var s = new System.Collections.Generic.HashSet<Vector2Int>(rock);
+            for (int g = 0; g < G; g++)
+                if ((m & (1 << g)) != 0) foreach (var k in groupTiles[groupList[g]]) s.Add(k);
+            solidCache[m] = s; return s;
+        };
 
-            var holds = new System.Collections.Generic.List<Vector2Int>();
-            foreach (var k in solidSet) if (!solid(new Vector2Int(k.x, k.y + 1))) holds.Add(k);
+        int TOTAL = MASKS * N;
+        var seen = new bool[TOTAL];
+        var queue = new System.Collections.Generic.Queue<int>();
+        int minY = int.MaxValue; foreach (var c0 in cells) if (c0.y < minY) minY = c0.y;
 
-            reach = new System.Collections.Generic.HashSet<Vector2Int>();
-            var q = new System.Collections.Generic.Queue<Vector2Int>();
-            foreach (var h in holds)
-                if (StepPossible(solid, spawn, h, RS, RU) && reach.Add(h)) q.Enqueue(h);
-            while (q.Count > 0)
+        // Смена маски с разрешением ПАДЕНИЯ — как в ComputeRoute.Enqueue.
+        System.Action<int, int> Enter = (nm, ci) =>
+        {
+            var pos = cells[ci];
+            var s = SolidFor(nm);
+            int idx = ci;
+            if (!s.Contains(pos))
             {
-                var cur = q.Dequeue();
-                foreach (var h in holds)
-                    if (!reach.Contains(h) && StepPossible(solid, cur, h, RS, RU))
-                    { reach.Add(h); q.Enqueue(h); }
+                int landY = int.MinValue;
+                for (int y = pos.y - 1; y >= minY; y--)
+                    if (s.Contains(new Vector2Int(pos.x, y))) { landY = y; break; }
+                if (landY == int.MinValue) return;                        // падать некуда = смерть
+                if (!cellIdx.TryGetValue(new Vector2Int(pos.x, landY), out idx)) return;
             }
+            else if (s.Contains(new Vector2Int(pos.x, pos.y + 1))) return; // замуровало сверху
+            int st = nm * N + idx;
+            if (seen[st]) return;
+            seen[st] = true; queue.Enqueue(st);
+        };
 
-            // Цель (финиш/артефакт/чекпоинт) — ТОЧКА КАСАНИЯ, а не холд: см. TouchPossible.
-            System.Func<Vector2Int, bool> canGet = target =>
+        {
+            var s0 = SolidFor(0);
+            System.Func<Vector2Int, bool> sf0 = k => s0.Contains(k);
+            for (int i = 0; i < N; i++)
             {
-                foreach (var h in reach) if (TouchPossible(solid, h, target, RS, RU)) return true;
-                return false;
-            };
-
-            char opened = '\0';
-            foreach (var kv in groupButtons)
-            {
-                if (active.Contains(kv.Key) || !groupTiles.ContainsKey(kv.Key)) continue;
-                foreach (var btn in kv.Value)
-                {
-                    bool near = false;
-                    foreach (var h in reach)
-                        if (Mathf.Abs(btn.x - h.x) <= PressCells && Mathf.Abs(btn.y - h.y) <= PressCells)
-                        { near = true; break; }
-                    if (near) { opened = kv.Key; break; }
-                }
-                if (opened != '\0') break;
+                var c1 = cells[i];
+                if (!s0.Contains(c1) || s0.Contains(new Vector2Int(c1.x, c1.y + 1))) continue;
+                if (StepPossible(sf0, spawn, c1, RS, RU) && !seen[i]) { seen[i] = true; queue.Enqueue(i); }
             }
-            if (opened == '\0')
-            {
-                // фиксированная точка: считаем итог
-                rep.finishOk = finish.x < -9000 || canGet(finish);
-                foreach (var a in arts) if (canGet(a)) rep.artOk++;
-                foreach (var cp in checkpoints) if (canGet(cp)) rep.cpOk++;
-                foreach (var kv in groupTiles)
-                    if (!active.Contains(kv.Key)) rep.deadGroups.Add(char.ToUpper(kv.Key).ToString());
-                foreach (var o in order) rep.pressOrder.Add(char.ToUpper(o).ToString());
-                rep.reachHolds = reach.Count; rep.totalHolds = holds.Count;
-                rep.sealedPocket = LargestSealedPocket(solidSet, holds, reach);
-                return rep;
-            }
-            active.Add(opened); order.Add(opened);
         }
+
+        var reachedCells = new System.Collections.Generic.HashSet<Vector2Int>();
+        var activatedEver = new bool[G];
+        while (queue.Count > 0)
+        {
+            int cur = queue.Dequeue();
+            int m = cur / N, ci = cur % N;
+            var hc = cells[ci];
+            reachedCells.Add(hc);
+            var solidM = SolidFor(m);
+            System.Func<Vector2Int, bool> sf = k => solidM.Contains(k);
+
+            for (int g = 0; g < G; g++)                       // нажать кнопку (касание пэдом)
+            {
+                if ((m & (1 << g)) != 0) continue;
+                System.Collections.Generic.List<Vector2Int> btns;
+                if (!groupButtons.TryGetValue(groupList[g], out btns)) continue;
+                bool can = false;
+                foreach (var b in btns) if (TouchPossible(sf, hc, b, RS, RU)) { can = true; break; }
+                if (!can) continue;
+                if (!activatedEver[g])
+                { activatedEver[g] = true; rep.pressOrder.Add(char.ToUpper(groupList[g]).ToString()); }
+                Enter(m | (1 << g), ci);
+            }
+            for (int g = 0; g < G; g++)                       // окно закончилось (может уронить)
+                if ((m & (1 << g)) != 0) Enter(m & ~(1 << g), ci);
+            for (int j = 0; j < N; j++)                       // перейти на другой холд
+            {
+                int ns = m * N + j; if (seen[ns]) continue;
+                var t2 = cells[j];
+                if (!solidM.Contains(t2) || solidM.Contains(new Vector2Int(t2.x, t2.y + 1))) continue;
+                if (!StepPossible(sf, hc, t2, RS, RU)) continue;
+                seen[ns] = true; queue.Enqueue(ns);
+            }
+        }
+
+        // Цель (финиш/артефакт/чекпоинт) — ТОЧКА КАСАНИЯ: достижима, если её достаёт ХОТЬ ОДНО
+        // посещённое состояние (в своей маске — например, уже после того, как стена убрана).
+        var visited = new System.Collections.Generic.List<int>();
+        for (int st = 0; st < TOTAL; st++) if (seen[st]) visited.Add(st);
+        System.Func<Vector2Int, bool> canGet = target =>
+        {
+            foreach (int st in visited)
+            {
+                var s = SolidFor(st / N);
+                if (TouchPossible(k => s.Contains(k), cells[st % N], target, RS, RU)) return true;
+            }
+            return false;
+        };
+
+        rep.finishOk = finish.x < -9000 || canGet(finish);
+        foreach (var a in arts) if (canGet(a)) rep.artOk++;
+        foreach (var cp in checkpoints) if (canGet(cp)) rep.cpOk++;
+        for (int g = 0; g < G; g++)
+            if (!activatedEver[g]) rep.deadGroups.Add(char.ToUpper(groupList[g]).ToString());
+
+        // Холды и замурованные зоны считаем по ОБЪЕДИНЕНИЮ всех групп: клетка — холд, если она
+        // твёрдая и над ней пусто хоть при какой-то маске (так же, как оверлей в ComputeRoute).
+        var allHolds = new System.Collections.Generic.List<Vector2Int>();
+        foreach (var k in union) if (!union.Contains(new Vector2Int(k.x, k.y + 1))) allHolds.Add(k);
+        int reachCount = 0;
+        foreach (var k in allHolds) if (reachedCells.Contains(k)) reachCount++;
+        rep.reachHolds = reachCount; rep.totalHolds = allHolds.Count;
+        rep.sealedPocket = LargestSealedPocket(union, allHolds, reachedCells);
         return rep;
     }
 
@@ -3575,6 +3766,8 @@ public class LevelEditorWindow : EditorWindow
     {
         var rep = AnalyseScheme(grid);
         if (rep.noSpawn) { Debug.LogWarning("[Reach] ⚠ В схеме НЕТ спавна '@' — проверять нечего."); return; }
+        if (rep.tooManyGroups)
+        { Debug.LogWarning("[Reach] ⚠ Слишком много групп для точного поиска по состояниям."); return; }
         if (rep.noFinish) Debug.LogWarning("[Reach] ⚠ В схеме НЕТ финиша '^'.");
         int RS = Mathf.RoundToInt(_reachSideCells), RU = Mathf.RoundToInt(_reachUpCells);
         string msg = $"[Reach] Холдов достижимо: {rep.reachHolds}/{rep.totalHolds}. "
@@ -3647,19 +3840,49 @@ public class LevelEditorWindow : EditorWindow
         AssetDatabase.Refresh();
         RefreshExistingLevels();
 
-        // Выгружаем уровень из сцены — он сохранён в префаб, в сцене больше не нужен.
-        Object.DestroyImmediate(_root);
-        _root              = null;
-        _loadedPrefabPath  = null;
-        _tool              = Tool.Select;
-        AutoLevelName();
-
-        EditorSceneManager.MarkSceneDirty(
-            UnityEngine.SceneManagement.SceneManager.GetActiveScene());
+        ClearLoadedLevel();   // сохранён в префаб — в сцене больше не нужен
 
         EditorUtility.DisplayDialog("Сохранено!", $"Уровень сохранён:\n{path}", "OK");
         Debug.Log($"[LevelEditor] Сохранён и выгружен из сцены: {path}");
+    }
+
+    /// <summary>
+    /// Убрать уровень со сцены и вернуть окно в исходное состояние. Общий хвост для «Save» и
+    /// «Unload»: сохранение тоже выгружает уровень, и раньше эти шаги были только внутри SaveLevel.
+    /// </summary>
+    private void ClearLoadedLevel()
+    {
+        if (_root != null) Object.DestroyImmediate(_root);
+        _root             = null;
+        _loadedPrefabPath = null;
+        _tool             = Tool.Select;
+        AutoLevelName();
+        // Маршрут модели считается для загруженного уровня — держать его после выгрузки незачем.
+        _routePath = _routeReach = _routeDead = _routePress = _routeLostKeys = _routeBranchPress = null;
+        _routeBranch = null;
+        _routeInfo = "";
+        EditorSceneManager.MarkSceneDirty(
+            UnityEngine.SceneManagement.SceneManager.GetActiveScene());
+        SceneView.RepaintAll();
         Repaint();
+    }
+
+    /// <summary>
+    /// Выгрузить уровень со сцены. До этого выгрузить его можно было ТОЛЬКО сохранением (запрос
+    /// игрока 2026-09-01) — то есть чтобы просто убрать уровень с глаз, приходилось записывать
+    /// префаб. Спрашиваем, сохранять ли: потерять правки молча тут слишком легко.
+    /// </summary>
+    private void UnloadLevel()
+    {
+        if (_root == null) return;
+        int choice = EditorUtility.DisplayDialogComplex("Выгрузить уровень",
+            $"Уровень '{_root.name}' будет убран со сцены.",
+            "Сохранить и выгрузить", "Отмена", "Выгрузить без сохранения");
+        if (choice == 1) return;                    // Отмена
+        if (choice == 0) { SaveLevel(); return; }   // SaveLevel выгружает сам
+        string name = _root.name;
+        ClearLoadedLevel();
+        Debug.Log($"[LevelEditor] Уровень '{name}' выгружен из сцены БЕЗ сохранения.");
     }
 
     private void RefreshExistingLevels()
@@ -3740,17 +3963,9 @@ public class LevelEditorWindow : EditorWindow
     /// соседние по алфавиту группы получают максимально далёкие цвета, и 26 групп a-z не сливаются
     /// (равномерный шаг hue += 1/26 дал бы почти одинаковые соседние оттенки).
     /// </summary>
-    private static Color GroupColor(string groupId)
-    {
-        char c = string.IsNullOrEmpty(groupId) ? 'A' : char.ToUpperInvariant(groupId[0]);
-        int idx = Mathf.Clamp(c - 'A', 0, 25);
-        float hue = (idx * 0.6180339887f) % 1f;
-        // Одного оттенка мало: на 15-20 группах худшая пара сходится до 12° и цвета путаются. Поэтому
-        // чётные группы — яркие/светлые, нечётные — насыщенные/тёмные. Обе худшие пары (A/N, G/T)
-        // попадают в разную чётность и различаются уже по светлоте, а не только по тону.
-        bool dark = (idx & 1) == 1;
-        return Color.HSVToRGB(hue, dark ? 0.95f : 0.70f, dark ? 0.70f : 1f);
-    }
+    /// ⚠️ Сама формула переехала в рантайм (<see cref="GroupPalette"/>): той же краской красится
+    /// КНОПКА в игре, а держать два экземпляра одного правила нельзя — разъедутся.
+    private static Color GroupColor(string groupId) => GroupPalette.For(groupId);
 
     private static GUIStyle _groupLabelStyle;   // кэш: OnSceneGUI зовётся каждый repaint, не аллоцируем
 
