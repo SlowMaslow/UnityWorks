@@ -1,4 +1,4 @@
-using UnityEngine;
+﻿using UnityEngine;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using System.IO;
@@ -123,6 +123,35 @@ public class LevelEditorWindow : EditorWindow
     private bool    _schemeDecorate;
     // Генератор лабиринта: размер сетки комнат + сид (0 = случайный).
     [SerializeField] private int _mazeW = 5, _mazeH = 5, _mazeSeed = 0;   // см. пояснение к [SerializeField] ниже
+    /// <summary>⭐ РУЧКА СЛОЖНОСТИ ПАКА: сколько механизмов игрок обязан открыть ПО ПОРЯДКУ.
+    /// 1 — «нажал и прошёл», 3 — «открыл, поднялся, нашёл вторую кнопку, открыл третью». Это желаемая
+    /// глубина: сколько реально получится, зависит от формы лабиринта (см. лог плана).</summary>
+    [SerializeField] private int _mazeChain = 2;
+    /// <summary>⭐ Сколько дверей-инверсий (самозакрывающихся стен) дозволено на уровень.
+    /// ⚠️ Раньше здесь была жёсткая единица — осторожность дня, когда механика только появилась.
+    /// Она устарела (крушение проверено в игре, в ручном Level_07 таких групп две) и резала
+    /// разнообразие ВНУТРИ уровня, поэтому стала ручкой: дебют механики — 1, финал пака — 2-3.
+    /// ⚠️ Монотонность «дверь на каждом уровне» лечится НЕ этим лимитом, а приоритетом ворот
+    /// в планировщике (см. PuzzleComposer) — это две разные проблемы, их легко спутать.</summary>
+    [SerializeField] private int _mazeDoors = 2;
+    /// <summary>
+    /// ⭐ Потолок по числу механизмов на уровень. ⚠️ ЭТО НЕ ДИЗАЙНЕРСКОЕ ОГРАНИЧЕНИЕ, А ЦЕНА ПРОВЕРКИ:
+    /// поиск идёт по состояниям (позиция × 2^групп), а приёмка гоняет его ещё раз на КАЖДУЮ группу
+    /// («механизм несущий?»). Стоимость ≈ (G+1)·2^G — каждый лишний механизм УДВАИВАЕТ проверку.
+    /// Жёсткий предел модели — 12 групп (<see cref="LevelModel"/>), дальше поиск неподъёмен.
+    /// Само по себе число механизмов игре ничем не мешает.
+    /// </summary>
+    [SerializeField] private int _mazeMechs = 4;
+    /// <summary>Замысел последней сгенерированной схемы человеческими словами — для лога.</summary>
+    private string _mazePlanText = "";
+
+    // ⭐ СВОЙСТВА ГРУПП, КОТОРЫЕ ASCII-СХЕМА ВЫРАЗИТЬ НЕ МОЖЕТ (инверсия и т.д.) — едут отдельным
+    // каналом от генератора к импортёру и к проверке. Это первый шаг к тому, чтобы генератор отдавал
+    // СТРУКТУРУ вместо текста: геометрия пока в сетке символов, свойства уже нет.
+    // ⚠️ Привязаны к КОНКРЕТНОЙ схеме: игрок может вставить в поле импорта свой текст, и применять к
+    // нему свойства от прошлой генерации нельзя.
+    private System.Collections.Generic.List<ModuleStamp> _mazeStamps = new System.Collections.Generic.List<ModuleStamp>();
+    private string _mazeStampsFor = "";
 
     // ─── Tiles ────────────────────────────────────────────────────────────────
     private Sprite[]   _tileSprites = {};
@@ -934,7 +963,6 @@ public class LevelEditorWindow : EditorWindow
     /// </summary>
     /// <summary>Насколько близко надо подойти, чтобы нажать кнопку (клеток). Кнопку давят пэдом
     /// вплотную — это НЕ та же дистанция, что дотяжка до холда.</summary>
-    private const int PressCells = 2;
 
     // ⛔ КОРИДОР (BodyCorridor + DistToSegment) УДАЛЁН 2026-08-31 — НЕ ВОЗВРАЩАТЬ.
     // Это было единственное подобранное на глаз число модели: «траектория не отклоняется от прямой
@@ -946,32 +974,88 @@ public class LevelEditorWindow : EditorWindow
     // Проверено после удаления: спорный нырок под стену на Level_06 (6 вбок + 2 на обход = 8 > 7)
     // ПО-ПРЕЖНЕМУ запрещён, то есть послаблением это не стало — просто ограничение стало честным.
 
-    /// <summary>
-    /// Форма дотяжки — ВОСЬМИУГОЛЬНИК: пределы по осям + срезанные углы. Замерено на калибровочных
-    /// уровнях (Level_07/08, 28 станций, 2026-08-18): вбок ≤6, вверх ≤3, и сумма ≤7.
-    /// Совпало 13 из 13 замеров второго уровня + потолок вверх с первого.
-    /// ⛔ Прежняя коробка (↑4 ↔4, «можно и то и другое разом») давала невозможные диагонали вроде
-    /// (4,4); гипотеза про эллипс тоже отвергнута замером — она резала законные (4,3) и (2,3).
-    /// ⚠️ Горизонталь мерилась только на висящих полках: если под целью пол, игрок просто ДОЙДЁТ
-    /// пешком, и никакая дотяжка не нужна — на этом первый калибровочный уровень и обманул.
-    /// </summary>
-    private static bool InReach(int dx, int dy, int rs, int ru)
-    {
-        int ax = Mathf.Abs(dx), ay = Mathf.Abs(dy);
-        return ax <= rs && ay <= ru && ax + ay <= ReachSumCells;
-    }
     private const int ReachSumCells = 7;
 
+
     /// <summary>
-    /// Шаг влезает в коробку, но НЕ влезает в эллипс — то есть модель разрешила длинную диагональ
-    /// вроде (4,3), а это дистанция 5 клеток. Форма дотяжки пока не измерена (замеры ↑4 и ↔4 делались
-    /// по отдельности), поэтому такие шаги не запрещаем, а ПОДСВЕЧИВАЕМ: где линия оранжевая — там
-    /// модель могла соврать, и это надо проверить руками.
+    /// Уровень (иерархия GameObject) → <see cref="LevelSpec"/>. Всё, что модель знает об уровне,
+    /// собирается ЗДЕСЬ и только здесь; сама модель со сценой не работает и потому одинаково служит
+    /// и загруженному уровню, и тому, что породит генератор.
+    /// Возвращает null, если нет спавна или финиша.
     /// </summary>
-    private static bool SuspiciousStep(int dx, int dy, int rs, int ru)
+    private static LevelSpec BuildSpecFromLevel(GameObject root, float cell, string excludeGroup)
     {
-        float ex = dx / (float)Mathf.Max(1, rs), ey = dy / (float)Mathf.Max(1, ru);
-        return ex * ex + ey * ey > 1f + 1e-4f;
+        var spawn = root.transform.Find("SpawnPoint");
+        var finish = root.transform.Find("Flag_finish");
+        if (spawn == null || finish == null) return null;
+
+        var spec = new LevelSpec { cell = cell };
+        System.Func<Vector3, Vector2Int> K = p => new Vector2Int(
+            Mathf.RoundToInt(p.x / cell), Mathf.RoundToInt(p.y / cell));
+
+        // Габарит цели в клетках: касание — это перекрытие с КОЛЛАЙДЕРОМ, а не попадание в пивот
+        // (у артефакта триггер-сфера в 2 клетки поперёк, у флага плоская коробка у основания).
+        System.Action<Transform, LevelTarget> fill = (tr, t) =>
+        {
+            t.exists = true; t.world = tr.position; t.cell = K(tr.position);
+            var cols = tr.GetComponentsInChildren<Collider>(true);
+            if (cols.Length > 0)
+            {
+                var b = cols[0].bounds;
+                for (int i = 1; i < cols.Length; i++) b.Encapsulate(cols[i].bounds);
+                t.center = new Vector2(b.center.x / cell, b.center.y / cell);
+                t.half   = new Vector2(b.extents.x / cell, b.extents.y / cell);
+            }
+            else { t.center = new Vector2(tr.position.x / cell, tr.position.y / cell); t.half = Vector2.zero; }
+        };
+
+        var tilesG = root.transform.Find("Tiles");
+        if (tilesG != null) foreach (Transform t in tilesG) spec.rock.Add(K(t.position));
+
+        var dis = root.transform.Find("Disappearing");
+        if (dis != null) foreach (Transform c in dis)
+        {
+            var dp = c.GetComponent<DisappearingPlatform>(); if (dp == null) continue;
+            if (!string.IsNullOrEmpty(excludeGroup)
+                && dp.groupId.Equals(excludeGroup, System.StringComparison.OrdinalIgnoreCase)) continue;
+            var g = spec.GetOrAddGroup(dp.groupId, dp.inverted);
+            // ⚠️ Кнопку, лежащую ВНУТРИ группы, тайлом считать нельзя — она не поверхность.
+            foreach (Transform tl in c)
+                if (tl.GetComponentInChildren<TriggerTile>(true) == null) g.tiles.Add(K(tl.position));
+        }
+
+        // ⭐ Кнопки ищем ПО ВСЕМУ уровню, а не в контейнере "Triggers": игрок кладёт кнопку ВНУТРЬ
+        // группы, чтобы она была недоступна, пока та не открыта (Level_07: кнопка C лежит в группе D).
+        foreach (var tt in root.GetComponentsInChildren<TriggerTile>(true))
+        {
+            int gi = spec.IndexOfGroup(tt.groupId); if (gi < 0) continue;
+            int host = -1;
+            for (var p = tt.transform.parent; p != null; p = p.parent)
+            {
+                var owner = p.GetComponent<DisappearingPlatform>();
+                if (owner == null) continue;
+                host = spec.IndexOfGroup(owner.groupId); break;
+            }
+            var btn = new LevelButton { cell = K(tt.transform.position), host = host };
+            var box = new LevelTarget(); fill(tt.transform, box);
+            btn.center = box.center; btn.half = box.half;
+            spec.groups[gi].buttons.Add(btn);
+        }
+
+        spec.spawn = K(spawn.position);
+        fill(finish, spec.finish);
+        var arts = root.transform.Find("Artifacts");
+        if (arts != null) foreach (Transform a in arts)
+        {
+            // ⚠️ Ключ — это объект с компонентом Artifact, а не «всё, что лежит в контейнере»:
+            // в Level_01 там же лежит TutorArtifact, вещь другой природы.
+            if (a.GetComponentInChildren<Artifact>(true) == null) continue;
+            var t = new LevelTarget(); fill(a, t); spec.artifacts.Add(t);
+        }
+        var cps = root.transform.Find("Checkpoints");
+        if (cps != null) foreach (Transform c in cps)
+        { var t = new LevelTarget(); fill(c, t); spec.checkpoints.Add(t); }
+        return spec;
     }
 
     private void ComputeRoute()
@@ -991,277 +1075,42 @@ public class LevelEditorWindow : EditorWindow
             Mathf.RoundToInt(p.x / cell), Mathf.RoundToInt(p.y / cell));
         int RU = Mathf.RoundToInt(_reachUpCells), RS = Mathf.RoundToInt(_reachSideCells);
 
-        var rock = new System.Collections.Generic.HashSet<Vector2Int>();
-        var tilesG = _root.transform.Find("Tiles");
-        if (tilesG != null) foreach (Transform t in tilesG) rock.Add(K(t.position));
+        // ⭐ Уровень приводится к LevelSpec, а весь поиск живёт в LevelModel — одна реализация правил
+        // на маршрут по уровню и на проверку схем (раньше их было две, см. LevelModel).
+        var spec = BuildSpecFromLevel(_root, cell, _routeExclude);
+        if (spec == null) { _routeInfo = "нет спавна или финиша"; return; }
+        var model = new LevelModel(spec, RS, RU);
+        model.Search();
+        if (model.TooManyGroups)
+        { _routeInfo = "слишком много групп (" + spec.groups.Count + ") для точного поиска"; return; }
 
+        var allCells = model.Cells; int N = model.N, G = model.G, MASKS = model.MASKS, TOTAL = model.TOTAL;
+        var seenState = model.Seen; var prevState = model.Prev;
+        var prevKind = model.PrevKind; var depthState = model.Depth;
+        var spK = model.SpawnCell;
+        var fnK = spec.finish.cell;
+        System.Func<int, System.Collections.Generic.HashSet<Vector2Int>> SolidFor = m => model.SolidFor(m);
+        System.Func<int, Vector2Int, Vector2Int, bool> CanStep = (m, a, b) => model.CanStep(m, a, b);
+
+        // Финиш: первое по числу ходов состояние, из которого до флага дотягиваются.
+        int goal = -1, goalDepth = int.MaxValue;
+        for (int st = 0; st < TOTAL; st++)
+        {
+            if (!seenState[st] || depthState[st] >= goalDepth) continue;
+            if (!model.CanTouch(st / N, allCells[st % N], spec.finish)) continue;
+            goal = st; goalDepth = depthState[st];
+        }
+
+        // Алиасы под старый код ниже: имена групп и их кнопки берём уже из структуры.
         var gids = new System.Collections.Generic.List<string>();
-        var gTiles = new System.Collections.Generic.List<System.Collections.Generic.List<Vector2Int>>();
-        var gInverted = new System.Collections.Generic.List<bool>();   // тайлы твёрдые ПОКА кнопку не нажали
-        var dis = _root.transform.Find("Disappearing");
-        if (dis != null) foreach (Transform c in dis)
-        {
-            var dpc = c.GetComponent<DisappearingPlatform>(); if (dpc == null) continue;
-            if (!string.IsNullOrEmpty(_routeExclude)
-                && dpc.groupId.Equals(_routeExclude, System.StringComparison.OrdinalIgnoreCase)) continue;
-            int gi = gids.IndexOf(dpc.groupId);
-            if (gi < 0)
-            { gids.Add(dpc.groupId); gTiles.Add(new System.Collections.Generic.List<Vector2Int>());
-              gInverted.Add(dpc.inverted); gi = gids.Count - 1; }
-            // ⚠️ Кнопку, лежащую ВНУТРИ группы, тайлом группы считать нельзя — она не поверхность.
-            foreach (Transform tl in c)
-                if (tl.GetComponentInChildren<TriggerTile>(true) == null) gTiles[gi].Add(K(tl.position));
-        }
-        // ⭐ КНОПКИ ИЩЕМ ПО ВСЕМУ УРОВНЮ, а не в контейнере "Triggers": игрок кладёт кнопку ВНУТРЬ
-        // группы, чтобы она была недоступна, пока та группа не открыта (Level_07: кнопка C лежит в
-        // Disappear_D). Пока смотрели только в "Triggers", такой кнопки для модели не существовало.
         var gButtons = new System.Collections.Generic.List<System.Collections.Generic.List<Vector2Int>>();
-        var gButtonHost = new System.Collections.Generic.List<System.Collections.Generic.List<int>>();
-        var gButtonTr = new System.Collections.Generic.List<System.Collections.Generic.List<Transform>>();
-        for (int i = 0; i < gids.Count; i++)
-        { gButtons.Add(new System.Collections.Generic.List<Vector2Int>());
-          gButtonHost.Add(new System.Collections.Generic.List<int>());
-          gButtonTr.Add(new System.Collections.Generic.List<Transform>()); }
-        foreach (var tt in _root.GetComponentsInChildren<TriggerTile>(true))
+        foreach (var g in spec.groups)
         {
-            int gi = gids.IndexOf(tt.groupId); if (gi < 0) continue;
-            // Кнопка внутри группы-хозяина: нажать её можно, только пока ХОЗЯИН твёрдый.
-            int host = -1;
-            for (var p = tt.transform.parent; p != null; p = p.parent)
-            {
-                var owner = p.GetComponent<DisappearingPlatform>();
-                if (owner == null) continue;
-                host = gids.IndexOf(owner.groupId); break;
-            }
-            gButtons[gi].Add(K(tt.transform.position));
-            gButtonHost[gi].Add(host);
-            gButtonTr[gi].Add(tt.transform);
+            gids.Add(g.id);
+            var bl = new System.Collections.Generic.List<Vector2Int>();
+            foreach (var b in g.buttons) bl.Add(b.cell);
+            gButtons.Add(bl);
         }
-
-        var spawn = _root.transform.Find("SpawnPoint");
-        var finish = _root.transform.Find("Flag_finish");
-        if (spawn == null || finish == null) { _routeInfo = "нет спавна или финиша"; return; }
-        Vector2Int spK = K(spawn.position), fnK = K(finish.position);
-
-        int G = gids.Count;
-        if (G > 12) { _routeInfo = "слишком много групп (" + G + ") для точного поиска"; return; }
-        int MASKS = 1 << G;
-
-        // ⭐ БИТ МАСКИ = «ОКНО ГРУППЫ ИДЁТ» (кнопка нажата), а НЕ «тайлы твёрдые». Для обычной группы
-        // это одно и то же, для ИНВЕРСНОЙ — противоположное: у неё покой = твёрдо, нажатие УБИРАЕТ.
-        // Раньше бит означал «твёрдые», и модель считала стены инверсных групп отсутствующими —
-        // на Level_07 она спускалась к нижнему ключу СКВОЗЬ пробку группы E.
-        System.Func<int, int, bool> TilesSolid = (m, g) =>
-            gInverted[g] ? (m & (1 << g)) == 0 : (m & (1 << g)) != 0;
-        var solidCache = new System.Collections.Generic.Dictionary<int, System.Collections.Generic.HashSet<Vector2Int>>();
-        System.Func<int, System.Collections.Generic.HashSet<Vector2Int>> SolidFor = m =>
-        {
-            System.Collections.Generic.HashSet<Vector2Int> got;
-            if (solidCache.TryGetValue(m, out got)) return got;
-            var s = new System.Collections.Generic.HashSet<Vector2Int>(rock);
-            for (int g = 0; g < G; g++) if (TilesSolid(m, g)) foreach (var k in gTiles[g]) s.Add(k);
-            solidCache[m] = s; return s;
-        };
-
-        // глобальный список клеток, которые твёрдые ХОТЬ ПРИ КАКОЙ-ТО маске (индексация состояний).
-        // ⚠️ С инверсией одной маски MASKS-1 мало: тайлы инверсных групп в ней как раз отсутствуют.
-        var everSolid = new System.Collections.Generic.HashSet<Vector2Int>(rock);
-        for (int g = 0; g < G; g++) foreach (var k in gTiles[g]) everSolid.Add(k);
-        var allCells = new System.Collections.Generic.List<Vector2Int>(everSolid);
-        var cellIdx = new System.Collections.Generic.Dictionary<Vector2Int, int>();
-        for (int i = 0; i < allCells.Count; i++) cellIdx[allCells[i]] = i;
-        int N = allCells.Count;
-
-        // ⭐ ПЕРЕХОД ВОЗМОЖЕН, ТОЛЬКО ЕСЛИ ТУДА ПРОЙДУТ ОБА ПЭДА (объяснение игрока 2026-08-18).
-        // Игрок — не точка, а связка из двух пэдов на плечах: даже если один обогнёт край полки,
-        // второму туда уже не дотянуться, телом вокруг платформы не вывернуться. Считает это
-        // БЮДЖЕТ ПУТИ в PathPossible: обход стоит клеток, и на растяжке их не остаётся.
-        // ⚠️ Считаем ТЕМИ ЖЕ StepPossible/TouchPossible, что и проверки схем: раньше здесь лежала
-        // своя копия обхода, и правило жило в двух местах — ровно так уже расходились
-        // makesPinch с CheckDiagonalPinch. Кэш остаётся, обход — общий.
-        System.Func<long, int, Vector2Int, Vector2Int, long> ckey = (tag, m, a, b) =>
-            (tag << 60) ^ ((long)m << 48) ^ ((long)(a.x + 512) << 36) ^ ((long)(a.y + 512) << 24)
-            ^ ((long)(b.x + 512) << 12) ^ (long)(b.y + 512);
-        var stepCache = new System.Collections.Generic.Dictionary<long, bool>();
-        System.Func<int, Vector2Int, Vector2Int, bool> CanStep = (m, a, b) =>
-        {
-            if (!InReach(b.x - a.x, b.y - a.y, RS, RU)) return false;
-            long key = ckey(0, m, a, b);
-            bool cached;
-            if (stepCache.TryGetValue(key, out cached)) return cached;
-            var solid = SolidFor(m);
-            bool ok = StepPossible(k => solid.Contains(k), a, b, RS, RU);
-            stepCache[key] = ok; return ok;
-        };
-
-        // ⭐ ГАБАРИТ ЦЕЛИ, а не точка пивота. Касание в игре — это перекрытие с КОЛЛАЙДЕРОМ
-        // (`Artifact.OnTriggerEnter`), и он совсем не точечный: у артефакта триггер-сфера ~1 юнит,
-        // то есть 2 клетки поперёк, у финишного флага — плоская коробка у основания, у чекпоинта —
-        // высокая. Меряем дотяжку до БЛИЖАЙШЕЙ ТОЧКИ этого габарита и в ДРОБНЫХ клетках.
-        // Зачем дробных: позиции целей ставятся руками и почти все (23 из 30 на шести уровнях) стоят
-        // ровно на границе округления — кто именно из двух соседних клеток достанется цели, решало
-        // правило округления, а не геометрия. Флаг Level_05 так и уехал внутрь пола.
-        System.Func<Transform, (Vector2 c, Vector2 h)> TargetBox = tr =>
-        {
-            var cols = tr.GetComponentsInChildren<Collider>(true);
-            if (cols.Length > 0)
-            {
-                var b = cols[0].bounds;
-                for (int i = 1; i < cols.Length; i++) b.Encapsulate(cols[i].bounds);
-                return (new Vector2(b.center.x / cell, b.center.y / cell),
-                        new Vector2(b.extents.x / cell, b.extents.y / cell));
-            }
-            return (new Vector2(tr.position.x / cell, tr.position.y / cell), Vector2.zero);
-        };
-        // Кэш не нужен: TouchPossible вызывается на пару порядков реже, чем шаг холд→холд, а путь
-        // внутри ограничен бюджетом в 7 клеток.
-        System.Func<int, Vector2Int, Vector2Int, Vector2, Vector2, bool> CanTouch = (m, a, t, c, h) =>
-        {
-            var solid = SolidFor(m);
-            return TouchPossible(k => solid.Contains(k), a, t, c, h, RS, RU);
-        };
-        var fnBox = TargetBox(finish);
-        // Габариты кнопок — нажатие это КАСАНИЕ ПЭДОМ (TriggerTile.OnTriggerEnter), см. ниже.
-        var gButtonBox = new System.Collections.Generic.List<System.Collections.Generic.List<(Vector2 c, Vector2 h)>>();
-        for (int g = 0; g < gids.Count; g++)
-        {
-            var l = new System.Collections.Generic.List<(Vector2 c, Vector2 h)>();
-            foreach (var tr in gButtonTr[g]) l.Add(TargetBox(tr));
-            gButtonBox.Add(l);
-        }
-
-        System.Func<int, Vector2Int, bool> IsHold = (m, k) =>
-        { var s = SolidFor(m); return s.Contains(k) && !s.Contains(new Vector2Int(k.x, k.y + 1)); };
-
-        // ── ПОИСК ПО СОСТОЯНИЯМ (позиция, маска включённых групп) ────────────────────────────────
-        // Жать все кнопки подряд НЕ нужно: обязательны только те, без которых не добраться до финиша
-        // (замечание игрока 2026-08-18 — прошлая версия тащила маршрут через кнопки веток за ключами).
-        // Поиск сам находит минимальный набор: нажатие — такой же ход, как перемещение, и BFS
-        // предпочтёт маршрут с меньшим числом ходов.
-        int TOTAL = MASKS * N;
-        var prevState = new int[TOTAL]; var prevKind = new byte[TOTAL];   // 0 = ход, 1 = нажатие
-        var seenState = new bool[TOTAL];
-        var depthState = new int[TOTAL];   // ходов от спавна — по нему выбираем, откуда брать ключ
-        var q = new System.Collections.Generic.Queue<int>();
-        // ⚠️ НЕ полагаемся на то, что маркер спавна попал ровно в клетку пола: в Level_01 он стоит на
-        // y=2.25, вне сетки 0.5 (уровень собран до нынешней сетки), и округление давало пустую клетку —
-        // модель не стартовала вовсе, 0 достижимых холдов. Берём ближайшую ОПОРУ под спавном.
-        {
-            var below = spK;
-            bool found = false;
-            for (int d = 0; d <= 4 && !found; d++)
-            {
-                var cand = new Vector2Int(spK.x, spK.y - d);
-                if (SolidFor(0).Contains(cand)) { below = cand; found = true; }
-            }
-            if (!found)   // совсем ничего под ногами — берём ближайший холд по расстоянию
-            {
-                int bi = -1; float bd = float.MaxValue;
-                for (int i = 0; i < N; i++)
-                {
-                    if (!IsHold(0, allCells[i])) continue;
-                    float d2 = (allCells[i] - spK).sqrMagnitude;
-                    if (d2 < bd) { bd = d2; bi = i; }
-                }
-                if (bi >= 0) below = allCells[bi];
-            }
-            spK = below;
-        }
-        for (int i = 0; i < N; i++)
-            if (IsHold(0, allCells[i]) && CanStep(0, spK, allCells[i]))
-            { int st0 = i; if (!seenState[st0]) { seenState[st0] = true; prevState[st0] = -1; depthState[st0] = 0; q.Enqueue(st0); } }
-
-        int minY = int.MaxValue;
-        foreach (var c0 in allCells) if (c0.y < minY) minY = c0.y;
-
-        /// <summary>
-        /// Переход со СМЕНОЙ МАСКИ (нажали кнопку или закончилось окно) с разрешением ПАДЕНИЯ.
-        /// ⭐ Падение — новый ход в модели (Level_07, 2026-09-01): если опора под ногами перестала быть
-        /// твёрдой, игрок летит вниз по своей колонке до первой твёрдой клетки. Падать некуда — это
-        /// смерть, и такой ход мы просто не рассматриваем. Если же над головой, наоборот, стало твёрдо
-        /// (вернулась инверсная стена) — стоять там нельзя, ход тоже отбрасываем.
-        /// </summary>
-        System.Action<int,int,int,byte> Enqueue = (from, nm, ci, kind) =>
-        {
-            var pos = allCells[ci];
-            var solidN = SolidFor(nm);
-            int idx = ci;
-            if (!solidN.Contains(pos))
-            {
-                int landY = int.MinValue;
-                for (int y = pos.y - 1; y >= minY; y--)
-                    if (solidN.Contains(new Vector2Int(pos.x, y))) { landY = y; break; }
-                if (landY == int.MinValue) return;                       // лететь до самого низа = смерть
-                int li; if (!cellIdx.TryGetValue(new Vector2Int(pos.x, landY), out li)) return;
-                idx = li;
-            }
-            else if (solidN.Contains(new Vector2Int(pos.x, pos.y + 1))) return;   // замуровало сверху
-            int ns = nm * N + idx;
-            if (seenState[ns]) return;
-            seenState[ns] = true; prevState[ns] = from; prevKind[ns] = kind;
-            depthState[ns] = depthState[from] + 1; q.Enqueue(ns);
-        };
-
-        // ⚠️ ПОИСК ИДЁТ ДО КОНЦА, а не до финиша. Раньше обрывались на первом же состоянии, достающем
-        // флаг, и ветки к ключам считались отдельно — в маске «все достижимые кнопки уже нажаты».
-        // Из-за этого проход за НЕобязательной кнопкой выглядел готовым: не было видно, что кнопку надо
-        // нажать, а холды за ней красились недостижимыми (фидбэк игрока 2026-08-31). Теперь и финиш, и
-        // ключи берутся из ОДНОГО дерева состояний, где нажатие — такой же ход, как перемещение.
-        int goal = -1;
-        while (q.Count > 0)
-        {
-            int cur = q.Dequeue();
-            int m = cur / N, ci = cur % N;
-            var hc = allCells[ci];
-            if (goal < 0 && CanTouch(m, hc, fnK, fnBox.c, fnBox.h))   // флаг — касание габарита, не холд
-                goal = cur;
-            // Нажать кнопку доступной группы. ⚠️ Радиус нажатия ЖЁСТЧЕ, чем дотяжка до холда: кнопку
-            // давят пэдом, стоя рядом, а не тянутся к ней через полкомнаты. При общей дотяжке (4 клетки)
-            // модель «нажимала» с 2 юнитов, маршрут проходил мимо кнопки, и это читалось как игнор
-            // кнопок (фидбэк игрока 2026-08-18).
-            for (int g = 0; g < G; g++)
-            {
-                if ((m & (1 << g)) != 0) continue;
-                bool near = false;
-                for (int bi2 = 0; bi2 < gButtons[g].Count && !near; bi2++)
-                {
-                    // ⭐ Кнопка, лежащая ВНУТРИ другой группы, существует только пока хозяин твёрдый:
-                    // пока он в превью, она полупрозрачная и коллайдера у неё нет (Level_07: кнопка C
-                    // в группе D — сперва надо создать пол D, и только потом её можно нажать).
-                    int host = gButtonHost[g][bi2];
-                    if (host >= 0 && !TilesSolid(m, host)) continue;
-                    // ⭐ НАЖАТИЕ = КАСАНИЕ ПЭДОМ, той же проверкой, что подбор ключа: TriggerTile
-                    // срабатывает на OnTriggerEnter от пэда. Прежний радиус PressCells=2 «вплотную»
-                    // не пускал к кнопкам, до которых ТЯНУТСЯ, — на Level_07 кнопка D висит на ПОТОЛКЕ
-                    // (пол на y=20, кнопка на y=24), и модель не видела к ней подхода вовсе.
-                    if (!CanTouch(m, hc, gButtons[g][bi2], gButtonBox[g][bi2].c, gButtonBox[g][bi2].h)) continue;
-                    near = true;
-                }
-                if (!near) continue;
-                int nm = m | (1 << g);
-                Enqueue(cur, nm, ci, 1);
-            }
-            // ⭐ ОКНО ГРУППЫ ЗАКОНЧИЛОСЬ. Ход, которого раньше не было вовсе: маска умела только расти.
-            // Он нужен сам по себе (инверсная стена возвращается) и, главное, он единственный законный
-            // способ НАМЕРЕННО УПАСТЬ: встал на платформу группы, дождался конца окна — и полетел вниз
-            // (правило игрока: падение бывает только из-под исчезнувшей платформы).
-            for (int g = 0; g < G; g++)
-            {
-                if ((m & (1 << g)) == 0) continue;
-                Enqueue(cur, m & ~(1 << g), ci, 2);
-            }
-            // перейти на другой холд
-            for (int j = 0; j < N; j++)
-            {
-                int ns = m * N + j; if (seenState[ns]) continue;
-                var t2 = allCells[j];
-                if (!IsHold(m, t2)) continue;
-                if (!CanStep(m, hc, t2)) continue;
-                seenState[ns] = true; prevState[ns] = cur; prevKind[ns] = 0;
-                depthState[ns] = depthState[cur] + 1; q.Enqueue(ns);
-            }
-        }
-
         // Цепочка состояний от спавна до st (первым идёт стартовое состояние).
         System.Func<int, System.Collections.Generic.List<int>> ChainTo = st =>
         {
@@ -1331,7 +1180,7 @@ public class LevelEditorWindow : EditorWindow
             foreach (var k in allSolid)
             {
                 if (allSolid.Contains(new Vector2Int(k.x, k.y + 1))) continue;   // не холд ни при какой маске
-                int ci; if (!cellIdx.TryGetValue(k, out ci)) continue;
+                int ci = model.CellIndex(k); if (ci < 0) continue;
                 if (reachedCells.Contains(ci)) _routeReach.Add(W(k)); else _routeDead.Add(W(k));
             }
         }
@@ -1341,36 +1190,18 @@ public class LevelEditorWindow : EditorWindow
         int keysOk = 0, keysTotal = 0;
         var keyNeeds = new System.Collections.Generic.List<string>();
         {
-            var artsG = _root.transform.Find("Artifacts");
-            if (artsG != null)
             {
                 int keyNo = 0;
-                foreach (Transform a in artsG)
+                foreach (var art in spec.artifacts)
                 {
-                    // ⚠️ КЛЮЧ — НЕ «ВСЁ, ЧТО ЛЕЖИТ В Artifacts». Считаем ключом только то, что несёт
-                    // компонент Artifact (он и даёт подбор через OnTriggerEnter). В Level_01 в этом же
-                    // контейнере лежит TutorArtifact — вещь другой природы, не ключ (уточнил игрок
-                    // 2026-08-31), и из-за него уровень показывал 4 ключа вместо трёх.
-                    if (a.GetComponentInChildren<Artifact>(true) == null) continue;
                     keysTotal++; keyNo++;
-                    var ak = K(a.position);
-                    var akBox = TargetBox(a);
                     // ⚠️ Берём состояние с БЛИЖАЙШИМ К КЛЮЧУ холдом (число ходов — только тай-брейк).
                     // Раньше сравнивали ТОЛЬКО дальность от маршрута, и ветка цеплялась за первый холд
                     // минимальной дальности: на Level_06 линия шла через пол-экрана на 6 клеток, хотя
                     // зацеп есть прямо под ключом (фидбэк игрока со скриншотом). Последний отрезок ветки
                     // игрок читает как «вот так дотянуться» — он обязан показывать самый близкий хват.
-                    int best = -1, bnear = int.MaxValue, bd = int.MaxValue;
-                    for (int st = 0; st < TOTAL; st++)
-                    {
-                        if (!seenState[st]) continue;
-                        var hc = allCells[st % N];
-                        int near = Mathf.Abs(hc.x - ak.x) + Mathf.Abs(hc.y - ak.y);
-                        if (near > bnear || (near == bnear && depthState[st] >= bd)) continue;
-                        if (!CanTouch(st / N, hc, ak, akBox.c, akBox.h)) continue;
-                        bnear = near; bd = depthState[st]; best = st;
-                    }
-                    if (best < 0) { _routeLostKeys.Add(new Vector3(a.position.x, a.position.y, 0f)); continue; }
+                    int best = model.FindTouchState(art);
+                    if (best < 0) { _routeLostKeys.Add(new Vector3(art.world.x, art.world.y, 0f)); continue; }
                     keysOk++;
 
                     // Ветку рисуем от места, где она ОТДЕЛЯЕТСЯ от основного маршрута: обе цепочки
@@ -1389,7 +1220,7 @@ public class LevelEditorWindow : EditorWindow
 
                     var line = new System.Collections.Generic.List<Vector3>();
                     foreach (var k in wp) line.Add(W(k));
-                    line.Add(new Vector3(a.position.x, a.position.y, 0f));
+                    line.Add(new Vector3(art.world.x, art.world.y, 0f));
                     if (line.Count > 1) _routeBranch.Add(line);
 
                     // Кнопки, которых нет на обязательном маршруте — то есть нажимаемые РАДИ КЛЮЧА.
@@ -1502,7 +1333,12 @@ public class LevelEditorWindow : EditorWindow
         return null;
     }
 
-    private GameObject GetOrCreateDisappearGroup(string groupId)
+    /// <param name="usePanelMode">Брать ли режим (инверсия/раздавливание) из панели редактора.
+    /// ⚠️ ИМПОРТУ — НЕЛЬЗЯ. Тумблер «Инверсная» запоминается между сессиями (`[SerializeField]`), и
+    /// если игрок включил его когда-то руками, импорт схемы делал ИНВЕРСНЫМИ ВСЕ группы уровня.
+    /// Ровно так и вышло с Level_08: генератор пометил дверью одну группу D, а в уровне их стало
+    /// четыре. Импорт создаёт группы обычными, а инверсию ставит потом — по штампам генератора.</param>
+    private GameObject GetOrCreateDisappearGroup(string groupId, bool usePanelMode = true)
     {
         var parent = GetGroup("Disappearing");
         foreach (Transform c in parent)
@@ -1517,8 +1353,8 @@ public class LevelEditorWindow : EditorWindow
         comp.groupId = groupId;
         comp.activeWindow = Mathf.Max(0.5f, _groupWindow);           // окно, выставленное в панели
         comp.warningTime  = Mathf.Min(comp.warningTime, comp.activeWindow * 0.5f);
-        comp.inverted      = _groupInverted;                         // режим, выставленный в панели
-        comp.crushOnReturn = _groupCrush;
+        comp.inverted      = usePanelMode && _groupInverted;         // режим из панели — только для ручной кладки
+        comp.crushOnReturn = !usePanelMode || _groupCrush;
         Undo.RegisterCreatedObjectUndo(go, "Create Disappear group");
         return go;
     }
@@ -1672,6 +1508,19 @@ public class LevelEditorWindow : EditorWindow
             _mazeW    = EditorGUILayout.IntField(new GUIContent("Комнат ↔", "Ширина сетки комнат"), _mazeW);
             _mazeH    = EditorGUILayout.IntField(new GUIContent("Комнат ↕", "Высота сетки комнат"), _mazeH);
             _mazeSeed = EditorGUILayout.IntField(new GUIContent("Seed", "0 = случайный каждый раз"), _mazeSeed);
+            _mazeChain = EditorGUILayout.IntSlider(new GUIContent("Цепочка",
+                "Сколько механизмов игрок обязан открыть ПО ПОРЯДКУ: 1 — нажал и прошёл, 3 — открыл, "
+                + "поднялся, нашёл вторую кнопку, открыл третью. Сколько выйдет на деле — в логе плана."),
+                _mazeChain, 0, 4);
+            _mazeDoors = EditorGUILayout.IntSlider(new GUIContent("Дверей-инверсий",
+                "Потолок по самозакрывающимся стенам на уровень. 1 — дебют механики, 2-3 — финал пака. "
+                + "На то, как ЧАСТО дверь вообще появляется, не влияет: там решает приоритет ворот."),
+                _mazeDoors, 0, 3);
+            _mazeMechs = EditorGUILayout.IntSlider(new GUIContent("Механизмов",
+                "Потолок по числу механизмов на уровень. Ограничение здесь одно — ЦЕНА ПРОВЕРКИ: "
+                + "каждый лишний механизм удваивает поиск по состояниям, а приёмка гоняет его ещё раз "
+                + "на каждую группу. Предел модели — 12 групп. Игре само число механизмов не мешает."),
+                _mazeMechs, 1, 10);
         }
         // По одному полю в строке: вчетвером в одной строке подписи сжимались до нечитаемого вида,
         // и легко было ввести число не в то поле.
@@ -1705,6 +1554,7 @@ public class LevelEditorWindow : EditorWindow
     /// впритык не берётся (плейтест 2026-07-18). Держим ряд запаса.</summary>
     private const int MazeClimb = 3;
 
+
     /// <summary>
     /// ⭐ ГЕНЕРАТОР НЕ ОТДАЁТ БРАК: строит схему, САМ проверяет её моделью проходимости
     /// (<see cref="AnalyseScheme"/>) и, если что-то не так, перебрасывает со следующим сидом.
@@ -1720,25 +1570,69 @@ public class LevelEditorWindow : EditorWindow
     private string GenerateMazeScheme()
     {
         const int MaxTries = 12;
+        /// Сколько попыток тратим на ДОБОР ГЛУБИНЫ, когда чистая схема уже есть (см. ниже).
+        const int ChainSearchTries = 5;
         string best = null; int bestScore = int.MinValue; int usedTry = 0;
+        // Лучшая ЧИСТАЯ схема, которой не хватило только глубины: если запрошенное сцепление ни разу
+        // не выйдет, отдадим самую глубокую из чистых, а не первую попавшуюся.
+        string bestClean = null; int bestCleanChain = -1, bestCleanTry = 0;
+        // ⚠️ СВОЙСТВА ГРУПП ЕДУТ ВМЕСТЕ СО СХЕМОЙ. _mazeStamps всегда описывают ПОСЛЕДНЮЮ построенную
+        // схему, а вернуть мы можем более раннюю. Без переноса InvertedGroupsFor вернул бы пустоту
+        // (ключ _mazeStampsFor не совпал), и дверь-инверсия импортировалась бы обычной группой —
+        // ровно тот класс бага, на котором уже обожглись с Level_08.
+        System.Collections.Generic.List<ModuleStamp> bestCleanStamps = null, bestStamps = null;
+        string bestCleanPlan = "", bestPlan = "";
         for (int tryNo = 0; tryNo < MaxTries; tryNo++)
         {
-            string scheme = GenerateMazeSchemeOnce(_mazeSeed == 0 ? 0 : _mazeSeed + tryNo);
+            // ⚠️ ШАГ ПЕРЕБОРА — БОЛЬШОЕ ПРОСТОЕ ЧИСЛО, А НЕ +1. При шаге в единицу соседние сиды
+            // сходятся на одной схеме: сид 7 при браке пробует 8, и если чистой оказалась она, то
+            // сиды 7, 8 и 9 дают ОДИН И ТОТ ЖЕ уровень (поймано на подборе кандидатов). Для дейли это
+            // означало бы одинаковый уровень несколько дней подряд.
+            string scheme = GenerateMazeSchemeOnce(_mazeSeed == 0 ? 0 : _mazeSeed + tryNo * 7919);
             var lines = scheme.Replace("\r", "").Split('\n');
             var grid = new char[lines.Length][];
             for (int i = 0; i < lines.Length; i++) grid[i] = lines[i].ToCharArray();
-            var rep = AnalyseScheme(grid);
+            var rep = AnalyseScheme(grid, InvertedGroupsFor(scheme), ButtonHostsFor(scheme));
             if (!rep.Bad)
             {
-                if (tryNo > 0)
-                    Debug.Log($"[Maze] Схема принята с попытки {tryNo + 1}: предыдущие забракованы самопроверкой.");
-                return scheme;
+                // ⭐ РУЧКА «ЦЕПОЧКА» — ТРЕБОВАНИЕ, А НЕ ПОЖЕЛАНИЕ. Меряем сцепление по МОДЕЛИ (кто без
+                // кого не нажимается), а не по замыслу компоновщика: замер 24 схем показал расхождения
+                // в обе стороны. Не добрали глубину — перебрасываем сид, как при любом другом браке.
+                if (rep.chainDepth >= _mazeChain)
+                {
+                    if (tryNo > 0)
+                        Debug.Log($"[Maze] Схема принята с попытки {tryNo + 1}: предыдущие забракованы самопроверкой.");
+                    Debug.Log($"[Maze] Замысел: {_mazePlanText} → по модели сцепление {rep.chainDepth}");
+                    return scheme;
+                }
+                if (rep.chainDepth > bestCleanChain)
+                {
+                    bestCleanChain = rep.chainDepth; bestClean = scheme; bestCleanTry = tryNo;
+                    bestCleanStamps = _mazeStamps; bestCleanPlan = _mazePlanText;
+                }
+                // ⚠️ ЗА ГЛУБИНОЙ ГОНИМСЯ НЕ ДО ПОСЛЕДНЕГО. Брак искать все 12 попыток надо — уровень с
+                // недостижимой целью отдавать нельзя ни при каких условиях. А вот «цепочка вышла 2
+                // вместо 3» — это НЕ брак, а недобор: схема играбельна. Без этого предела запрос
+                // цепочки 3 на форме, которая её не даёт, сжигал все 12 попыток по 4 поиска каждая, и
+                // редактор замирал почти на минуту на одну кнопку.
+                if (tryNo + 1 >= ChainSearchTries) break;
+                continue;
             }
             // Худшее — недостижимая цель, дальше мёртвые группы, дальше замурованный объём.
             int score = -1000 * ((rep.finishOk ? 0 : 1) + (rep.artTotal - rep.artOk) + (rep.cpTotal - rep.cpOk))
                         - 100 * rep.deadGroups.Count - rep.sealedPocket;
-            if (score > bestScore) { bestScore = score; best = scheme; usedTry = tryNo; }
+            if (score > bestScore)
+            { bestScore = score; best = scheme; usedTry = tryNo; bestStamps = _mazeStamps; bestPlan = _mazePlanText; }
         }
+        if (bestClean != null)
+        {
+            _mazeStamps = bestCleanStamps; _mazeStampsFor = bestClean; _mazePlanText = bestCleanPlan;
+            Debug.Log($"[Maze] Замысел: {bestCleanPlan} → по модели сцепление {bestCleanChain} "
+                + $"вместо запрошенных {_mazeChain}: за {MaxTries} попыток форма лабиринта глубже не дала "
+                + $"(отдаю попытку {bestCleanTry + 1}, брака в ней нет).");
+            return bestClean;
+        }
+        _mazeStamps = bestStamps; _mazeStampsFor = best; _mazePlanText = bestPlan;
         Debug.LogWarning($"[Maze] За {MaxTries} попыток чистая схема не вышла — отдаю лучшую из них "
             + $"(попытка {usedTry + 1}). Жми «Проверить схему», чтобы увидеть, что именно не так.");
         return best;
@@ -2516,12 +2410,18 @@ public class LevelEditorWindow : EditorWindow
                 break;
             }
 
-        // ── ВОРОТА ИЗ ПОЯВЛЯЮЩИХСЯ ПЛАТФОРМ ──────────────────────────────────────────────────────
-        // Ступенька вертикального прохода строится из платформ группы. Без нажатой кнопки подъём с пола
-        // до потолка = H+1 рядов; при H ≥ 4 это больше дотяжки ↑4, значит зона за проходом недостижима.
-        // Обхода нет ПО ПОСТРОЕНИЮ: лабиринт — остовное дерево, другого пути в ту комнату не существует.
-        // Кнопка ставится с ОБЕИХ сторон: снизу — открыть проход, внутри зоны — вернуться тем же путём.
-        // ⛔ Намеренные провалы в полу как механику не используем (решение игрока).
+        // ── ЗАМЫСЕЛ ГОЛОВОЛОМКИ: СНАЧАЛА ПЛАН, ПОТОМ ГЕОМЕТРИЯ ───────────────────────────────────
+        // ⭐ Раньше здесь стояли ТРИ независимых прохода, и каждый искал, куда бы воткнуть свой
+        // механизм: «шахта режет дерево? ставлю ворота», «широкий пол? ставлю мост». Механизмы не
+        // знали друг о друге, цепочка «нажал A → дотянулся до B» получалась случайно, и уровень
+        // выходил не задуманным, а насыпанным (вердикт игрока: «уровни среднего качества»).
+        //
+        // Теперь порядок обратный. <see cref="PuzzleComposer"/> на ГОЛОМ ДЕРЕВЕ КОМНАТ решает, какие
+        // рёбра заперты, чем и в каком порядке игрок обязан их открывать — не зная ни клетки. Дальше
+        // генератор вписывает план в геометрию и ИМЕЕТ ПРАВО ОТКАЗАТЬ: не встало — ребро в запрет,
+        // план строится заново без него. Проверка моделью после сборки остаётся страховкой, но
+        // «каждый механизм несущий» и «цепочка настоящая» теперь верны ПО ПОСТРОЕНИЮ, а не по
+        // отбраковке постфактум.
         System.Func<Vector2Int,Vector2Int> findFloorSpot = room =>
         {
             int rAir = R0(room.y) + H(room.y) - 1, w = W(room.x);
@@ -2534,191 +2434,189 @@ public class LevelEditorWindow : EditorWindow
             }
             return new Vector2Int(-1, -1);
         };
-        // Комнаты по одну сторону от снятого ребра шахты (обход дерева без этого ребра).
-        System.Func<Vector2Int,Vector2Int,System.Collections.Generic.HashSet<Vector2Int>> sideWithout =
-            (a, b) =>
+        // Связаны ли две комнаты, если ИСКЛЮЧИТЬ третью. Нужно мосту: понять, по какую сторону от
+        // него лежит комната снизу (см. «падение = откат, а не срезка»).
+        System.Func<Vector2Int,Vector2Int,Vector2Int,bool> connectedWithout = (excl, from, to) =>
         {
-            var seen2 = new System.Collections.Generic.HashSet<Vector2Int> { a };
-            var q3 = new System.Collections.Generic.Queue<Vector2Int>(); q3.Enqueue(a);
-            while (q3.Count > 0)
+            if (from.Equals(excl) || to.Equals(excl)) return false;
+            var seen3 = new System.Collections.Generic.HashSet<Vector2Int> { from };
+            var q5 = new System.Collections.Generic.Queue<Vector2Int>(); q5.Enqueue(from);
+            while (q5.Count > 0)
             {
-                var cur = q3.Dequeue();
-                foreach (var nb3 in nbrs(cur))
-                {
-                    if ((cur.Equals(a) && nb3.Equals(b)) || (cur.Equals(b) && nb3.Equals(a))) continue;
-                    if (!seen2.Add(nb3)) continue;
-                    q3.Enqueue(nb3);
-                }
+                var cur = q5.Dequeue();
+                if (cur.Equals(to)) return true;
+                foreach (var nb4 in nbrs(cur)) { if (nb4.Equals(excl) || !seen3.Add(nb4)) continue; q5.Enqueue(nb4); }
             }
-            return seen2;
+            return seen3.Contains(to);
         };
+
         var gateGroups = new System.Collections.Generic.List<char>();
-        int maxGates = Mathf.Clamp((CW * CH) / 8, 1, 3);
-        // ⭐ ЦЕПОЧКА (выбор игрока): второй проход ставит платформы ВНУТРИ уже запертой зоны — тогда
-        // к ключу ведёт последовательность «нажал A, поднялся, нажал B, поднялся ещё». Первый проход
-        // сажает ворота где угодно, дальше приоритет у продолжений цепочки; если таких нет — обычные.
-        var gatedZones = new System.Collections.Generic.List<System.Collections.Generic.HashSet<Vector2Int>>();
-        for (int chainPass = 0; chainPass < 2 && gateGroups.Count < maxGates; chainPass++)
-        foreach (var sh in shafts)
+        // Что именно поставили модули: свойства групп (инверсия), которые сетка символов не выражает.
+        var stamps = new System.Collections.Generic.List<ModuleStamp>();
+        // Потолок по числу механизмов: ручка из панели, но не больше, чем позволяет размер лабиринта —
+        // одна комната несёт один механизм, и в сетке 4×4 десяти просто некуда встать.
+        int maxGates = Mathf.Clamp(Mathf.Min(_mazeMechs, Mathf.Max(1, (CW * CH) / 5)), 1, 10);
+
+        // ── МИР ГОЛОВОЛОМКИ: дерево комнат и цели, без единой клетки ──
+        var world = new PuzzleComposer.PuzzleWorld { start = startRoom, finish = far };
+        for (int x = 0; x < CW; x++)
+        for (int y = 0; y < CH; y++)
         {
-            if (gateGroups.Count >= maxGates) break;
-            var below = sh.room;
-            if (chainPass == 0 && gatedZones.Count > 0)
-            {
-                bool beyond = false;
-                foreach (var z in gatedZones) if (z.Contains(below)) { beyond = true; break; }
-                if (!beyond) continue;                            // на первом проходе — только вглубь цепочки
-            }
-            var above = new Vector2Int(sh.room.x, sh.room.y + 1);
-            if (H(below.y) < 4) continue;                       // при H=3 без ступеньки всё равно долезут
-            if (usedRooms.Contains(below) || usedRooms.Contains(above)) continue;
-            var lower = sideWithout(below, above);
-            if (!lower.Contains(startRoom)) continue;              // старт обязан остаться СНИЗУ от ворот
-            if (lower.Contains(above)) continue;                  // ребро не разрезало дерево
-            bool worth = !lower.Contains(far);                    // за воротами финиш…
-            foreach (var kr in keyRooms) if (!lower.Contains(kr)) worth = true;   // …или ключ
-            if (!worth) continue;
-            var spotBelow = findFloorSpot(below);
-            var spotAbove = findFloorSpot(above);
-            if (spotBelow.x < 0 || spotAbove.x < 0) continue;     // некуда поставить пару кнопок
-            // ⚠️ Платформа НЕ должна лепиться вплотную к земле (фидбэк с плейтеста): при climb=2 ступенька
-            // висела в одной клетке над полом — бессмысленно и некрасиво. Ставим её ровно в 3 ряда над
-            // полом (2 пустых ряда под ней): подъём пол→платформа = 3 ≤ MazeClimb, платформа→верхний пол
-            // = H−2 ≤ 3 при H ≤ 5. Если исходная ступенька была ниже — переносим.
-            int floorRow = R0(below.y) + H(below.y);
-            int stepRow  = floorRow - MazeClimb;
-            if (stepRow <= R0(below.y)) continue;                 // упёрлась бы в потолок — не эта шахта
-            // Под платформой нужны 2 пустых ряда. Мешать может ДЕКОР комнаты (тумба/пилон) — его сносим;
-            // если под платформой настоящий камень, эту шахту пропускаем, а не лепим платформу к земле.
-            bool groundBusy = false;
-            var toClear = new System.Collections.Generic.List<Vector2Int>();
-            for (int k = 0; k < sh.width && !groundBusy; k++)
-            for (int dr = 1; dr <= 2; dr++)
-            {
-                int c = sh.col0 + k, r2 = stepRow + dr;
-                if (at(r2, c) != '#') continue;
-                if (bump[r2, c]) toClear.Add(new Vector2Int(c, r2));
-                else { groundBusy = true; break; }
-            }
-            if (groundBusy) continue;
-            foreach (var p in toClear)
-            {
-                set(p.y, p.x, '.');
-                if (makesPinch(p.y, p.x)) { set(p.y, p.x, '#'); groundBusy = true; break; }
-                bump[p.y, p.x] = false;
-            }
-            if (groundBusy) continue;                             // снос декора рождал зажим — не эта шахта
-            char grp = (char)('A' + gateGroups.Count);
-            for (int k = 0; k < sh.width; k++)
-            {
-                int c = sh.col0 + k;
-                if (sh.stepRow != stepRow && at(sh.stepRow, c) == '#') set(sh.stepRow, c, '.');  // убрать старую
-                if (at(stepRow, c) == '.' || at(stepRow, c) == '#') set(stepRow, c, char.ToLower(grp));
-            }
-            set(spotBelow.y, spotBelow.x, grp);                   // кнопка «открыть»
-            set(spotAbove.y, spotAbove.x, grp);                   // кнопка «вернуться»
-            gateGroups.Add(grp);
-            usedRooms.Add(below); usedRooms.Add(above);
-            // Зона за этими воротами — в неё будет целиться следующая группа, чтобы получилась цепочка.
-            var beyondZone = new System.Collections.Generic.HashSet<Vector2Int>();
-            for (int x = 0; x < CW; x++) for (int y = 0; y < CH; y++)
-            {
-                var p = new Vector2Int(x, y);
-                if (alive[x, y] && !lower.Contains(p)) beyondZone.Add(p);
-            }
-            gatedZones.Add(beyondZone);
+            if (!alive[x, y]) continue;
+            var rm = new Vector2Int(x, y);
+            world.adj[rm] = nbrs(rm);
+            // При H=3 ступенька ворот бессмысленна — до потолка долезут и без неё.
+            if (H(y) < 4) world.noGate.Add(rm);
+            bool hL = x > 0 && hPass[x - 1, y], hR = x + 1 < CW && hPass[x, y];
+            bool vU = y + 1 < CH && vPass[x, y],  vD = y > 0 && vPass[x, y - 1];
+            // Мост осмыслен только в СКВОЗНОМ горизонтальном коридоре (иначе обойдут — фидбэк игрока)
+            // И только если пролёт ШИРЕ ДОТЯЖКИ: через разрыв ≤6 клеток игрок перетягивается руками,
+            // и пол ему не нужен вовсе (см. TimedBridgeModule.Fits).
+            if (hL && hR && !vU && !vD && W(x) >= MazeCanvas.ReachSide + 2) world.corridors.Add(rm);
         }
+        foreach (var kr in keyRooms) world.keys.Add(kr);
+        foreach (var ur in usedRooms) world.busy.Add(ur);
 
-        // ── ГОРИЗОНТАЛЬНЫЙ МОСТ (идея игрока): у комнаты убирается ПОЛ, а платформы группы кладутся
-        // на его место. Нажал кнопку — пол появился, перебежал; не успел — провалился.
-        // Цена ошибки двух видов, вперемежку (выбор игрока):
-        //   • под комнатой есть этаж → падаешь в него, цел, возвращаешься в обход по лабиринту
-        //     (это всегда возможно: лабиринт — связное дерево);
-        //   • комната в нижнем ряду → прорезаем оболочку вниз, падение в ПРОПАСТЬ = смерть и респавн
-        //     на чекпоинте. Возврат тут не нужен вовсе.
-        // ⚠️ Раньше игрок отверг «намеренный провал» — но там провал был способом ЗАПЕРЕТЬ проход.
-        // Здесь он цена ошибки на таймере, это другая роль (уточнено 2026-07-18).
+        var builtGates = new System.Collections.Generic.List<PuzzleComposer.PlannedGate>();
         {
-            // ⚠️ МОСТ ОБЯЗАН ИМЕТЬ СМЫСЛ (фидбэк игрока: «пропасть бессмысленна, триггер можно обойти»).
-            // Для вертикальных подъёмов осмысленность проверяется разрезом дерева, а мост я ставил просто
-            // по признаку «широкий пол» — и он оказывался в стороне от маршрута. Условие: комната должна
-            // быть СКВОЗНЫМ ГОРИЗОНТАЛЬНЫМ КОРИДОРОМ (вход слева, выход справа, вертикальных проходов нет)
-            // И лежать НА МАРШРУТЕ спавн→финиш. Тогда пересечь её обязательно, обойти мост нельзя.
-            // Связаны ли две комнаты, если ИСКЛЮЧИТЬ третью (нужно, чтобы понять, по какую сторону моста
-            // лежит комната под ним).
-            System.Func<Vector2Int,Vector2Int,Vector2Int,bool> connectedWithout = (excl, from, to) =>
+            // Рёбра, на которых геометрия уже отказала: плану сюда больше не ходить.
+            var banned = new System.Collections.Generic.HashSet<string>();
+            // ⭐ КУДА МОЖНО ПОВЕСИТЬ ВЛОЖЕННУЮ КНОПКУ: клетка воздуха НАД ступенькой построенных ворот.
+            // Пока ворота не нажаты, ступеньки нет — кнопка висит призраком и не нажимается; нажал
+            // хозяина, встал на ступеньку — и кнопка под рукой. Именно «под рукой»: модель не знает
+            // времени, поэтому бежать до вложенной кнопки нельзя ни одной клетки (см. PlannedGate.nestOn).
+            var mountSpot = new System.Collections.Generic.Dictionary<PuzzleComposer.PlannedGate, Vector2Int>();
+            int wantChain = Mathf.Clamp(_mazeChain, 0, maxGates);
+            for (int attempt = 0; attempt < 4 && gateGroups.Count < maxGates; attempt++)
             {
-                if (from.Equals(excl) || to.Equals(excl)) return false;
-                var seen3 = new System.Collections.Generic.HashSet<Vector2Int> { from };
-                var q5 = new System.Collections.Generic.Queue<Vector2Int>(); q5.Enqueue(from);
-                while (q5.Count > 0)
+                // ⚠️ Лимит на двери-инверсии считается по УЖЕ ПОСТРОЕННЫМ: попыток планирования
+                // несколько, и каждый новый план про предыдущие двери не знает.
+                int doorsBuilt = 0;
+                foreach (var bg in builtGates) if (bg.role == PuzzleComposer.Role.Door) doorsBuilt++;
+                var plan = PuzzleComposer.Plan(world, wantChain, maxGates - gateGroups.Count, rng,
+                                               _mazeDoors - doorsBuilt, banned);
+                if (plan.gates.Count == 0) break;
+                bool failed = false;
+                foreach (var pg in plan.gates)
                 {
-                    var cur = q5.Dequeue();
-                    if (cur.Equals(to)) return true;
-                    foreach (var nb4 in nbrs(cur)) { if (nb4.Equals(excl) || !seen3.Add(nb4)) continue; q5.Enqueue(nb4); }
+                    if (gateGroups.Count >= maxGates) break;
+                    ModuleStamp st = null;
+                    // Куда встанет кнопка «открыть». У вложенного механизма — на платформу хозяина;
+                    // если хозяин ту платформу не дал, механизм НЕ ставим вовсе: молча уронить кнопку
+                    // на пол значило бы потерять зависимость, а план продолжал бы обещать цепочку.
+                    var nestAt = new Vector2Int(-1, -1);
+                    if (pg.nestOn != null && !mountSpot.TryGetValue(pg.nestOn, out nestAt))
+                        nestAt = new Vector2Int(-1, -1);
+                    bool nestFailed = pg.nestOn != null && nestAt.x < 0;
+                    // Куда встанет ступенька этих ворот — понадобится, чтобы предложить её под вложенную
+                    // кнопку следующему механизму.
+                    var myMount = new Vector2Int(-1, -1);
+
+                    if (nestFailed) { }
+                    else if (pg.role == PuzzleComposer.Role.Gate)
+                    {
+                        // Шахта между комнатами уже прорезана (ребро дерева = вертикальный проход),
+                        // ключ в списке — НИЖНЯЯ комната, а она у подъёма всегда родитель.
+                        int shIdx = -1;
+                        for (int k = 0; k < shafts.Count; k++)
+                            if (shafts[k].room.Equals(pg.edge.parent)) { shIdx = k; break; }
+                        var spotBelow = nestAt.x >= 0 ? nestAt : findFloorSpot(pg.edge.parent);
+                        var spotAbove = findFloorSpot(pg.edge.child);
+                        if (shIdx >= 0 && spotBelow.x >= 0 && spotAbove.x >= 0)
+                        {
+                            var sh = shafts[shIdx];
+                            var canvas = new MazeCanvas(g, rows, cols, CW, CH, colX, rowY, colW, rowH,
+                                                        bump, noBump, noFill, rng);
+                            canvas.SetNextGroupIndex(gateGroups.Count);
+                            // Полку под вложенную кнопку просим ТОЛЬКО если план на эти ворота кого-то
+                            // вешает: лишняя пристройка к ступеньке никому не нужна.
+                            bool needsShelf = false;
+                            foreach (var other in plan.gates) if (other.nestOn == pg) { needsShelf = true; break; }
+                            st = new VerticalGateModule().Stamp(canvas, new MazeSite
+                            {
+                                room = pg.edge.parent, roomAbove = pg.edge.child, onRoute = true,
+                                shaftCol0 = sh.col0, shaftWidth = sh.width, shaftStepRow = sh.stepRow,
+                                buttonBelow = spotBelow, buttonAbove = spotAbove,
+                                wantButtonShelf = needsShelf
+                            });
+                            // 🐞 Раньше площадку считал сам генератор — «клетка над ступенькой», — и она
+                            // совпадала с местом, куда игрок ставит пэд, вставая на ступеньку (поймано
+                            // игроком на первом импорте). Теперь площадку выдаёт МОДУЛЬ: он пристраивает
+                            // к ступеньке отдельную колонку, а хваты остаются свободными.
+                            if (st != null) myMount = st.shelfCell;
+                        }
+                    }
+                    else if (pg.role == PuzzleComposer.Role.Door)
+                    {
+                        int cx = Mathf.Min(pg.edge.parent.x, pg.edge.child.x), cy = pg.edge.parent.y;
+                        int col = C0(cx) + W(cx), rBottom = R0(cy) + H(cy) - 1;
+                        int hDoor = 0;
+                        while (hDoor < H(cy) && at(rBottom - hDoor, col) == '.') hDoor++;
+                        var spotNear = nestAt.x >= 0 ? nestAt : findFloorSpot(pg.edge.parent);
+                        var spotFar  = findFloorSpot(pg.edge.child);
+                        if (hDoor >= 2 && spotNear.x >= 0 && spotFar.x >= 0)
+                        {
+                            var canvas = new MazeCanvas(g, rows, cols, CW, CH, colX, rowY, colW, rowH,
+                                                        bump, noBump, noFill, rng);
+                            canvas.SetNextGroupIndex(gateGroups.Count);
+                            st = new InvertedDoorModule().Stamp(canvas, new MazeSite
+                            {
+                                room = pg.edge.parent, roomAbove = pg.edge.child, onRoute = true,
+                                doorCol = col, doorRowTop = rBottom - hDoor + 1, doorHeight = hDoor,
+                                buttonBelow = spotNear, buttonAbove = spotFar
+                            });
+                        }
+                    }
+                    else
+                    {
+                        // ⭐ ПАДЕНИЕ = ОТКАТ, А НЕ СРЕЗКА (требование игрока). Убирая пол, мы создаём
+                        // связь в комнату снизу, которой в дереве не было. Если та комната на стороне
+                        // ФИНИША, провал уносит игрока ВПЕРЁД мимо моста — механика превращается в
+                        // короткий путь. Требуем сторону СПАВНА: упавший возвращается к пройденному.
+                        var room = pg.edge.parent;
+                        bool fallOk = true;
+                        Vector2Int prevRoom;
+                        if (room.y > 0 && alive[room.x, room.y - 1] && parent.TryGetValue(room, out prevRoom))
+                            fallOk = connectedWithout(room, prevRoom, new Vector2Int(room.x, room.y - 1));
+                        if (fallOk)
+                        {
+                            var canvas = new MazeCanvas(g, rows, cols, CW, CH, colX, rowY, colW, rowH,
+                                                        bump, noBump, noFill, rng);
+                            canvas.SetNextGroupIndex(gateGroups.Count);
+                            st = new TimedBridgeModule().Stamp(canvas, new MazeSite
+                            {
+                                room = room, roomAbove = new Vector2Int(-1, -1),
+                                onRoute = true, throughCorridor = true,
+                                hasFloorBelow = room.y > 0 && alive[room.x, room.y - 1]
+                            });
+                        }
+                    }
+
+                    if (st == null)
+                    {
+                        // Геометрия отказала — ребро в запрет, и план строится заново уже без него.
+                        banned.Add(PuzzleComposer.EdgeKey(pg.edge));
+                        failed = true; break;
+                    }
+                    pg.groupId = st.groupId;
+                    // ⚠️ Хозяина кнопки записываем В ШТАМП: сетка символов вложенность выразить не может,
+                    // и без этого канала импорт положит кнопку на общий контейнер, а приёмка сочтёт её
+                    // вечно доступной — то есть примет уровень, который на деле не проходится.
+                    if (pg.nestOn != null)
+                        for (int bi = 0; bi < st.buttons.Count; bi++)
+                            if (st.buttons[bi] == nestAt) st.buttonHosts[bi] = pg.nestOn.groupId;
+                    if (myMount.x >= 0) mountSpot[pg] = myMount;
+                    gateGroups.Add(st.groupId); stamps.Add(st); builtGates.Add(pg);
+                    usedRooms.Add(pg.edge.parent);  usedRooms.Add(pg.edge.child);
+                    world.busy.Add(pg.edge.parent); world.busy.Add(pg.edge.child);
                 }
-                return seen3.Contains(to);
-            };
-            for (int pi = 1; pi < path.Count - 1; pi++)
-            {
-                var room = path[pi];
-                if (gateGroups.Count >= maxGates + 1) break;
-                if (room.Equals(startRoom) || room.Equals(far) || usedRooms.Contains(room)) continue;
-                if (!alive[room.x, room.y] || W(room.x) < 5) continue;        // нужен пролёт + опоры по краям
-                bool hLeft  = room.x > 0 && hPass[room.x - 1, room.y];
-                bool hRight = room.x + 1 < CW && hPass[room.x, room.y];
-                bool vUp    = room.y + 1 < CH && vPass[room.x, room.y];
-                bool vDown  = room.y > 0 && vPass[room.x, room.y - 1];
-                if (!hLeft || !hRight || vUp || vDown) continue;              // не сквозной коридор — обойдут
-                // ⭐ ПАДЕНИЕ = ОТКАТ, А НЕ СРЕЗКА (требование игрока). Убирая пол, я создаю дыру в комнату
-                // снизу — связь, которой в дереве не было. Если та комната лежит на стороне ФИНИША,
-                // падение уносит игрока ВПЕРЁД мимо моста, и механика превращается в короткий путь.
-                // Требуем, чтобы комната под мостом была на стороне СПАВНА: тогда упавший возвращается
-                // к уже пройденному и идёт к кнопке заново. Третий случай (комната не связана ни с той,
-                // ни с другой стороной без этой комнаты) отвергаем — там можно застрять.
-                if (room.y > 0 && alive[room.x, room.y - 1]
-                    && !connectedWithout(room, path[pi - 1], new Vector2Int(room.x, room.y - 1))) continue;
-                int floorRow = R0(room.y) + H(room.y), c0 = C0(room.x) + 1, c1 = C0(room.x) + W(room.x) - 2;
-                bool ok = true;
-                for (int c = c0; c <= c1 && ok; c++) if (at(floorRow, c) != '#') ok = false;
-                if (!ok) continue;
-                bool hasFloorBelow = room.y > 0 && alive[room.x, room.y - 1];
-                char grp = (char)('A' + gateGroups.Count);
-                // Журнал изменений: мост строится ПОСЛЕ расшивки зажимов, поэтому может их создать
-                // (например убранный пол встречается со сталактитом комнаты снизу). Если так — полный откат.
-                var undo = new System.Collections.Generic.List<(int r, int c, char ch)>();
-                System.Action<int,int,char> put2 = (r, c, ch) =>
-                { if (r >= 0 && r < rows && c >= 0 && c < cols) { undo.Add((r, c, g[r, c])); set(r, c, ch); } };
-
-                // Декор, стоявший НА полу пролёта, иначе повиснет в воздухе над мостом (и даст зажим).
-                for (int c = c0; c <= c1; c++)
-                    if (bump[floorRow - 1, c]) { put2(floorRow - 1, c, '.'); bump[floorRow - 1, c] = false; }
-                for (int c = c0; c <= c1; c++) put2(floorRow, c, char.ToLower(grp));
-                if (!hasFloorBelow)                                           // ПРОПАСТЬ: режем оболочку вниз
-                    for (int c = c0; c <= c1; c++)
-                    for (int r = floorRow + 1; r < rows; r++)
-                        if (at(r, c) == '#') put2(r, c, ' '); else break;
-                // Кнопки по обоим концам моста — на уцелевших опорах.
-                int rAirB = floorRow - 1, cRight = C0(room.x) + W(room.x) - 1;
-                bool b1 = at(rAirB, C0(room.x)) == '.' && at(floorRow, C0(room.x)) == '#';
-                bool b2 = at(rAirB, cRight) == '.' && at(floorRow, cRight) == '#';
-                if (b1) put2(rAirB, C0(room.x), grp);
-                if (b2) put2(rAirB, cRight, grp);
-
-                bool pinched = false;
-                for (int r = floorRow - 2; r <= floorRow + 2 && !pinched; r++)
-                for (int c = c0 - 2; c <= c1 + 2 && !pinched; c++)
-                    if (makesPinch(r, c)) pinched = true;
-
-                if (!b1 || !b2 || pinched)                                    // мост не сложился — откат
-                {
-                    for (int i = undo.Count - 1; i >= 0; i--) set(undo[i].r, undo[i].c, undo[i].ch);
-                    continue;
-                }
-                gateGroups.Add(grp); usedRooms.Add(room);
-                break;
+                if (!failed) break;
             }
+            // ⚠️ Ярусы пересчитываем ПО ФАКТУ построенного: планов могло быть несколько, и у каждого
+            // своя нумерация. Без пересчёта отчёт о сложности врал бы в меньшую сторону.
+            PuzzleComposer.Retier(world, builtGates);
         }
+        _mazePlanText = new PuzzleComposer.PuzzlePlan { gates = builtGates }.Describe();
 
         // ── МОНЕТЫ: дорожка-приманка в тупиковые ветки (награда за исследование) + немного на маршруте.
         int coins = 0;
@@ -2818,7 +2716,35 @@ public class LevelEditorWindow : EditorWindow
 
         var sb = new System.Text.StringBuilder();
         for (int r = 0; r < rows; r++) { for (int c = 0; c < cols; c++) sb.Append(g[r, c]); sb.Append('\n'); }
-        return sb.ToString();
+        var scheme = sb.ToString();
+        // Свойства групп, которых нет в сетке символов, привязываем К ЭТОЙ схеме — чтобы они не
+        // применились к чужому тексту, вставленному игроком в поле импорта вручную.
+        _mazeStamps = stamps; _mazeStampsFor = scheme;
+        return scheme;
+    }
+
+    /// <summary>
+    /// ⭐ ХОЗЯЕВА КНОПОК для ДАННОЙ схемы: клетка сетки (столбец, ряд сверху) → ключ группы, ВНУТРИ
+    /// которой лежит кнопка. Пусто, если схема не наша (игрок вставил свой текст в поле импорта).
+    /// Второй канал после инверсии — по той же причине: ASCII выражает геометрию, но не иерархию.
+    /// </summary>
+    private System.Collections.Generic.Dictionary<Vector2Int, string> ButtonHostsFor(string scheme)
+    {
+        var map = new System.Collections.Generic.Dictionary<Vector2Int, string>();
+        if (_mazeStampsFor != scheme) return map;
+        foreach (var st in _mazeStamps)
+        for (int i = 0; i < st.buttons.Count && i < st.buttonHosts.Count; i++)
+            if (st.buttonHosts[i] != '\0') map[st.buttons[i]] = st.buttonHosts[i].ToString();
+        return map;
+    }
+
+    /// <summary>Инверсные группы для ДАННОЙ схемы (пусто, если схема не наша).</summary>
+    private System.Collections.Generic.HashSet<string> InvertedGroupsFor(string scheme)
+    {
+        var set = new System.Collections.Generic.HashSet<string>();
+        if (_mazeStampsFor != scheme) return set;
+        foreach (var st in _mazeStamps) if (st.inverted) set.Add(st.groupId.ToString());
+        return set;
     }
 
     /// <summary>
@@ -2919,6 +2845,9 @@ public class LevelEditorWindow : EditorWindow
     {
         var grid = ParseScheme(text);
         if (grid.Length == 0) { Debug.LogWarning("[LevelEditor] Схема пуста."); return; }
+        // Свойства, которых нет в сетке символов: какие группы инверсные и какие кнопки лежат ВНУТРИ
+        // группы. Привязаны к ЭТОЙ схеме — если игрок вставил в поле свой текст, каналы пусты.
+        var schemeHosts = ButtonHostsFor(text);
         if (_pfTile == null || _tileSprites == null || _tileSprites.Length == 0)
         { Debug.LogWarning("[LevelEditor] Нет Tile.prefab/спрайтов тайлсета."); return; }
 
@@ -2960,7 +2889,8 @@ public class LevelEditorWindow : EditorWindow
             else if (ch >= 'a' && ch <= 'z')
             {
                 string gid = char.ToUpper(ch).ToString();
-                var container = GetOrCreateDisappearGroup(gid);
+                // usePanelMode: false — импорт НЕ должен зависеть от тумблеров панели, см. метод.
+                var container = GetOrCreateDisappearGroup(gid, false);
                 bool topExposed    = !IsSolidCell(CellAt(grid, r - 1, c));
                 bool bottomExposed = !IsSolidCell(CellAt(grid, r + 1, c));
                 bool leftEdge      = !IsSolidCell(CellAt(grid, r, c - 1));
@@ -2972,7 +2902,15 @@ public class LevelEditorWindow : EditorWindow
             {
                 // Кнопка — на ПОВЕРХНОСТЬ полки под символом (как флаг).
                 Vector3 bp = SurfaceBelow(grid, rows, r, c, cell, world, p);
-                var go = PlaceFromPrefab(_pfButton, bp, GetGroup("Triggers"), "Trigger");
+                // ⭐ ВЛОЖЕННАЯ КНОПКА кладётся ВНУТРЬ группы-хозяина, а не в общий контейнер: именно
+                // родительство делает её полупрозрачной и ненажимаемой, пока хозяин в превью
+                // (BuildSpecFromLevel определяет хозяина обходом родителей — так же, как у Level_07,
+                // собранного руками). Хозяин приходит отдельным каналом: ASCII иерархию не выражает.
+                string hostId;
+                Transform btnParent = (schemeHosts != null && schemeHosts.TryGetValue(new Vector2Int(c, r), out hostId))
+                    ? GetOrCreateDisappearGroup(hostId, false).transform
+                    : GetGroup("Triggers");
+                var go = PlaceFromPrefab(_pfButton, bp, btnParent, "Trigger");
                 var tt = go != null ? go.GetComponentInChildren<TriggerTile>(true) : null;
                 if (tt != null) { tt.groupId = ch.ToString(); EditorUtility.SetDirty(tt); }
                 buttons++;
@@ -3009,6 +2947,25 @@ public class LevelEditorWindow : EditorWindow
         // FallCollider под низ грида (ниже пола на запас — иначе тело на спавне сразу в зоне смерти)
         var fall = _root.transform.Find("FallCollider");
         if (fall != null) fall.position = new Vector3((grid[rows - 1].Length) * cell * 0.5f, -5f, 0f);
+
+        // ⭐ Свойства групп, которых нет в сетке символов: инверсия приезжает отдельным каналом от
+        // генератора (см. _mazeStamps). Без этого дверь-инверсия импортировалась бы как обычная
+        // группа — то есть проход был бы открыт по умолчанию, и головоломка исчезала.
+        {
+            var inv = InvertedGroupsFor(text);
+            if (inv.Count > 0)
+            {
+                var disRoot = _root.transform.Find("Disappearing");
+                if (disRoot != null) foreach (Transform c in disRoot)
+                {
+                    var dp = c.GetComponent<DisappearingPlatform>();
+                    if (dp == null || !inv.Contains(dp.groupId.ToUpperInvariant())) continue;
+                    dp.inverted = true;
+                    EditorUtility.SetDirty(dp);
+                    Debug.Log($"[LevelEditor] Группа '{dp.groupId}' помечена ИНВЕРСНОЙ (дверь).");
+                }
+            }
+        }
 
         Undo.RegisterCreatedObjectUndo(_root, "Import scheme");
         EditorSceneManager.MarkSceneDirty(_root.scene);
@@ -3377,132 +3334,9 @@ public class LevelEditorWindow : EditorWindow
         return int.TryParse(name.Substring(u + 1), out int n) ? n : -1;
     }
 
-    /// <summary>
-    /// Эвристическая проверка проходимости: BFS по грабельным холдам от спавна к финишу. Ребро между
-    /// холдами — если укладываются в дотяжку ПО ОСЯМ: |Δвысота| ≤ _reachUpCells И |Δширина| ≤ _reachSideCells
-    /// (замер игрока: вверх 2.5, вбок 4 тайла). НЕ гарантия (физика сложнее), но ловит явные разрывы.
-    /// </summary>
-    /// <summary>
-    /// ⭐ ЕДИНСТВЕННОЕ МЕСТО, ГДЕ ЖИВЁТ ПРАВИЛО ПЕРЕХОДА. Им пользуются и рисование маршрута, и все
-    /// проверки схем — специально одной функцией: когда одно правило считалось двумя способами
-    /// (makesPinch против CheckDiagonalPinch, база клиренса флага), они расходились и давали баги.
-    ///
-    /// Правило: цель в пределах дотяжки (восьмиугольник, замер на Level_07/08) И до неё есть проход
-    /// по свободным клеткам, укладывающийся в бюджет пути (см. PathPossible).
-    /// Позиция стояния = клетка холда + 1 (стоим НАД тайлом).
-    /// </summary>
-    private static bool StepPossible(System.Func<Vector2Int, bool> solid,
-                                     Vector2Int a, Vector2Int b, int rs, int ru)
-    {
-        if (!InReach(b.x - a.x, b.y - a.y, rs, ru)) return false;
-        return PathPossible(solid, new Vector2Int(a.x, a.y + 1), new Vector2Int(b.x, b.y + 1));
-    }
-
-    /// <summary>
-    /// ⭐ ДОТЯНУТЬСЯ ДО ТОЧКИ (артефакт, флаг, чекпоинт) — это НЕ то же, что перейти на холд.
-    /// Холд — тайл, на который встают (позиция стояния = клетка+1). Артефакт же висит В ВОЗДУХЕ и
-    /// берётся КАСАНИЕМ любого коллайдера (см. Artifact.OnTriggerEnter), поэтому целимся в саму
-    /// клетку цели, без +1.
-    ///
-    /// 🐞 БАГ, КОТОРЫЙ ЭТИМ ЧИНИТСЯ (найден 2026-08-31): ключи считались недостижимыми там, где игрок
-    /// их спокойно берёт (Level_06 0/3, Level_01 2/4). Причин было ДВЕ, и обе давали ложную тревогу:
-    ///   1) цель мерилась как холд → прицел уезжал на клетку ВВЕРХ, то есть завышал подъём;
-    ///   2) клетка ключа может оказаться ЗАНЯТОЙ (ключ прижат к скале, либо позиция вне сетки 0.5 и
-    ///      округляется в камень) — тогда шаг отвергался сразу, до всякой геометрии.
-    /// Отсюда окрестность 3×3: телом достаточно попасть в любую свободную клетку рядом с ключом
-    /// (радиус касания). Замер на шести уровнях: ключи стали 4/4, 3/3, 3/3, 4/4, 3/3; вердикт по
-    /// финишу не изменился нигде.
-    /// </summary>
-    /// <summary>Клеточный вариант: цель ровно в клетке и без габарита (схемы — там всё по сетке).</summary>
-    private static bool TouchPossible(System.Func<Vector2Int, bool> solid,
-                                      Vector2Int a, Vector2Int target, int rs, int ru)
-        => TouchPossible(solid, a, target, new Vector2(target.x, target.y), Vector2.zero, rs, ru);
-
-    /// <param name="centerCells">центр ГАБАРИТА цели в клетках (дробный)</param>
-    /// <param name="halfCells">полуразмер габарита в клетках</param>
-    private static bool TouchPossible(System.Func<Vector2Int, bool> solid, Vector2Int a, Vector2Int target,
-                                      Vector2 centerCells, Vector2 halfCells, int rs, int ru)
-    {
-        var from = new Vector2Int(a.x, a.y + 1);
-        // ⭐ ДОТЯЖКА — до БЛИЖАЙШЕЙ ТОЧКИ габарита, в ДРОБНЫХ клетках, а не до округлённой клетки.
-        // Округление цели в клетку врало на полклетки, и почти все цели (23 из 30) стоят ровно на
-        // его границе: какая из двух соседних клеток достанется цели, решало правило округления.
-        // Габарит берётся из коллайдера, потому что подбор — это перекрытие с ним, а не попадание
-        // в пивот (у артефакта триггер-сфера в 2 клетки поперёк).
-        float dfx = Mathf.Max(0f, Mathf.Abs(centerCells.x - from.x) - halfCells.x);
-        float dfy = Mathf.Max(0f, Mathf.Abs(centerCells.y - from.y) - halfCells.y);
-        const float eps = 1e-3f;
-        if (dfx > rs + eps || dfy > ru + eps || dfx + dfy > ReachSumCells + eps) return false;
-        var t = target;
-        // ⛔ ОКРЕСТНОСТЬ 3×3 ВОКРУГ ЦЕЛИ — ЗАПРЕЩЁННЫЙ ПРИЁМ, дважды обжёгся за один день (2026-08-31).
-        // Идея была: цель может оказаться В КАМНЕ (ключ вросший в скалу; позиция вне сетки 0.5,
-        // округляемая в тайл) — значит примем касание из любой свободной клетки рядом. Оба раза это
-        // выходило боком, потому что «любая из 9» — это ВЫБОР САМОГО УДОБНОГО варианта:
-        //   1. дотяжка мерилась до клетки окрестности → та работала ПРИБАВКОЙ к вылету (вбок 7, вверх 4);
-        //   2. хуже: клетка бралась С ДРУГОЙ СТОРОНЫ ПЛИТЫ, и модель касалась цели СКВОЗЬ ПОЛ.
-        //      Level_05: флаг стоит на полу, его позиция y=7.25 округлилась в клетку 14 — то есть В САМ
-        //      ПОЛ, — и модель «дотянулась» до него снизу, из-под плиты, через свободный ряд y=12.
-        // Правильно: цель, попавшую в камень, ОДИН РАЗ привести к ближайшей свободной клетке (объекты
-        // стоят НА тайле, поэтому вверх дешевле, чем вбок, и тем более чем вниз), а дальше обычная
-        // проверка — дотяжка до этой клетки и путь ровно в неё.
-        if (solid(t))
-        {
-            int bestCost = int.MaxValue; bool found = false; Vector2Int best = t;
-            for (int dx = -1; dx <= 1; dx++)
-            for (int dy = -1; dy <= 1; dy++)
-            {
-                var c = new Vector2Int(t.x + dx, t.y + dy);
-                if (solid(c)) continue;
-                int cost = Mathf.Abs(dx) * 3 + (dy == 1 ? 0 : dy == 0 ? 2 : 4);
-                if (cost < bestCost) { bestCost = cost; best = c; found = true; }
-            }
-            if (!found) return false;
-            t = best;
-        }
-        if (!InReach(t.x - from.x, t.y - from.y, rs, ru)) return false;
-        return PathPossible(solid, from, t);
-    }
-
-    /// <summary>
-    /// Проход между двумя СВОБОДНЫМИ клетками. Общее тело правила для <see cref="StepPossible"/> и
-    /// <see cref="TouchPossible"/> — чтобы обход не считался дважды разными способами (на этом уже
-    /// обжигались: makesPinch против CheckDiagonalPinch).
-    ///
-    /// ⭐ ОГРАНИЧЕНИЕ ОДНО — БЮДЖЕТ ПУТИ: длина обхода ≤ <see cref="ReachSumCells"/>, то есть
-    /// КРЮК СЪЕДАЕТ ДОТЯЖКУ. Обойти угол на пару клеток можно; протащить руку вокруг полки — нет,
-    /// потому что на это уже не хватает вылета.
-    ///
-    /// Число НЕ подобрано: это сумма из ЗАМЕРЕННОГО восьмиугольника (та же, что в InReach) — прямой
-    /// шаг в 7 клеток и путь в 7 клеток стоят одинаково. Оба калибровочных случая от игрока сходятся:
-    ///  • Level_06, ключ (15,12) из холда (8,10): 6 вбок + 2 на нырок под стену = 8 > 7 → ЗАПРЕТ
-    ///    (игрок: «так не дотянуться»). Прежний коридор это пропускал, потому что давал одинаковый
-    ///    допуск на обход и при вылете в 2 клетки, и при вылете в 6 — а на растяжке запаса нет.
-    ///  • Level_03, (26.5,7.0) → (27.5,8.0): ход (2,2), рука огибает целевую полку, путь 6 ≤ 7 → ОК
-    ///    (игрок: «дотягиваемся без проблем»). Прежний коридор резал его с запасом 0.12 клетки.
-    /// </summary>
-    private static bool PathPossible(System.Func<Vector2Int, bool> solid, Vector2Int from, Vector2Int to)
-    {
-        if (solid(from) || solid(to)) return false;
-        if (from == to) return true;
-        var seen = new System.Collections.Generic.Dictionary<Vector2Int, int> { { from, 0 } };
-        var q = new System.Collections.Generic.Queue<Vector2Int>();
-        q.Enqueue(from);
-        while (q.Count > 0)
-        {
-            var c0 = q.Dequeue();
-            int d0 = seen[c0];
-            if (d0 >= ReachSumCells) continue;      // бюджет исчерпан — дальше не тянемся
-            for (int k = 0; k < 4; k++)
-            {
-                var nb = new Vector2Int(c0.x + (k == 2 ? -1 : k == 3 ? 1 : 0),
-                                        c0.y + (k == 0 ? -1 : k == 1 ? 1 : 0));
-                if (seen.ContainsKey(nb) || solid(nb)) continue;
-                if (nb == to) return true;
-                seen[nb] = d0 + 1; q.Enqueue(nb);
-            }
-        }
-        return false;
-    }
+        // ⛔ Правила перехода (InReach/PathPossible/StepPossible/TouchPossible) ПЕРЕЕХАЛИ
+        // в LevelModel — там их единственный дом. Здесь их держать нельзя: копии правил
+        // в этом проекте уже трижды расходились и давали баги.
 
     /// <summary>Итог разбора схемы. Одна структура на всех потребителей: и лог валидатора, и
     /// самопроверка генератора (см. <see cref="AnalyseScheme"/>).</summary>
@@ -3513,12 +3347,28 @@ public class LevelEditorWindow : EditorWindow
         public bool finishOk;
         public int artOk, artTotal, cpOk, cpTotal;
         public int reachHolds, totalHolds;
-        public int sealedPocket;      // самый большой ЗАМУРОВАННЫЙ карман (внутри массива, не крыша)
+        public int sealedPocket;      // самая большая ЗАМУРОВАННАЯ полость (связная область воздуха)
+        /// <summary>Недостижимые холды ВНУТРИ массива (над ними потолок, а не небо). Отделяет
+        /// «мертва внешняя крыша» — это нормально и неизбежно — от «замурованы целые комнаты».</summary>
+        public int deadInternal;
+        /// <summary>Механизмы, которые НИЧЕГО не держат: убери их совсем — все цели по-прежнему
+        /// достижимы. Такую группу игрок обойдёт и головоломки не заметит.</summary>
+        public System.Collections.Generic.List<string> idleGroups = new System.Collections.Generic.List<string>();
         public System.Collections.Generic.List<string> deadGroups = new System.Collections.Generic.List<string>();
         public System.Collections.Generic.List<string> pressOrder = new System.Collections.Generic.List<string>();
+        /// <summary>
+        /// ⭐ ИЗМЕРЕННОЕ СЦЕПЛЕНИЕ — сколько механизмов игрок обязан открыть ПО ПОРЯДКУ. Считается не
+        /// по замыслу компоновщика, а по факту: B зависит от A, если без A кнопку B нажать нельзя
+        /// НИКОГДА. Длина самой длинной цепочки в этом графе зависимостей.
+        /// ⚠️ Заведено потому, что план и реальность расходились в ОБЕ стороны (замер 24 схем: 5
+        /// расхождений). Замысел — это намерение, а игроку достаётся то, что померила модель.
+        /// </summary>
+        public int chainDepth;
         /// <summary>Брак: то, из-за чего уровень нельзя отдавать игроку.</summary>
         public bool Bad => noSpawn || tooManyGroups || !finishOk || artOk < artTotal || cpOk < cpTotal
-                        || deadGroups.Count > 0 || sealedPocket > SealedPocketLimit;
+                        || deadGroups.Count > 0 || idleGroups.Count > 0
+                        || deadInternal > DeadInternalLimit
+                        || sealedPocket > SealedPocketLimit;
     }
 
     /// <summary>Замурованный карман крупнее этого — брак. Ноль требовать нельзя: мелкие карманы на
@@ -3527,13 +3377,31 @@ public class LevelEditorWindow : EditorWindow
     private const int SealedPocketLimit = 30;
 
     /// <summary>
+    /// Сколько ВНУТРЕННИХ холдов (с потолком над ними) дозволено оставить недостижимыми.
+    /// Порог по замеру 40 сырых схем: медиана 3, основная масса ≤10, дальше редкий хвост 12-20 и
+    /// один выброс 48. Игрок прислал скрин с большим замурованным участком — там было 27.
+    /// ⚠️ Мерить надо ИМЕННО внутренние: у любого уровня мертва внешняя крыша массива (там их бывает
+    /// под полсотни), и общая доля мёртвых холдов ничего не отличает — у того же скрина она была
+    /// ровно медианной, 31%.
+    /// </summary>
+    private const int DeadInternalLimit = 10;
+
+    /// <summary>
     /// Разбор схемы по ИЗМЕРЕННОЙ модели (дотяжка-восьмиугольник + бюджет пути + порядок кнопок).
     /// До 2026-08-18 здесь была коробка ↑4 ↔4 без учёта кнопок: она пропускала подъёмы на 4
     /// клетки, которых в игре нет, и считала платформы групп вечно твёрдыми. Все прежние «0 проблемных»
     /// получены той моделью и доверия не заслуживают.
     /// ⚠️ НИЧЕГО НЕ ЛОГИРУЕТ: генератор гоняет её десятками за одну генерацию.
     /// </summary>
-    private SchemeReport AnalyseScheme(char[][] grid)
+    /// <param name="invertedGroups">Ключи групп, которые ИНВЕРСНЫЕ. Сетка символов этого выразить не
+    /// может, поэтому свойство приходит отдельным каналом — от генератора либо из поля импорта.</param>
+    /// <param name="buttonHosts">Клетка сетки (столбец, ряд сверху) → группа, ВНУТРИ которой лежит
+    /// кнопка. Тоже отдельный канал: вложенность это иерархия, сетка символов её не выражает.
+    /// ⚠️ Пропустить его — значит счесть заведомо запертую кнопку вечно доступной и принять уровень,
+    /// который на деле не проходится.</param>
+    private SchemeReport AnalyseScheme(char[][] grid,
+                                       System.Collections.Generic.HashSet<string> invertedGroups = null,
+                                       System.Collections.Generic.Dictionary<Vector2Int, string> buttonHosts = null)
     {
         var rep = new SchemeReport();
         if (grid.Length == 0) { rep.noSpawn = true; return rep; }
@@ -3546,6 +3414,7 @@ public class LevelEditorWindow : EditorWindow
         var rock = new System.Collections.Generic.HashSet<Vector2Int>();
         var groupTiles = new System.Collections.Generic.Dictionary<char, System.Collections.Generic.List<Vector2Int>>();
         var groupButtons = new System.Collections.Generic.Dictionary<char, System.Collections.Generic.List<Vector2Int>>();
+        var hostOfButton = new System.Collections.Generic.Dictionary<Vector2Int, string>();
         var arts = new System.Collections.Generic.List<Vector2Int>();
         var checkpoints = new System.Collections.Generic.List<Vector2Int>();
         Vector2Int spawn = new Vector2Int(-9999, -9999), finish = new Vector2Int(-9999, -9999);
@@ -3568,6 +3437,11 @@ public class LevelEditorWindow : EditorWindow
                 if (!groupButtons.TryGetValue(g, out var l))
                 { l = new System.Collections.Generic.List<Vector2Int>(); groupButtons[g] = l; }
                 l.Add(k);
+                // Хозяин приходит в КООРДИНАТАХ СЕТКИ (столбец, ряд сверху), а состояния считаются в
+                // мировых (Y вверх) — перекладываем сразу, чтобы дальше жила одна система координат.
+                string hostId;
+                if (buttonHosts != null && buttonHosts.TryGetValue(new Vector2Int(c, r), out hostId))
+                    hostOfButton[k] = hostId;
             }
             else if (ch == '@') spawn = k;
             else if (ch == '^') finish = k;
@@ -3579,142 +3453,154 @@ public class LevelEditorWindow : EditorWindow
         if (spawn.x < -9000) { rep.noSpawn = true; return rep; }
         if (finish.x < -9000) rep.noFinish = true;
 
-        // Спавн ведёт себя как холд (маркер лежит В клетке пола); если под ним пусто — ищем опору.
-        if (!rock.Contains(spawn))
-            for (int d = 1; d <= 4; d++)
-            { var cand = new Vector2Int(spawn.x, spawn.y - d); if (rock.Contains(cand)) { spawn = cand; break; } }
-
-        // ⭐ ПОИСК ПО СОСТОЯНИЯМ (позиция + маска групп) — ТОТ ЖЕ, что в ComputeRoute (2026-09-01).
-        // Прежде здесь крутилась НЕПОДВИЖНАЯ ТОЧКА, опиравшаяся на монотонность: «нажатие только
-        // ДОБАВЛЯЕТ поверхности». Монотонность ломают сразу две механики — инверсные группы (нажатие
-        // камень УБИРАЕТ) и намеренное падение из-под исчезнувшей платформы, — то есть схемы
-        // проверялись по другим правилам, чем настоящие уровни. Теперь правило одно.
-        // ⚠️ Инверсию сама СХЕМА пока выразить не может: в ASCII есть только «a-z тайлы, A-Z кнопки».
-        // Здесь все группы считаются обычными; появится обозначение — добавить сюда флаг, как в
-        // ComputeRoute.TilesSolid.
-        var groupList = new System.Collections.Generic.List<char>(groupTiles.Keys);
-        int G = groupList.Count;
-        if (G > 12) { rep.tooManyGroups = true; return rep; }
-        int MASKS = 1 << G;
-
-        var union = new System.Collections.Generic.HashSet<Vector2Int>(rock);
-        foreach (var kv in groupTiles) foreach (var k in kv.Value) union.Add(k);
-        var cells = new System.Collections.Generic.List<Vector2Int>(union);
-        var cellIdx = new System.Collections.Generic.Dictionary<Vector2Int, int>();
-        for (int i = 0; i < cells.Count; i++) cellIdx[cells[i]] = i;
-        int N = cells.Count;
-        if (N == 0) return rep;
-
-        var solidCache = new System.Collections.Generic.Dictionary<int, System.Collections.Generic.HashSet<Vector2Int>>();
-        System.Func<int, System.Collections.Generic.HashSet<Vector2Int>> SolidFor = m =>
+        // ⭐ Схема приводится к тому же LevelSpec, что и настоящий уровень, и считается той же
+        // LevelModel. Прежде здесь была ВТОРАЯ копия поиска — для черновиков это стоило времени, для
+        // автономного генератора стоило бы непроходимого уровня у игрока на экране.
+        // ⚠️ Инверсию и вложенность кнопок сама СХЕМА выразить не может: в ASCII только «a-z тайлы,
+        // A-Z кнопки». Здесь все группы обычные и без хозяев — это ограничение ФОРМАТА, не модели.
+        var spec = new LevelSpec { cell = _tileCell, spawn = spawn };
+        foreach (var k in rock) spec.rock.Add(k);
+        foreach (var kv in groupTiles)
         {
-            System.Collections.Generic.HashSet<Vector2Int> got;
-            if (solidCache.TryGetValue(m, out got)) return got;
-            var s = new System.Collections.Generic.HashSet<Vector2Int>(rock);
-            for (int g = 0; g < G; g++)
-                if ((m & (1 << g)) != 0) foreach (var k in groupTiles[groupList[g]]) s.Add(k);
-            solidCache[m] = s; return s;
-        };
-
-        int TOTAL = MASKS * N;
-        var seen = new bool[TOTAL];
-        var queue = new System.Collections.Generic.Queue<int>();
-        int minY = int.MaxValue; foreach (var c0 in cells) if (c0.y < minY) minY = c0.y;
-
-        // Смена маски с разрешением ПАДЕНИЯ — как в ComputeRoute.Enqueue.
-        System.Action<int, int> Enter = (nm, ci) =>
+            string gid = char.ToUpperInvariant(kv.Key).ToString();
+            bool inv = invertedGroups != null && invertedGroups.Contains(gid);
+            spec.GetOrAddGroup(kv.Key.ToString(), inv).tiles.AddRange(kv.Value);
+        }
+        foreach (var kv in groupButtons)
         {
-            var pos = cells[ci];
-            var s = SolidFor(nm);
-            int idx = ci;
-            if (!s.Contains(pos))
+            int gi = spec.IndexOfGroup(kv.Key.ToString());
+            if (gi < 0) continue;                       // кнопка без тайлов — такой группы нет
+            foreach (var b in kv.Value)
             {
-                int landY = int.MinValue;
-                for (int y = pos.y - 1; y >= minY; y--)
-                    if (s.Contains(new Vector2Int(pos.x, y))) { landY = y; break; }
-                if (landY == int.MinValue) return;                        // падать некуда = смерть
-                if (!cellIdx.TryGetValue(new Vector2Int(pos.x, landY), out idx)) return;
-            }
-            else if (s.Contains(new Vector2Int(pos.x, pos.y + 1))) return; // замуровало сверху
-            int st = nm * N + idx;
-            if (seen[st]) return;
-            seen[st] = true; queue.Enqueue(st);
-        };
-
-        {
-            var s0 = SolidFor(0);
-            System.Func<Vector2Int, bool> sf0 = k => s0.Contains(k);
-            for (int i = 0; i < N; i++)
-            {
-                var c1 = cells[i];
-                if (!s0.Contains(c1) || s0.Contains(new Vector2Int(c1.x, c1.y + 1))) continue;
-                if (StepPossible(sf0, spawn, c1, RS, RU) && !seen[i]) { seen[i] = true; queue.Enqueue(i); }
+                string hostId;
+                int host = LevelButton.NoHost;
+                if (hostOfButton.TryGetValue(b, out hostId))
+                {
+                    host = spec.IndexOfGroup(hostId.ToLowerInvariant());
+                    if (host < 0) host = LevelButton.NoHost;         // хозяина в схеме нет — кнопка своя
+                }
+                spec.groups[gi].buttons.Add(new LevelButton
+                { cell = b, center = new Vector2(b.x, b.y), half = Vector2.zero, host = host });
             }
         }
+        System.Func<Vector2Int, LevelTarget> mkT = k => new LevelTarget
+        { exists = true, cell = k, center = new Vector2(k.x, k.y), half = Vector2.zero,
+          world = new Vector3(k.x * spec.cell, k.y * spec.cell, 0f) };
+        if (finish.x > -9000) spec.finish = mkT(finish);
+        foreach (var a in arts) spec.artifacts.Add(mkT(a));
+        foreach (var c in checkpoints) spec.checkpoints.Add(mkT(c));
 
-        var reachedCells = new System.Collections.Generic.HashSet<Vector2Int>();
-        var activatedEver = new bool[G];
-        while (queue.Count > 0)
+        var model = new LevelModel(spec, RS, RU);
+        model.Search();
+        if (model.TooManyGroups) { rep.tooManyGroups = true; return rep; }
+        if (model.N == 0) return rep;
+
+        // Цель достижима, если её достаёт ХОТЬ ОДНО посещённое состояние — в своей маске (например,
+        // уже после того, как стена убрана).
+        System.Func<LevelTarget, bool> canGet = tg =>
         {
-            int cur = queue.Dequeue();
-            int m = cur / N, ci = cur % N;
-            var hc = cells[ci];
-            reachedCells.Add(hc);
-            var solidM = SolidFor(m);
-            System.Func<Vector2Int, bool> sf = k => solidM.Contains(k);
-
-            for (int g = 0; g < G; g++)                       // нажать кнопку (касание пэдом)
-            {
-                if ((m & (1 << g)) != 0) continue;
-                System.Collections.Generic.List<Vector2Int> btns;
-                if (!groupButtons.TryGetValue(groupList[g], out btns)) continue;
-                bool can = false;
-                foreach (var b in btns) if (TouchPossible(sf, hc, b, RS, RU)) { can = true; break; }
-                if (!can) continue;
-                if (!activatedEver[g])
-                { activatedEver[g] = true; rep.pressOrder.Add(char.ToUpper(groupList[g]).ToString()); }
-                Enter(m | (1 << g), ci);
-            }
-            for (int g = 0; g < G; g++)                       // окно закончилось (может уронить)
-                if ((m & (1 << g)) != 0) Enter(m & ~(1 << g), ci);
-            for (int j = 0; j < N; j++)                       // перейти на другой холд
-            {
-                int ns = m * N + j; if (seen[ns]) continue;
-                var t2 = cells[j];
-                if (!solidM.Contains(t2) || solidM.Contains(new Vector2Int(t2.x, t2.y + 1))) continue;
-                if (!StepPossible(sf, hc, t2, RS, RU)) continue;
-                seen[ns] = true; queue.Enqueue(ns);
-            }
-        }
-
-        // Цель (финиш/артефакт/чекпоинт) — ТОЧКА КАСАНИЯ: достижима, если её достаёт ХОТЬ ОДНО
-        // посещённое состояние (в своей маске — например, уже после того, как стена убрана).
-        var visited = new System.Collections.Generic.List<int>();
-        for (int st = 0; st < TOTAL; st++) if (seen[st]) visited.Add(st);
-        System.Func<Vector2Int, bool> canGet = target =>
-        {
-            foreach (int st in visited)
-            {
-                var s = SolidFor(st / N);
-                if (TouchPossible(k => s.Contains(k), cells[st % N], target, RS, RU)) return true;
-            }
+            for (int st = 0; st < model.TOTAL; st++)
+                if (model.Seen[st] && model.CanTouch(st / model.N, model.Cells[st % model.N], tg)) return true;
             return false;
         };
+        rep.finishOk = !spec.finish.exists || canGet(spec.finish);
+        foreach (var a in spec.artifacts) if (canGet(a)) rep.artOk++;
+        foreach (var c in spec.checkpoints) if (canGet(c)) rep.cpOk++;
+        rep.deadGroups.AddRange(model.DeadGroups());
 
-        rep.finishOk = finish.x < -9000 || canGet(finish);
-        foreach (var a in arts) if (canGet(a)) rep.artOk++;
-        foreach (var cp in checkpoints) if (canGet(cp)) rep.cpOk++;
-        for (int g = 0; g < G; g++)
-            if (!activatedEver[g]) rep.deadGroups.Add(char.ToUpper(groupList[g]).ToString());
+        // ⭐ КРИТЕРИЙ «КАЖДЫЙ МЕХАНИЗМ НЕСУЩИЙ»: убираем группу совсем и смотрим, пропала ли хоть одна
+        // цель. Не пропала — механизм декоративный, игрок его обойдёт и головоломки не заметит.
+        // Именно это отличает «уровень спроектировали» от «на уровень насыпали».
+        // ⚠️ Считается ОТДЕЛЬНЫМ поиском на каждую группу — отсюда и цена проверки.
+        {
+            var targets = new System.Collections.Generic.List<LevelTarget>();
+            if (spec.finish.exists) targets.Add(spec.finish);
+            targets.AddRange(spec.artifacts);
+            targets.AddRange(spec.checkpoints);
+            var reachableNow = new bool[targets.Count];
+            for (int i = 0; i < targets.Count; i++) reachableNow[i] = canGet(targets[i]);
 
-        // Холды и замурованные зоны считаем по ОБЪЕДИНЕНИЮ всех групп: клетка — холд, если она
-        // твёрдая и над ней пусто хоть при какой-то маске (так же, как оверлей в ComputeRoute).
+            // Граф зависимостей: dep[b, a] = «без механизма a кнопку b не нажать НИКОГДА». Считается
+            // из ТЕХ ЖЕ поисков, что и «несущий механизм», — лишней цены нет.
+            int GN = spec.groups.Count;
+            var dep = new bool[GN, GN];
+
+            for (int gi = 0; gi < spec.groups.Count; gi++)
+            {
+                var variant = spec.WithoutGroup(gi);
+                var m2 = new LevelModel(variant, RS, RU);
+                m2.Search();
+                if (m2.TooManyGroups || m2.N == 0) continue;
+                var deadWithout = m2.DeadGroups();
+                for (int b = 0; b < GN; b++)
+                    if (b != gi && deadWithout.Contains(spec.groups[b].id.ToUpperInvariant())) dep[b, gi] = true;
+                bool somethingLost = false;
+                for (int i = 0; i < targets.Count && !somethingLost; i++)
+                {
+                    if (!reachableNow[i]) continue;                 // и так было недостижимо — не в счёт
+                    bool still = false;
+                    for (int st = 0; st < m2.TOTAL && !still; st++)
+                        if (m2.Seen[st] && m2.CanTouch(st / m2.N, m2.Cells[st % m2.N], targets[i])) still = true;
+                    if (!still) somethingLost = true;
+                }
+                if (!somethingLost) rep.idleGroups.Add(spec.groups[gi].id.ToUpperInvariant());
+            }
+
+            // Длиннейший путь в графе зависимостей = сцепление. Мемоизация со «страховочной» единицей
+            // в ячейке до расчёта: цикла в зависимостях быть не должно, но зациклиться на нём нельзя.
+            var memo = new int[GN];
+            for (int i = 0; i < GN; i++) memo[i] = -1;
+            System.Func<int, int> longestFrom = null;
+            longestFrom = idx =>
+            {
+                if (memo[idx] >= 0) return memo[idx];
+                memo[idx] = 1;
+                int best = 1;
+                for (int a = 0; a < GN; a++)
+                    if (dep[idx, a]) { int v = 1 + longestFrom(a); if (v > best) best = v; }
+                memo[idx] = best; return best;
+            };
+            for (int i = 0; i < GN; i++) { int v = longestFrom(i); if (v > rep.chainDepth) rep.chainDepth = v; }
+        }
+
+        // Порядок кнопок: по тому, на каком ходу группа впервые оказалась включена.
+        {
+            var firstDepth = new int[model.G];
+            for (int g = 0; g < model.G; g++) firstDepth[g] = int.MaxValue;
+            for (int st = 0; st < model.TOTAL; st++)
+            {
+                if (!model.Seen[st]) continue;
+                int m = st / model.N;
+                for (int g = 0; g < model.G; g++)
+                    if ((m & (1 << g)) != 0 && model.Depth[st] < firstDepth[g]) firstDepth[g] = model.Depth[st];
+            }
+            var order = new System.Collections.Generic.List<int>();
+            for (int g = 0; g < model.G; g++) if (firstDepth[g] != int.MaxValue) order.Add(g);
+            order.Sort((x, y) => firstDepth[x].CompareTo(firstDepth[y]));
+            foreach (int g in order) rep.pressOrder.Add(spec.groups[g].id.ToUpperInvariant());
+        }
+
+        // Холды и замурованные зоны — по ОБЪЕДИНЕНИЮ всех групп: клетка холд, если она твёрдая и над
+        // ней пусто хоть при какой-то маске (так же, как оверлей достижимости в ComputeRoute).
+        var union = new System.Collections.Generic.HashSet<Vector2Int>(rock);
+        foreach (var g in spec.groups) foreach (var k in g.tiles) union.Add(k);
         var allHolds = new System.Collections.Generic.List<Vector2Int>();
         foreach (var k in union) if (!union.Contains(new Vector2Int(k.x, k.y + 1))) allHolds.Add(k);
+        var reachedCells = new System.Collections.Generic.HashSet<Vector2Int>();
+        foreach (int ci in model.ReachedCellIndices()) reachedCells.Add(model.Cells[ci]);
         int reachCount = 0;
         foreach (var k in allHolds) if (reachedCells.Contains(k)) reachCount++;
         rep.reachHolds = reachCount; rep.totalHolds = allHolds.Count;
-        rep.sealedPocket = LargestSealedPocket(union, allHolds, reachedCells);
+        rep.sealedPocket = LargestSealedAirPocket(union, allHolds, reachedCells);
+        {
+            int maxYu = 0; foreach (var k in union) if (k.y > maxYu) maxYu = k.y;
+            foreach (var k in allHolds)
+            {
+                if (reachedCells.Contains(k)) continue;
+                for (int y = k.y + 2; y <= maxYu; y++)
+                    if (union.Contains(new Vector2Int(k.x, y))) { rep.deadInternal++; break; }
+            }
+        }
         return rep;
     }
 
@@ -3725,9 +3611,77 @@ public class LevelEditorWindow : EditorWindow
     /// Ловит случай, ради которого и заведена: ступенька под люком встала во всю ширину комнаты и
     /// запечатала её пол вместе с мостом и кнопками (8×8 seed 6, 12×3 seed 13).
     /// </summary>
-    private static int LargestSealedPocket(System.Collections.Generic.HashSet<Vector2Int> solid,
-                                           System.Collections.Generic.List<Vector2Int> holds,
-                                           System.Collections.Generic.HashSet<Vector2Int> reach)
+    /// <summary>
+    /// ⭐ ЗАМУРОВАННАЯ ЗОНА = СВЯЗНАЯ ОБЛАСТЬ ВОЗДУХА, в которую модель ни разу не ступила.
+    /// Размер зоны — сколько в ней холдов (полок, на которых игрок мог бы стоять).
+    ///
+    /// 🐞 Прежняя версия считала иначе и ПРОПУСКАЛА большие мёртвые куски: она слипала недостижимые
+    /// холды по соседству в ±2 клетки, и вертикальная шахта с полками через 3-4 ряда разваливалась на
+    /// мелкие кусочки. Игрок прислал скрин 7×6 сид 10: недостижимых холдов 75 из 244, целая пятая
+    /// часть уровня отрезана, — а «карман» показывал 12 при пороге 30.
+    /// Область воздуха такие полки объединяет правильно: они смотрят в одну и ту же полость.
+    ///
+    /// Наружное небо в счёт не идёт: области, касающиеся края сетки, пропускаем.
+    /// </summary>
+    private static int LargestSealedAirPocket(System.Collections.Generic.HashSet<Vector2Int> solid,
+                                              System.Collections.Generic.List<Vector2Int> holds,
+                                              System.Collections.Generic.HashSet<Vector2Int> reach)
+    {
+        int minX = int.MaxValue, maxX = int.MinValue, minY = int.MaxValue, maxY = int.MinValue;
+        foreach (var k in solid)
+        {
+            if (k.x < minX) minX = k.x; if (k.x > maxX) maxX = k.x;
+            if (k.y < minY) minY = k.y; if (k.y > maxY) maxY = k.y;
+        }
+        if (minX > maxX) return 0;
+
+        // Клетка стояния достижимого холда = холд + 1: по ним узнаём, была ли модель в этой полости.
+        var visitedAir = new System.Collections.Generic.HashSet<Vector2Int>();
+        foreach (var h in reach) visitedAir.Add(new Vector2Int(h.x, h.y + 1));
+        // Холды по клетке стояния — чтобы мерить зону в полках, а не в пустых клетках.
+        var holdByAir = new System.Collections.Generic.Dictionary<Vector2Int, int>();
+        foreach (var h in holds)
+        {
+            var air = new Vector2Int(h.x, h.y + 1);
+            holdByAir[air] = holdByAir.ContainsKey(air) ? holdByAir[air] + 1 : 1;
+        }
+
+        var seen = new System.Collections.Generic.HashSet<Vector2Int>();
+        int worst = 0;
+        for (int x = minX; x <= maxX; x++)
+        for (int y = minY; y <= maxY + 1; y++)
+        {
+            var start = new Vector2Int(x, y);
+            if (solid.Contains(start) || seen.Contains(start)) continue;
+            var comp = new System.Collections.Generic.List<Vector2Int>();
+            var q = new System.Collections.Generic.Queue<Vector2Int>();
+            q.Enqueue(start); seen.Add(start);
+            bool touchesOutside = false, touchedByModel = false;
+            while (q.Count > 0)
+            {
+                var c = q.Dequeue(); comp.Add(c);
+                if (c.x <= minX || c.x >= maxX || c.y <= minY || c.y >= maxY + 1) touchesOutside = true;
+                if (visitedAir.Contains(c)) touchedByModel = true;
+                for (int k = 0; k < 4; k++)
+                {
+                    var nb = new Vector2Int(c.x + (k == 2 ? -1 : k == 3 ? 1 : 0),
+                                            c.y + (k == 0 ? -1 : k == 1 ? 1 : 0));
+                    if (nb.x < minX || nb.x > maxX || nb.y < minY || nb.y > maxY + 1) { touchesOutside = true; continue; }
+                    if (solid.Contains(nb) || !seen.Add(nb)) continue;
+                    q.Enqueue(nb);
+                }
+            }
+            if (touchesOutside || touchedByModel) continue;      // небо снаружи либо модель тут была
+            int size = 0;
+            foreach (var c in comp) { int n; if (holdByAir.TryGetValue(c, out n)) size += n; }
+            if (size > worst) worst = size;
+        }
+        return worst;
+    }
+
+    private static int LargestSealedPocketOld(System.Collections.Generic.HashSet<Vector2Int> solid,
+                                              System.Collections.Generic.List<Vector2Int> holds,
+                                              System.Collections.Generic.HashSet<Vector2Int> reach)
     {
         int maxY = 0;
         foreach (var k in solid) if (k.y > maxY) maxY = k.y;
@@ -3764,7 +3718,7 @@ public class LevelEditorWindow : EditorWindow
     /// <summary>Лог-обёртка над <see cref="AnalyseScheme"/> — то, что видит игрок в консоли.</summary>
     private void CheckSchemeReachability(char[][] grid)
     {
-        var rep = AnalyseScheme(grid);
+        var rep = AnalyseScheme(grid, InvertedGroupsFor(_schemeText), ButtonHostsFor(_schemeText));
         if (rep.noSpawn) { Debug.LogWarning("[Reach] ⚠ В схеме НЕТ спавна '@' — проверять нечего."); return; }
         if (rep.tooManyGroups)
         { Debug.LogWarning("[Reach] ⚠ Слишком много групп для точного поиска по состояниям."); return; }
@@ -3773,7 +3727,10 @@ public class LevelEditorWindow : EditorWindow
         string msg = $"[Reach] Холдов достижимо: {rep.reachHolds}/{rep.totalHolds}. "
             + $"Финиш={(rep.finishOk ? "ok" : "НЕДОСТ.")}, артефакты {rep.artOk}/{rep.artTotal}, "
             + $"чекпоинты {rep.cpOk}/{rep.cpTotal}. Дотяжка ↔{RS} ↑{RU} (сумма ≤{ReachSumCells})"
-            + (rep.pressOrder.Count > 0 ? ", кнопки: " + string.Join("→", rep.pressOrder.ToArray()) : "");
+            + (rep.pressOrder.Count > 0 ? ", кнопки: " + string.Join("→", rep.pressOrder.ToArray()) : "")
+            // Сцепление показываем и для РУЧНЫХ уровней: это единственная объективная мерка того,
+            // головоломка перед нами или набор независимых кнопок.
+            + $", сцепление {rep.chainDepth}";
         if (rep.Bad) Debug.LogWarning(msg); else Debug.Log(msg);
         if (!rep.finishOk) Debug.LogWarning("[Reach] ⚠ ФИНИШ недостижим от спавна.");
         if (rep.artOk < rep.artTotal) Debug.LogWarning($"[Reach] ⚠ {rep.artTotal - rep.artOk} артефакт(ов) недостижимы.");
@@ -3781,6 +3738,12 @@ public class LevelEditorWindow : EditorWindow
         if (rep.deadGroups.Count > 0)
             Debug.LogWarning("[Reach] ⚠ Группы, чьи кнопки недостижимы (платформы мертвы): "
                 + string.Join(",", rep.deadGroups.ToArray()));
+        if (rep.idleGroups.Count > 0)
+            Debug.LogWarning("[Reach] ⚠ Механизмы НИЧЕГО не держат (их можно обойти): "
+                + string.Join(",", rep.idleGroups.ToArray()));
+        if (rep.deadInternal > DeadInternalLimit)
+            Debug.LogWarning($"[Reach] ⚠ Замуровано {rep.deadInternal} холдов ВНУТРИ массива "
+                + "(порог " + DeadInternalLimit + ") — большой кусок уровня отрезан.");
         if (rep.sealedPocket > SealedPocketLimit)
             Debug.LogWarning($"[Reach] ⚠ Замурованная зона: {rep.sealedPocket} холдов внутри массива, "
                 + "куда не попасть (порог " + SealedPocketLimit + ").");

@@ -31,11 +31,18 @@ public static class SaveSystem
 
     /// <summary>
     /// Вызывается при победе: открывает следующий уровень, если он ещё не открыт.
+    ///
+    /// 🐞 Здесь было `next &lt; totalLevels`, и из-за строгого неравенства ПОСЛЕДНИЙ уровень пака не
+    /// открывался НИКОГДА: при 10 уровнях прохождение 9-го давало next = 10, а `10 &lt; 10` — ложь.
+    /// В окне выбора он так и оставался «LOCKED». Незаметно это было потому, что кнопка «дальше»
+    /// (<c>SceneController.LoadNextScene</c>) разблокировку не проверяет — сыграть последний уровень
+    /// было можно, а карточка при этом оставалась серой. Индекс уровня 1-based, всего их totalLevels,
+    /// значит допустимый максимум — РОВНО totalLevels.
     /// </summary>
     public static void UnlockNextLevel(int completedLevelIndex, int totalLevels)
     {
         int next = completedLevelIndex + 1;
-        if (next < totalLevels && next > LastLevel)
+        if (next <= totalLevels && next > LastLevel)
         {
             LastLevel = next;
         }
