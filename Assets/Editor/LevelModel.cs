@@ -365,22 +365,32 @@ public class LevelModel
     /// </summary>
     private void Enter(int from, int nm, int ci, byte kind)
     {
+        int idx = Landing(nm, ci);
+        if (idx < 0) return;
+        int ns = nm * N + idx;
+        if (Seen[ns]) return;
+        Seen[ns] = true; Prev[ns] = from; PrevKind[ns] = kind; Depth[ns] = Depth[from] + 1; _q.Enqueue(ns);
+    }
+
+    /// <summary>
+    /// Где окажется игрок, стоявший на холде <paramref name="ci"/>, когда маска станет
+    /// <paramref name="nm"/>: там же либо ниже по колонке (опора исчезла — падение).
+    /// −1 — так нельзя: лететь некуда (смерть) или над головой стало твёрдо (раздавило).
+    /// </summary>
+    private int Landing(int nm, int ci)
+    {
         var pos = Cells[ci];
         var s = SolidFor(nm);
-        int idx = ci;
         if (!s.Contains(pos))
         {
             int landY = int.MinValue;
             for (int y = pos.y - 1; y >= _minY; y--)
                 if (s.Contains(new Vector2Int(pos.x, y))) { landY = y; break; }
-            if (landY == int.MinValue) return;
-            idx = CellIndex(new Vector2Int(pos.x, landY));
-            if (idx < 0) return;
+            if (landY == int.MinValue) return -1;
+            return CellIndex(new Vector2Int(pos.x, landY));
         }
-        else if (s.Contains(new Vector2Int(pos.x, pos.y + 1))) return;
-        int ns = nm * N + idx;
-        if (Seen[ns]) return;
-        Seen[ns] = true; Prev[ns] = from; PrevKind[ns] = kind; Depth[ns] = Depth[from] + 1; _q.Enqueue(ns);
+        if (s.Contains(new Vector2Int(pos.x, pos.y + 1))) return -1;
+        return ci;
     }
 
     /// <summary>Состояние, из которого цель достаётся: ближайшее к ней, при равенстве — по числу
@@ -417,6 +427,97 @@ public class LevelModel
         if (Seen == null) return set;
         for (int st = 0; st < TOTAL; st++) if (Seen[st]) set.Add(st % N);
         return set;
+    }
+
+    /// <summary>
+    /// ⭐ ТУПИКОВЫЕ СОСТОЯНИЯ — те, из которых финиш уже НЕ ДОСТАТЬ НИКОГДА. Обычная проверка
+    /// («цель достижима из спавна») их не видит: поиск обходит все состояния разом и находит финиш по
+    /// любой ветке, а живой игрок в каждый момент находится в ОДНОМ состоянии.
+    ///
+    /// Пока у каждого механизма была кнопка с обеих сторон, вопрос не стоял. Он появился с
+    /// ОДНОСТОРОННИМИ путями (разбор ручного Level_07: провалился в колодец → взял ключ → вылез в
+    /// другом месте). Там дверь-выход открывается ТОЛЬКО изнутри, и по критерию «механизм несущий»
+    /// она выглядит декоративной: убери её — ключ всё равно достижим, просто наружу не выйти.
+    /// Без этой проверки генератор забраковал бы собственную вылазку, а заодно мог бы выдать уровень,
+    /// где игрок запирается всерьёз.
+    ///
+    /// ⚠️ ШАГ ОБРАТИМ (дотяжка симметрична, путь между клетками тоже), поэтому внутри одной маски
+    /// состояния разбиваются на КОМПОНЕНТЫ СВЯЗНОСТИ и считать можно по ним, а не по состояниям —
+    /// иначе обратный обход по рёбрам не влез бы в память на десяти группах.
+    /// </summary>
+    public int StuckStates()
+    {
+        if (Seen == null || !Spec.finish.exists || N == 0) return 0;
+
+        var comp = new int[TOTAL];
+        for (int i = 0; i < TOTAL; i++) comp[i] = -1;
+        int nComp = 0;
+        var stack = new Stack<int>();
+        for (int st = 0; st < TOTAL; st++)
+        {
+            if (!Seen[st] || comp[st] >= 0) continue;
+            int m = st / N;
+            comp[st] = nComp; stack.Push(st);
+            while (stack.Count > 0)
+            {
+                int cur = stack.Pop();
+                var hc = Cells[cur % N];
+                for (int j = 0; j < N; j++)
+                {
+                    int ns = m * N + j;
+                    if (!Seen[ns] || comp[ns] >= 0) continue;
+                    if (!IsHold(m, Cells[j]) || !CanStep(m, hc, Cells[j])) continue;
+                    comp[ns] = nComp; stack.Push(ns);
+                }
+            }
+            nComp++;
+        }
+
+        var preds = new List<int>[nComp];
+        for (int i = 0; i < nComp; i++) preds[i] = new List<int>();
+        var safe = new bool[nComp];
+        var q = new Queue<int>();
+        for (int st = 0; st < TOTAL; st++)
+        {
+            if (!Seen[st]) continue;
+            int m = st / N, ci = st % N;
+            if (!safe[comp[st]] && CanTouch(m, Cells[ci], Spec.finish))
+            { safe[comp[st]] = true; q.Enqueue(comp[st]); }
+
+            for (int g = 0; g < G; g++)                       // смены маски = рёбра между компонентами
+            {
+                int nm;
+                if ((m & (1 << g)) == 0)
+                {
+                    bool can = false;
+                    foreach (var b in Spec.groups[g].buttons)
+                    {
+                        if (b.host == LevelButton.HostGone) continue;
+                        if (b.host >= 0 && !TilesSolid(m, b.host)) continue;
+                        if (!CanTouch(m, Cells[ci], b.cell, b.center, b.half)) continue;
+                        can = true; break;
+                    }
+                    if (!can) continue;
+                    nm = m | (1 << g);
+                }
+                else nm = m & ~(1 << g);
+                int idx = Landing(nm, ci);
+                if (idx < 0) continue;
+                int dst = nm * N + idx;
+                if (!Seen[dst]) continue;
+                preds[comp[dst]].Add(comp[st]);
+            }
+        }
+
+        while (q.Count > 0)
+        {
+            int c = q.Dequeue();
+            foreach (int p in preds[c]) if (!safe[p]) { safe[p] = true; q.Enqueue(p); }
+        }
+
+        int stuck = 0;
+        for (int st = 0; st < TOTAL; st++) if (Seen[st] && !safe[comp[st]]) stuck++;
+        return stuck;
     }
 
     /// <summary>Группы, чьи кнопки так и не удалось нажать (их платформы мертвы).</summary>

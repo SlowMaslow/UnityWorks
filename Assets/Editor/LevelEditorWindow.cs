@@ -142,8 +142,26 @@ public class LevelEditorWindow : EditorWindow
     /// Само по себе число механизмов игре ничем не мешает.
     /// </summary>
     [SerializeField] private int _mazeMechs = 4;
+    /// <summary>
+    /// ⭐ Доля вертикальных проходов, превращаемых в ДВУХЪЯРУСНЫЙ ЗАЛ (потолок между этажами вырезан
+    /// почти целиком). Ручка облика уровня: 0 — сплошь приземистые комнаты, как было; выше — больше
+    /// высоких пространств.
+    /// ⚠️ Не бесплатно: зал съедает пол верхней комнаты, а на нём стоят кнопки, ключи и флаги. Чем
+    /// больше залов, тем чаще генератор перебрасывает сид, потому что объект стало некуда поставить.
+    /// </summary>
+    [SerializeField] private int _mazeHalls = 35;
+    /// <summary>Шанс поставить ВЫЛАЗКУ — целую петлю «провалился → взял ключ → вылез в другом месте»
+    /// (см. ExcursionModule). Съедает сразу три группы, поэтому не на каждом уровне.</summary>
+    [SerializeField] private int _mazeExcursion = 40;
+    /// <summary>⭐ СЛОЖНОСТЬ УРОВНЯ В БАЛЛАХ. Состав рецепта подбирается под неё случайно, но точно:
+    /// один и тот же слот пака каждый раз выглядит по-новому, оставаясь той же сложности.
+    /// ⚠️ Сверху ограничена потолком групп: сложность может запросить больше, чем приёмка успевает
+    /// проверить, и тогда честнее недобрать баллов (об этом будет предупреждение в логе).</summary>
+    [SerializeField] private int _mazeDifficulty = 12;
     /// <summary>Замысел последней сгенерированной схемы человеческими словами — для лога.</summary>
     private string _mazePlanText = "";
+    /// <summary>Рецепт последней схемы: из чего уровень задуман (см. <see cref="LevelRecipe"/>).</summary>
+    private string _mazeRecipeText = "";
 
     // ⭐ СВОЙСТВА ГРУПП, КОТОРЫЕ ASCII-СХЕМА ВЫРАЗИТЬ НЕ МОЖЕТ (инверсия и т.д.) — едут отдельным
     // каналом от генератора к импортёру и к проверке. Это первый шаг к тому, чтобы генератор отдавал
@@ -1521,6 +1539,16 @@ public class LevelEditorWindow : EditorWindow
                 + "каждый лишний механизм удваивает поиск по состояниям, а приёмка гоняет его ещё раз "
                 + "на каждую группу. Предел модели — 12 групп. Игре само число механизмов не мешает."),
                 _mazeMechs, 1, 10);
+            _mazeHalls = EditorGUILayout.IntSlider(new GUIContent("Двухъярусных залов, %",
+                "Как часто вертикальный проход становится ЗАЛОМ: потолок между этажами вырезан почти "
+                + "целиком, два этажа читаются как одно высокое пространство. 0 — только приземистые "
+                + "комнаты, как было. Дороже по перебросам: зал съедает пол верхней комнаты."),
+                _mazeHalls, 0, 100);
+            _mazeExcursion = EditorGUILayout.IntSlider(new GUIContent("Вылазок, %",
+                "Шанс поставить ВЫЛАЗКУ: тупиковая комната с ключом, войти в которую можно только "
+                + "провалившись сверху на вызванную заранее площадку, а выйти — через дверь, "
+                + "открываемую изнутри. Съедает три группы сразу."),
+                _mazeExcursion, 0, 100);
         }
         // По одному полю в строке: вчетвером в одной строке подписи сжимались до нечитаемого вида,
         // и легко было ввести число не в то поле.
@@ -1554,6 +1582,12 @@ public class LevelEditorWindow : EditorWindow
     /// впритык не берётся (плейтест 2026-07-18). Держим ряд запаса.</summary>
     private const int MazeClimb = 3;
 
+    /// <summary>Счётчики отладки: сколько вертикальных проходов стали залом, а сколько нет.
+    /// Нужны, чтобы не гадать по косвенным признакам, работает ли ручка (уже обжигался: измерял
+    /// облик и делал выводы о частоте, хотя частота была почти нулевой).</summary>
+    public static int HallsBuilt, HallsSkipped;
+
+
 
     /// <summary>
     /// ⭐ ГЕНЕРАТОР НЕ ОТДАЁТ БРАК: строит схему, САМ проверяет её моделью проходимости
@@ -1575,7 +1609,12 @@ public class LevelEditorWindow : EditorWindow
         string best = null; int bestScore = int.MinValue; int usedTry = 0;
         // Лучшая ЧИСТАЯ схема, которой не хватило только глубины: если запрошенное сцепление ни разу
         // не выйдет, отдадим самую глубокую из чистых, а не первую попавшуюся.
-        string bestClean = null; int bestCleanChain = -1, bestCleanTry = 0;
+        string bestClean = null; int bestCleanRank = -1, bestCleanChain = -1, bestCleanTry = 0;
+        // 🐞 ПЕРЕБРОС СЪЕДАЛ ВЫЛАЗКУ. Приёмка про неё не знала и спокойно меняла схему С вылазкой на
+        // схему БЕЗ неё, если та лучше по глубине — ползунок «Вылазок, %» переставал что-либо значить
+        // (поймано игроком: «7×6 сид 4 вообще не показал шаблона»). Теперь наличие вылазки входит в
+        // ранг кандидата и весит больше глубины: это целая головоломка, а не лишний механизм.
+        bool wantExcursion = _mazeExcursion > 0;
         // ⚠️ СВОЙСТВА ГРУПП ЕДУТ ВМЕСТЕ СО СХЕМОЙ. _mazeStamps всегда описывают ПОСЛЕДНЮЮ построенную
         // схему, а вернуть мы можем более раннюю. Без переноса InvertedGroupsFor вернул бы пустоту
         // (ключ _mazeStampsFor не совпал), и дверь-инверсия импортировалась бы обычной группой —
@@ -1588,7 +1627,9 @@ public class LevelEditorWindow : EditorWindow
             // сходятся на одной схеме: сид 7 при браке пробует 8, и если чистой оказалась она, то
             // сиды 7, 8 и 9 дают ОДИН И ТОТ ЖЕ уровень (поймано на подборе кандидатов). Для дейли это
             // означало бы одинаковый уровень несколько дней подряд.
+            int excBefore = ExcursionModule.StampedCount;
             string scheme = GenerateMazeSchemeOnce(_mazeSeed == 0 ? 0 : _mazeSeed + tryNo * 7919);
+            bool hasExcursion = ExcursionModule.StampedCount > excBefore;
             var lines = scheme.Replace("\r", "").Split('\n');
             var grid = new char[lines.Length][];
             for (int i = 0; i < lines.Length; i++) grid[i] = lines[i].ToCharArray();
@@ -1598,16 +1639,20 @@ public class LevelEditorWindow : EditorWindow
                 // ⭐ РУЧКА «ЦЕПОЧКА» — ТРЕБОВАНИЕ, А НЕ ПОЖЕЛАНИЕ. Меряем сцепление по МОДЕЛИ (кто без
                 // кого не нажимается), а не по замыслу компоновщика: замер 24 схем показал расхождения
                 // в обе стороны. Не добрали глубину — перебрасываем сид, как при любом другом браке.
-                if (rep.chainDepth >= _mazeChain)
+                if (rep.chainDepth >= _mazeChain && (hasExcursion || !wantExcursion))
                 {
                     if (tryNo > 0)
                         Debug.Log($"[Maze] Схема принята с попытки {tryNo + 1}: предыдущие забракованы самопроверкой.");
+                    Debug.Log($"[Maze] Рецепт: {_mazeRecipeText}");
                     Debug.Log($"[Maze] Замысел: {_mazePlanText} → по модели сцепление {rep.chainDepth}");
                     return scheme;
                 }
-                if (rep.chainDepth > bestCleanChain)
+                // Ранг: вылазка перевешивает глубину — целая головоломка ценнее лишнего яруса.
+                int rank = (hasExcursion ? 1000 : 0) + rep.chainDepth;
+                if (rank > bestCleanRank)
                 {
-                    bestCleanChain = rep.chainDepth; bestClean = scheme; bestCleanTry = tryNo;
+                    bestCleanRank = rank; bestCleanChain = rep.chainDepth;
+                    bestClean = scheme; bestCleanTry = tryNo;
                     bestCleanStamps = _mazeStamps; bestCleanPlan = _mazePlanText;
                 }
                 // ⚠️ ЗА ГЛУБИНОЙ ГОНИМСЯ НЕ ДО ПОСЛЕДНЕГО. Брак искать все 12 попыток надо — уровень с
@@ -1640,8 +1685,34 @@ public class LevelEditorWindow : EditorWindow
 
     private string GenerateMazeSchemeOnce(int seedValue)
     {
-        int CW = Mathf.Clamp(_mazeW, 2, 12), CH = Mathf.Clamp(_mazeH, 2, 12);
         var rng = seedValue == 0 ? new System.Random() : new System.Random(seedValue);
+
+        // ── РЕЦЕПТ — ПЕРВЫМ ДЕЛОМ, ДО ВСЯКОЙ ГЕОМЕТРИИ ───────────────────────────────────────────
+        // ⭐ Предложение игрока: управлять СОСТАВОМ уровня, а не частотой выпадения паттернов.
+        // Рецепт говорит, из чего уровень состоит («основной маршрут: ворота ×3, мост; ветка к ключу:
+        // вылазка»), и уже под него подбирается всё остальное. Разнообразие — из разных рецептов, а не
+        // из разных бросков одной геометрии.
+        // ⭐ Сложность задаётся БАЛЛАМИ, а состав под них подбирается сам (предложение игрока):
+        // «ворота ×3» и «одна вылазка» — разная задача, числом механизмов это не выразить.
+        var recipe = LevelRecipe.RollForDifficulty(rng, _mazeDifficulty, _mazeMechs, _mazeExcursion > 0);
+        _mazeRecipeText = recipe.Points + "б: " + recipe.Describe();
+        if (recipe.Points < _mazeDifficulty - 2)
+            _mazeRecipeText += $" ⚠ недобор до {_mazeDifficulty}б: потолок в {_mazeMechs} групп "
+                             + "(поднимать нельзя без роста цены приёмки)";
+
+        // ⭐ РАЗМЕР СЕТКИ — СЛЕДСТВИЕ РЕЦЕПТА, А НЕ НАСТРОЙКА (решение игрока: «если в маленькой сетке
+        // не помещается, делать такую, в которой помещается»). Запас втрое: маска формы выкусывает
+        // часть клеток, а остовное дерево виляет, поэтому «комнат ровно столько же» не хватает.
+        int CW = Mathf.Clamp(_mazeW, 2, 12), CH = Mathf.Clamp(_mazeH, 2, 12);
+        int roomsNeeded = recipe.RoomsNeeded * 3;
+        while (CW * CH < roomsNeeded && (CW < 12 || CH < 12))
+        {
+            if (CW <= CH && CW < 12) CW++;
+            else if (CH < 12) CH++;
+            else CW++;
+        }
+        if (CW != Mathf.Clamp(_mazeW, 2, 12) || CH != Mathf.Clamp(_mazeH, 2, 12))
+            _mazeRecipeText += $" (сетка расширена до {CW}×{CH}: рецепту нужно {recipe.RoomsNeeded} комнат)";
 
         // ── ФОРМА ЛАБИРИНТА (фидбэк игрока: уровни не должны быть все квадратные). Часть клеток
         // сетки объявляется МЁРТВОЙ — комнат там нет, лишний камень обрезается, и силуэт получается
@@ -1841,9 +1912,53 @@ public class LevelEditorWindow : EditorWindow
         // движение идёт клетка за клеткой.
         // Ширина комнат 3..8: по горизонтали дотяжка ничего не ограничивает (движение вдоль пола идёт
         // клетка за клеткой), поэтому разброс здесь можно давать шире, чем по высоте.
-        var colW = new int[CW]; for (int x = 0; x < CW; x++) colW[x] = 3 + rng.Next(6);
+        // ⭐ КОЛОННЫ-ЗАЛЫ РЕШАЮТСЯ ДО ШИРИНЫ, А НЕ ПОСЛЕ. Сначала я выбирал зал уже по готовой комнате
+        // («широкая? сделаю залом»), и при 35% строился ОДИН зал на уровень: комнаты шириной ≥7 сами
+        // по себе редки. Это тот же промах, что был у механизмов до компоновщика — решать по факту
+        // геометрии вместо того, чтобы геометрию под замысел и строить.
+        // Теперь: сначала колонка объявляется зальной, и уже поэтому получает ширину 7-8.
+        // ⭐ НАЗНАЧЕНИЕ РОЛЕЙ: рецепт из заказа становится нарядом. Делается ЗДЕСЬ — дерево уже есть,
+        // размеры комнат ещё не выбраны, и потому их можно выдать под роли (см. ниже).
+        var roleSlots = LevelRecipe.AssignRoles(recipe, CW, CH,
+            (x, y) => x >= 0 && x < CW && y >= 0 && y < CH && alive[x, y],
+            (x, y) => x >= 0 && x < CW && y >= 0 && y < CH && hPass[x, y],
+            (x, y) => x >= 0 && x < CW && y >= 0 && y < CH && vPass[x, y],
+            startRoom, far);
+        if (roleSlots.Count < recipe.ElementCount)
+            _mazeRecipeText += $" ⚠ размещено ролей {roleSlots.Count} из {recipe.ElementCount} — "
+                             + "форма дерева вместила не всё";
+
+        var hallCol = new bool[CW];
+        var colW = new int[CW];
+        for (int x = 0; x < CW; x++)
+        {
+            hallCol[x] = rng.Next(100) < _mazeHalls;
+            // ⚠️ Обычные колонки остаются 3..8 как были — иначе при нулевой ручке из уровня пропали бы
+            // комнаты шириной 8, а на них держится мост (ему нужен пролёт шире дотяжки).
+            colW[x] = hallCol[x] ? 7 + rng.Next(2) : 3 + rng.Next(6);
+        }
         var rowH = new int[CH]; for (int y = 0; y < CH; y++)
             rowH[y] = Mathf.Min(MazeClimb + 2, 3 + rng.Next(3));                          // высота комнат 3..5
+        {
+            // ⭐⭐ РАЗМЕРЫ ВЫДАЮТСЯ ПОД РОЛИ, А НЕ БРОСАЮТСЯ ВСЛЕПУЮ. Здесь рецепт и перестаёт быть
+            // лотереей: каждый элемент уже привязан к конкретной комнате (см. AssignRoles выше), и
+            // её колонка/строка получают ровно то, что элемент просил. Раньше размеры кидались до
+            // всякого замысла, и мост (нужна ширина 8) или вылазка (глубина 5) ждали удачи —
+            // замер давал одну вылазку на сорок схем.
+            // ⚠️ Требования вида «не меньше», поэтому берётся МАКСИМУМ по строке и колонке —
+            // упаковка не нужна, конфликтов не бывает.
+            foreach (var slot in roleSlots)
+            {
+                var need = PuzzleVocabulary.Need(slot.element);
+                foreach (var rm in new[] { slot.roomA, slot.roomB })
+                {
+                    if (rm.x < 0 || rm.x >= CW || rm.y < 0 || rm.y >= CH) continue;
+                    colW[rm.x] = Mathf.Clamp(Mathf.Max(colW[rm.x], need.minWidth), 3, 8);
+                    // ⚠️ Высота ограничена климбом: подъёмы строим ≤3 рядов, отсюда H ≤ Climb+2.
+                    rowH[rm.y] = Mathf.Clamp(Mathf.Max(rowH[rm.y], need.minHeight), 3, MazeClimb + 2);
+                }
+            }
+        }
         var colX = new int[CW + 1]; colX[0] = 1;                     // префикс-суммы: левый столбец интерьера (+1 = стена)
         for (int x = 0; x < CW; x++) colX[x + 1] = colX[x] + colW[x] + 1;
         var rowY = new int[CH + 1]; rowY[0] = 1;                     // сверху вниз: первым идёт ряд комнат CH−1
@@ -1893,7 +2008,8 @@ public class LevelEditorWindow : EditorWindow
         var bump = new bool[rows, cols];
         // Вертикальные проходы: запоминаем, чтобы позже часть из них превратить в ВОРОТА (ступенька из
         // появляющихся платформ). Ключи: комната снизу, ряд ступеньки, её колонки.
-        var shafts = new System.Collections.Generic.List<(Vector2Int room, int stepRow, int col0, int width)>();
+        var shafts = new System.Collections.Generic.List<(Vector2Int room, int stepRow, int col0, int width,
+                                                  int hatchRow, int hatchCol0, int hatchWidth)>();
         // Клетки настоящих КОРИДОРОВ (дверные проёмы и вертикальные шахты): расшивке запрещено их
         // заглушать — иначе она замуровывает сам проход (обжёгся: 24 из 138 разваливались при ↑3).
         var noFill = new bool[rows, cols];
@@ -1926,6 +2042,17 @@ public class LevelEditorWindow : EditorWindow
             if (vPass[cx, cy])
             {
                 int ceilRow = R0(cy) - 1;                      // ряд-стена между cy и cy+1
+                // ⭐ ДВУХЪЯРУСНЫЙ ЗАЛ. Замер подписи геометрии: 92% вертикальных пустот — 1-5 клеток,
+                // весь уровень поле приземистых коробок, и оттого уровни неотличимы друг от друга.
+                // Здесь потолок между этажами вырезается ПОЧТИ ЦЕЛИКОМ, и два этажа читаются как один
+                // высокий зал — вертикальная пустота сразу вдвое выше всего, что генератор умел.
+                // ⚠️ По краям потолок ОСТАЁТСЯ (2 клетки с каждой стороны): это пол верхней комнаты
+                // у дверных проёмов. Без него игрок, шагнув в проём наверху, ступил бы в пустоту, а
+                // пэд повис бы над пропастью (уже обжигались на этом у флага).
+                // ⚠️ Нужна ширина ≥7: 2+2 клетки полок и ≥3 клетки проёма.
+                // Второй раз не бросаем: колонка уже объявлена зальной и ради этого получила ширину.
+                bool hall = hallCol[cx] && W(cx) >= 7;
+                if (hall) HallsBuilt++; else HallsSkipped++;
                 int hw = Mathf.Min(W(cx) - 1, 2 + rng.Next(2));            // ширина люка 2-3 (край комнаты остаётся)
                 // ⚠️ ПОСАДОЧНЫЙ ХОЛД: вылезая из люка, игрок цепляется за клетку потолка СБОКУ от люка.
                 // Колонка-стена холдом не бывает (над ней тоже стена), поэтому люк вплотную к краю комнаты
@@ -1947,21 +2074,29 @@ public class LevelEditorWindow : EditorWindow
                 int climb = hiClimb;
                 if (hiClimb > loClimb && rng.Next(2) == 0) climb = loClimb;   // иногда положе — вариация
                 int stepRow = R0(cy) + H(cy) - climb;
-                for (int k = 0; k < hw; k++)
+                // Проём в потолке и СТУПЕНЬКА — теперь это две разные вещи. У обычной шахты они
+                // совпадают (люк 2-3 клетки, под ним такая же ступенька). У зала проём во всю комнату,
+                // а ступенька остаётся узкой и жмётся к ЛЕВОЙ полке: подъём с неё на полку — это те же
+                // выстраданные H−climb+1 рядов, только вбок на клетку-другую, а не строго вверх.
+                int hatchS = s, hatchW = hw, stepS = s, stepW = hw;
+                if (hall)
                 {
-                    carve(ceilRow, C0(cx) + s + k);                        // люк
-                    set(stepRow, C0(cx) + s + k, '#');                     // ступенька под люком
+                    hatchS = 2; hatchW = W(cx) - 4;                        // 2 клетки полки слева и справа
+                    stepS = 2; stepW = Mathf.Min(3, hatchW);
                 }
-                for (int k = -1; k <= hw; k++)                             // защищаем посадочные холды по бокам люка
+                for (int k = 0; k < hatchW; k++) carve(ceilRow, C0(cx) + hatchS + k);
+                for (int k = 0; k < stepW;  k++) set(stepRow, C0(cx) + stepS + k, '#');
+                for (int k = -1; k <= hatchW; k++)                         // защищаем посадочные холды по краям проёма
                 {
-                    int c = C0(cx) + s + k;
+                    int c = C0(cx) + hatchS + k;
                     if (ceilRow - 1 >= 0 && c >= 0 && c < cols) noBump[ceilRow - 1, c] = true;
                 }
-                shafts.Add((new Vector2Int(cx, cy), stepRow, C0(cx) + s, hw));
-                for (int k = 0; k < hw; k++)                               // ствол шахты (ступенька→люк) = коридор
+                shafts.Add((new Vector2Int(cx, cy), stepRow, C0(cx) + stepS, stepW,
+                            ceilRow, C0(cx) + hatchS, hatchW));
+                for (int k = 0; k < hatchW; k++)                           // ствол (ступенька→проём) = коридор
                 for (int rr = ceilRow; rr < stepRow; rr++)
                 {
-                    int c = C0(cx) + s + k;
+                    int c = C0(cx) + hatchS + k;
                     if (rr >= 0 && rr < rows && c >= 0 && c < cols) noFill[rr, c] = true;
                 }
             }
@@ -2271,6 +2406,12 @@ public class LevelEditorWindow : EditorWindow
             deadEnds.Add(new Vector2Int(x, y));
         }
         deadEnds.Sort((a, b) => branchDepth(b).CompareTo(branchDepth(a)));
+        // ⭐ КЛЮЧ ОБЯЗАН ЛЕЧЬ В КАМЕРУ ВЫЛАЗКИ. Иначе запирать нечего: вся конструкция строится ради
+        // того, что за ней лежит. Роль назначена раньше (см. AssignRoles), здесь мы лишь двигаем её
+        // комнату в начало очереди на ключи.
+        foreach (var slot in roleSlots)
+            if (slot.element == PuzzleElement.Excursion && deadEnds.Remove(slot.roomA))
+                deadEnds.Insert(0, slot.roomA);
 
         // Маршрут спавн→финиш: чекпоинт и кнопку игрок должен встретить ПО ДОРОГЕ, а не в тупике.
         var parent = new System.Collections.Generic.Dictionary<Vector2Int, Vector2Int>();
@@ -2474,6 +2615,58 @@ public class LevelEditorWindow : EditorWindow
             // и пол ему не нужен вовсе (см. TimedBridgeModule.Fits).
             if (hL && hR && !vU && !vD && W(x) >= MazeCanvas.ReachSide + 2) world.corridors.Add(rm);
         }
+        string excursionText = "";
+        // ── ВЫЛАЗКА: целая головоломка на тупиковой комнате с ключом ─────────────────────────────
+        // ⭐ Ставится ДО компоновщика и целиком: это не «ещё один механизм», а готовая петля из трёх
+        // групп (перенос ручного Level_07 — см. ExcursionModule). Компоновщик потом планирует вокруг:
+        // её комнаты попадают в busy, и он туда не лезет.
+        // Условия жёсткие, поэтому вылазка редка — и это правильно: она должна быть событием.
+        // ⭐⭐ МЕСТО БЕРЁТСЯ ИЗ НАРЯДА, А НЕ ИЩЕТСЯ. Раньше этот проход сам сканировал комнаты в
+        // надежде, что какая-то подойдёт — замер давал одну вылазку на сорок схем. Теперь комната
+        // назначена рецептом ДО выбора размеров и уже получила нужные глубину и ширину.
+        foreach (var slot in roleSlots)
+        {
+            if (slot.element != PuzzleElement.Excursion) continue;
+            var kr = slot.roomA; var up = slot.roomB;
+            // ⚠️ Причину отказа записываем в лог: заказанный рецептом элемент, который молча не
+            // построился, — это ровно та слепота, из-за которой вылазка полгода была лотереей.
+            if (gateGroups.Count + 3 > maxGates)
+            { excursionText = "⚠ вылазка не построена: нет бюджета групп; "; break; }
+            if (!keyRooms.Contains(kr))
+            { excursionText = $"⚠ вылазка не построена: в камеру {kr} не лёг ключ; "; continue; }
+            // Единственное ребро дерева обязано быть ГОРИЗОНТАЛЬНЫМ — оно станет дверью-выходом.
+            int exitCx = -1;
+            if (kr.x > 0 && hPass[kr.x - 1, kr.y]) exitCx = kr.x - 1;
+            else if (kr.x + 1 < CW && hPass[kr.x, kr.y]) exitCx = kr.x;
+            if (exitCx < 0)
+            { excursionText = $"⚠ вылазка не построена: у камеры {kr} нет горизонтального выхода; "; continue; }
+            int col = C0(exitCx) + W(exitCx), rBottom = R0(kr.y) + H(kr.y) - 1;
+            int hDoor = 0;
+            while (hDoor < H(kr.y) && at(rBottom - hDoor, col) == '.') hDoor++;
+            if (hDoor < 2) continue;
+            var spotIn = findFloorSpot(kr);
+            var spotUp = findFloorSpot(up);
+            if (spotIn.x < 0 || spotUp.x < 0) continue;
+            var canvas = new MazeCanvas(g, rows, cols, CW, CH, colX, rowY, colW, rowH,
+                                        bump, noBump, noFill, rng);
+            canvas.SetNextGroupIndex(gateGroups.Count);
+            excursionText = $"⚠ вылазка не построена: модуль отказал в камере {kr}; ";
+            var trio = new ExcursionModule().StampAll(canvas, new MazeSite
+            {
+                room = kr, roomAbove = up, onRoute = false,
+                doorCol = col, doorRowTop = rBottom - hDoor + 1, doorHeight = hDoor,
+                buttonBelow = spotIn, buttonAbove = spotUp
+            });
+            if (trio == null) continue;
+            foreach (var st in trio) { gateGroups.Add(st.groupId); stamps.Add(st); }
+            usedRooms.Add(kr); usedRooms.Add(up);
+            // ⚠️ Вылазку компоновщик своей не считает (её ставят до него), поэтому в отчёт о замысле
+            // она попадает отдельной строкой — иначе лог говорил бы «механизмов 3» при шести группах.
+            excursionText = "ВЫЛАЗКА в комнате " + kr + " (пусковая " + trio[0].groupId
+                          + ", ловчая " + trio[1].groupId + ", выход " + trio[2].groupId + "); ";
+            break;                                                     // одна вылазка на уровень
+        }
+
         foreach (var kr in keyRooms) world.keys.Add(kr);
         foreach (var ur in usedRooms) world.busy.Add(ur);
 
@@ -2616,7 +2809,8 @@ public class LevelEditorWindow : EditorWindow
             // своя нумерация. Без пересчёта отчёт о сложности врал бы в меньшую сторону.
             PuzzleComposer.Retier(world, builtGates);
         }
-        _mazePlanText = new PuzzleComposer.PuzzlePlan { gates = builtGates }.Describe();
+        _mazePlanText = excursionText + new PuzzleComposer.PuzzlePlan { gates = builtGates }.Describe();
+        if (excursionText.StartsWith("⚠")) _mazeRecipeText += " " + excursionText.Trim();
 
         // ── МОНЕТЫ: дорожка-приманка в тупиковые ветки (награда за исследование) + немного на маршруте.
         int coins = 0;
@@ -3364,11 +3558,19 @@ public class LevelEditorWindow : EditorWindow
         /// расхождений). Замысел — это намерение, а игроку достаётся то, что померила модель.
         /// </summary>
         public int chainDepth;
+        /// <summary>
+        /// ⭐ Состояния, из которых финиш уже не достать — игрок заперся всерьёз. Появляется только с
+        /// ОДНОСТОРОННИМИ механизмами (кнопка лишь с одной стороны): пока у всех кнопки с обеих сторон,
+        /// проход всегда можно переоткрыть, и запереться нечем. Поэтому и считается только тогда —
+        /// проверка стоит примерно как ещё один поиск.
+        /// </summary>
+        public int stuckStates;
         /// <summary>Брак: то, из-за чего уровень нельзя отдавать игроку.</summary>
         public bool Bad => noSpawn || tooManyGroups || !finishOk || artOk < artTotal || cpOk < cpTotal
                         || deadGroups.Count > 0 || idleGroups.Count > 0
                         || deadInternal > DeadInternalLimit
-                        || sealedPocket > SealedPocketLimit;
+                        || sealedPocket > SealedPocketLimit
+                        || stuckStates > 0;
     }
 
     /// <summary>Замурованный карман крупнее этого — брак. Ноль требовать нельзя: мелкие карманы на
@@ -3504,6 +3706,13 @@ public class LevelEditorWindow : EditorWindow
             return false;
         };
         rep.finishOk = !spec.finish.exists || canGet(spec.finish);
+
+        // ⚠️ ЗАПИРАНИЕ ВОЗМОЖНО ТОЛЬКО ПРИ ОДНОСТОРОННИХ МЕХАНИЗМАХ. Если у каждой группы кнопки с
+        // обеих сторон, любой проход переоткрывается — запереться нечем, и платить за проверку
+        // (примерно ещё один поиск) незачем. Считаем ровно тогда, когда есть чем запереться.
+        bool anyOneWay = false;
+        foreach (var g0 in spec.groups) if (g0.buttons.Count < 2) { anyOneWay = true; break; }
+        if (anyOneWay) rep.stuckStates = model.StuckStates();
         foreach (var a in spec.artifacts) if (canGet(a)) rep.artOk++;
         foreach (var c in spec.checkpoints) if (canGet(c)) rep.cpOk++;
         rep.deadGroups.AddRange(model.DeadGroups());
@@ -3543,6 +3752,13 @@ public class LevelEditorWindow : EditorWindow
                         if (m2.Seen[st] && m2.CanTouch(st / m2.N, m2.Cells[st % m2.N], targets[i])) still = true;
                     if (!still) somethingLost = true;
                 }
+                // ⭐ ЗАПИРАНИЕ — ТОЖЕ ПОТЕРЯ. Дверь-выход, открываемая только изнутри, по критерию
+                // «пропала ли цель» выглядит декоративной: убери её — ключ всё равно достижим
+                // (в камеру-то провалился), просто наружу не выйти. Это и есть её работа, поэтому
+                // «стало можно запереться» засчитываем как потерю. Разбор ручного Level_07.
+                // ⚠️ Считаем только для односторонних групп: у двусторонних запереться нечем.
+                if (!somethingLost && spec.groups[gi].buttons.Count < 2 && rep.stuckStates == 0
+                    && m2.StuckStates() > 0) somethingLost = true;
                 if (!somethingLost) rep.idleGroups.Add(spec.groups[gi].id.ToUpperInvariant());
             }
 

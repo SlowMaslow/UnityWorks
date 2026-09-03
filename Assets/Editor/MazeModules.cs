@@ -139,6 +139,9 @@ public class MazeSite
     // ── Дверной проём между двумя комнатами по горизонтали (для двери-инверсии) ──
     public int doorCol = -1, doorRowTop, doorHeight;
 
+    // ── ЛЮК в полу верхней комнаты (для люка-провала): сам ряд и его колонки ──
+    public int hatchRow = -1, hatchCol0, hatchWidth;
+
     /// <summary>
     /// ⭐ Нужна ПОЛКА ПОД ВЛОЖЕННУЮ КНОПКУ: на платформу этого механизма сядет кнопка следующего.
     /// 🐞 Без отдельной полки кнопка занимала клетку НАД ступенькой — то есть ровно то место, куда
@@ -302,52 +305,85 @@ public class VerticalGateModule : IMazeModule
         return stepRow > c.R0(s.room.y);                           // иначе упрётся в потолок
     }
 
+    /// <summary>
+    /// ⭐⭐ ЗИГЗАГ ВМЕСТО ОДНОЙ СТУПЕНЬКИ — форма считается ПОД МЕСТО, а не берётся из заготовки.
+    ///
+    /// Почему: разбор ручного Level_09 показал, что игрок одной кнопкой вызывает ЛЕСТНИЦУ ИЗ
+    /// НЕСКОЛЬКИХ УСТУПОВ ВРАЗБЕЖКУ, и одна и та же механика выглядит по-разному просто потому, что
+    /// разложена в разных по размеру комнатах (3×5, 5×5, 8×5 — одна стратегия, три облика).
+    /// А мой модуль всегда клал ОДНУ ступеньку в 2-3 тайла — отсюда и «уровни на одно лицо»:
+    /// композицию рецепт уже разнообразил, а каждый отдельный паттерн рендерился одинаково.
+    ///
+    /// Стратегия: уступы через <c>step</c> рядов (2 или 3), стороны чередуются, длина уступа
+    /// подбирается так, чтобы соседние уступы были В ПРЕДЕЛАХ ДОТЯЖКИ. Заготовок нет — есть правило
+    /// и место, поэтому вариантов столько, сколько бывает комнат.
+    ///
+    /// ⚠️ ГРАНИЦЫ НЕ ВЫДУМАНЫ, А ЗАМЕРЕНЫ: подъём ≤ Climb рядов, вбок ≤ ReachSide, сумма ≤ 7.
+    /// Переход между уступами разных сторон = (W − 2·len + 1) вбок при <c>step</c> вверх, отсюда и
+    /// нижняя граница длины уступа. Не помещается — откатываемся к одному уступу, как было.
+    /// </summary>
     public ModuleStamp Stamp(MazeCanvas c, MazeSite s)
     {
         if (!Fits(c, s)) return null;
-        int stepRow = c.FloorRow(s.room.y) - MazeCanvas.Climb;
+        int floorRow = c.FloorRow(s.room.y);
+        int ceilRow  = c.R0(s.room.y) - 1;
+        int w = c.W(s.room.x), col0 = c.C0(s.room.x);
 
-        // Под платформой нужны 2 пустых ряда. Мешать может ДЕКОР комнаты (тумба/пилон) — его сносим;
-        // если под платформой настоящий камень, эта шахта не годится, а не «прилепим платформу ниже».
-        bool groundBusy = false;
-        var toClear = new List<Vector2Int>();
-        for (int k = 0; k < s.shaftWidth && !groundBusy; k++)
-        for (int dr = 1; dr <= 2; dr++)
-        {
-            int col = s.shaftCol0 + k, r2 = stepRow + dr;
-            if (c.At(r2, col) != '#') continue;
-            if (c.Bump[r2, col]) toClear.Add(new Vector2Int(col, r2));
-            else { groundBusy = true; break; }
-        }
-        if (groundBusy) { RolledBackCount++; return null; }
+        int step = 2 + c.Rng.Next(2);                              // 2 или 3 ряда между уступами
+        // Соседние уступы на разных сторонах: вбок между ними W−2·len+1, вверх step.
+        // Требуем dx ≤ ReachSide и dx+dy ≤ 7 — отсюда минимальная длина уступа.
+        int minLen = Mathf.Max(2, Mathf.CeilToInt((w + step - (LevelModel.ReachSumCells - step)) / 2f));
+        int maxLen = Mathf.Max(2, w - 2);                          // во всю ширину нельзя: запечатает комнату
+        if (minLen > maxLen) minLen = maxLen;
+        int len = minLen + c.Rng.Next(maxLen - minLen + 1);
 
-        // ⚠️ ЧАСТИЧНЫЙ ОТКАЗ ЗДЕСЬ УНАСЛЕДОВАН ОТ СТАРОГО КОДА: если снос декора рождает зажим, мы
-        // возвращаем ТОЛЬКО эту клетку, а снесённое ранее так и остаётся снесённым. Оставлено ровно
-        // как было, чтобы перенос в модуль можно было проверить побайтовым совпадением схем.
-        // Это несогласованность (модуль обязан откатываться целиком) — чинить отдельной правкой,
-        // со своей проверкой, а не заодно.
-        foreach (var p in toClear)
-        {
-            c.Set(p.y, p.x, '.');
-            if (c.MakesPinch(p.y, p.x)) { c.Set(p.y, p.x, '#'); groundBusy = true; break; }
-            c.Bump[p.y, p.x] = false;
-        }
-        if (groundBusy) { RolledBackCount++; return null; }
+        // ⚠️ НИЖНИЙ УСТУП НЕ ВПЛОТНУЮ К ПОЛУ. Иначе он ложится в самый нижний ряд воздуха и это уже не
+        // уступ, а бугор на полу: лезть по нему некуда, а выглядит как мусор. Старый код требовал два
+        // пустых ряда под платформой ровно поэтому (фидбэк игрока про «ступеньку в одной клетке над
+        // землёй»), и при переходе на зигзаг это правило чуть не потерялось.
+        var rowsOfLedges = new List<int>();
+        for (int r = ceilRow + step; r <= floorRow - 2; r += step) rowsOfLedges.Add(r);
+        if (rowsOfLedges.Count == 0) { RolledBackCount++; return null; }
 
+        // Верхний уступ ставим у той стороны, к которой ближе люк, — с него игрок и вылезает наверх.
+        bool topLeft = (s.shaftCol0 - col0) <= (col0 + w - 1 - (s.shaftCol0 + s.shaftWidth - 1));
+
+        c.Begin();
         char grp = c.NextGroupId();
+
+        // Старую каменную ступеньку под люком убираем: её место занимает зигзаг.
         for (int k = 0; k < s.shaftWidth; k++)
         {
             int col = s.shaftCol0 + k;
-            if (s.shaftStepRow != stepRow && c.At(s.shaftStepRow, col) == '#')
-                c.Set(s.shaftStepRow, col, '.');                  // убрать старую ступеньку
-            if (c.At(stepRow, col) == '.' || c.At(stepRow, col) == '#')
-                c.Set(stepRow, col, char.ToLower(grp));
+            if (c.At(s.shaftStepRow, col) == '#') c.Set(s.shaftStepRow, col, '.');
         }
+
+        int placedLedges = 0, topRow = rowsOfLedges[0], topStart = col0;
+        for (int i = 0; i < rowsOfLedges.Count; i++)
+        {
+            bool left = (i % 2 == 0) == topLeft;
+            int start = left ? col0 : col0 + w - len;
+            int cellsHere = 0;
+            for (int k = 0; k < len; k++)
+            {
+                int col = start + k, r = rowsOfLedges[i];
+                char at = c.At(r, col);
+                if (at == '.') { c.Set(r, col, char.ToLower(grp)); cellsHere++; }
+                else if (at == '#' && c.Bump[r, col])              // декор сносим, настоящий камень — нет
+                { c.Set(r, col, char.ToLower(grp)); c.Bump[r, col] = false; cellsHere++; }
+            }
+            if (cellsHere < 2) continue;                           // огрызок уступа никому не нужен
+            placedLedges++;
+            if (placedLedges == 1) { topRow = rowsOfLedges[i]; topStart = start; }
+        }
+        if (placedLedges == 0) { c.Rollback(); RolledBackCount++; return null; }
+
         c.Set(s.buttonBelow.y, s.buttonBelow.x, grp);             // «открыть»
         c.Set(s.buttonAbove.y, s.buttonAbove.x, grp);             // «вернуться»
 
         var st = new ModuleStamp
-        { moduleName = Name, groupId = grp, inverted = false, gates = "подъём в верхнюю комнату" };
+        { moduleName = Name, groupId = grp, inverted = false,
+          gates = "подъём в верхнюю комнату (" + placedLedges + " уступ(ов) через " + step + ")" };
 
         // ── ПОЛКА ПОД ВЛОЖЕННУЮ КНОПКУ ────────────────────────────────────────────────────────
         // Пристраиваем к ступеньке ОДНУ колонку сбоку и сажаем кнопку над ней. Сама ступенька при этом
@@ -357,25 +393,23 @@ public class VerticalGateModule : IMazeModule
         // останется незанятой.
         if (s.wantButtonShelf)
         {
-            int c0 = c.C0(s.room.x), w = c.W(s.room.x);
+            // Пристраиваем колонку к ВЕРХНЕМУ уступу — именно на нём игрок стоит перед выходом наверх.
             for (int side = 0; side < 2 && st.shelfCell.x < 0; side++)
             {
-                int col = side == 0 ? s.shaftCol0 + s.shaftWidth : s.shaftCol0 - 1;
-                if (col < c0 || col > c0 + w - 1) continue;             // не вылезаем из комнаты
-                if (s.shaftWidth + 1 >= w) continue;                    // ступенька заняла бы всю ширину
-                if (c.At(stepRow, col) != '.') continue;                // место занято камнем/декором
-                if (c.At(stepRow - 1, col) != '.') continue;            // кнопке нужен воздух над полкой
-                c.Set(stepRow, col, char.ToLower(grp));
-                if (c.MakesPinch(stepRow, col)) { c.Set(stepRow, col, '.'); continue; }
-                st.shelfCell = new Vector2Int(col, stepRow - 1);
+                int col = side == 0 ? topStart + len : topStart - 1;
+                if (col < col0 || col > col0 + w - 1) continue;         // не вылезаем из комнаты
+                if (len + 1 >= w) continue;                             // уступ занял бы всю ширину
+                if (c.At(topRow, col) != '.') continue;                 // место занято камнем/декором
+                if (c.At(topRow - 1, col) != '.') continue;             // кнопке нужен воздух над полкой
+                c.Set(topRow, col, char.ToLower(grp));
+                if (c.MakesPinch(topRow, col)) { c.Set(topRow, col, '.'); continue; }
+                st.shelfCell = new Vector2Int(col, topRow - 1);
             }
-            // ⚠️ Полка не вышла — ворота всё равно годные, просто вложить в них нельзя. Отменять весь
-            // штамп нельзя: этот модуль не ведёт журнал (см. пометку про унаследованный частичный
-            // откат), и «отказ» после записи ступеньки оставил бы в схеме тайлы без группы. Пусть
-            // вложенный механизм не найдёт площадку и уйдёт на перепланировку — этот путь уже есть.
+            // ⚠️ Полка не вышла — ворота всё равно годные, просто вложить в них нельзя.
+            // Весь штамп из-за этого не отменяем: зигзаг сам по себе рабочий.
         }
 
-        StampedCount++;
+        c.Commit(); StampedCount++;
         st.AddButton(s.buttonBelow);
         st.AddButton(s.buttonAbove);
         return st;
@@ -431,5 +465,135 @@ public class InvertedDoorModule : IMazeModule
         st.AddButton(s.buttonBelow);
         st.AddButton(s.buttonAbove);
         return st;
+    }
+}
+
+/// <summary>
+/// ⭐ ВЫЛАЗКА — перенос ручного Level_07 в генератор. Первый СОСТАВНОЙ модуль: одна головоломка из
+/// трёх групп, потому что меньшим числом она не собирается.
+///
+/// Форма: тупиковая комната с ключом, войти в которую можно ТОЛЬКО провалившись сверху, а выйти —
+/// только через дверь, открываемую изнутри. Вход и выход разные, петля замкнута.
+///   • ПУСКОВАЯ площадка в комнате сверху — стоишь на ней, окно истекает, и ты падаешь в люк;
+///   • ЛОВЧАЯ площадка над пропастью в нижней комнате — не вызвал её заранее, падение смертельно;
+///   • ВЫХОД — инверсная стена в единственном ребре дерева, кнопка только ИЗНУТРИ.
+///
+/// ⚠️ ПОЧЕМУ ПУСКОВАЯ ПЛОЩАДКА ВООБЩЕ НУЖНА. В этой игре нельзя спрыгнуть по своей воле: падение
+/// бывает, только когда из-под ног исчезла платформа (правило игрока). Значит «намеренное падение»
+/// приходится ОРГАНИЗОВАТЬ — ровно так и сделано в Level_07 (площадка B с окном 3 с над колодцем).
+/// ⚠️ ПОЧЕМУ ПУСКОВАЯ И ЛОВЧАЯ — РАЗНЫЕ ГРУППЫ. Будь они одной, окно истекло бы у обеих сразу:
+/// игрок падал бы вместе с исчезающей ловчей площадкой в пропасть. У ловчей окно должно быть
+/// заметно длиннее (в Level_07: пусковая 3 с, ловчая 10 с).
+///
+/// Все три группы НЕСУЩИЕ по построению: без пусковой не упасть, без ловчей падение смертельно,
+/// без выхода из камеры не выбраться (это ловит проверка запирания — см. LevelModel.StuckStates).
+/// </summary>
+public class ExcursionModule
+{
+    public static int StampedCount, RolledBackCount;
+
+    public string Name => "вылазка";
+
+    /// <summary>Ширина люка (он же пролёт ловчей площадки). Две клетки: приземляться надо на что-то
+    /// шире одной, но и пол камеры нельзя съедать целиком.</summary>
+    private const int HatchWidth = 2;
+
+    public bool Fits(MazeCanvas c, MazeSite s)
+    {
+        if (s.roomAbove.x < 0) return false;
+        if (c.W(s.room.x) < HatchWidth + 4) return false;         // люк + по 2 клетки пола по краям
+        if (c.H(s.roomAbove.y) < 4) return false;                 // в верхней комнате нужна высота под пусковую
+        // ⚠️⚠️ КАМЕРА ОБЯЗАНА БЫТЬ ГЛУБОКОЙ. 🐞 Иначе ключ достают СВЕРХУ ЧЕРЕЗ ЛЮК, не спускаясь:
+        // ключ лежит в 1-2 рядах над полом камеры, то есть в H−1 рядах под полом верхней комнаты,
+        // а дотяжка вниз — 3 ряда. При H ≤ 4 игрок просто протягивает руку в люк, и вся вылазка
+        // превращается в украшение (поймано приёмкой: пусковая и ловчая помечены декоративными,
+        // сид 16). Нужен H = Climb+2 = 5: тогда ключ уходит на 4 ряда и за дотяжку не влезает.
+        if (c.H(s.room.y) < MazeCanvas.Climb + 2) return false;
+        if (s.doorCol < 0 || s.doorHeight < 2) return false;      // ребро наружу — горизонтальный проём
+        if (s.buttonBelow.x < 0 || s.buttonAbove.x < 0) return false;
+        return true;
+    }
+
+    /// <summary>Ставит все три группы разом. Возвращает null, если место не подошло (правки откатывает).</summary>
+    public List<ModuleStamp> StampAll(MazeCanvas c, MazeSite s)
+    {
+        if (!Fits(c, s)) { RolledBackCount++; return null; }
+
+        int ceilRow  = c.R0(s.room.y) - 1;                        // ряд-стена: пол верхней комнаты
+        int floorRow = c.FloorRow(s.room.y);                      // пол камеры
+        int hatch0   = c.C0(s.room.x) + (c.W(s.room.x) - HatchWidth) / 2;
+        int launchRow = ceilRow - MazeCanvas.Climb;               // пусковая: на 3 ряда над полом верхней
+
+        // Предусловия по клеткам — ДО единой правки, чтобы не пришлось откатывать половину.
+        if (launchRow <= c.R0(s.roomAbove.y)) return null;         // упрётся в потолок верхней комнаты
+        // ⚠️ ДЕКОР СНОСИМ, КАМЕНЬ — НЕТ. Тумбы и пилоны ставятся раньше и легко попадают в клетки,
+        // которые вылазке нужны пустыми: путь от люка вверх, место над ловчей, площадка пусковой.
+        // 🐞 Пока модуль на них просто отказывался, он не строился НИ РАЗУ, хотя место было годным —
+        // и молча, отчего это долго выглядело как «редкость шаблона». Ворота такой декор давно сносят.
+        var toClear = new List<Vector2Int>();
+        for (int k = 0; k < HatchWidth; k++)
+        {
+            int col = hatch0 + k;
+            if (c.At(ceilRow,   col) != '#') return null;          // потолок камеры должен быть целым
+            if (c.At(floorRow,  col) != '#') return null;          // пол камеры тоже
+            foreach (int r in new[] { launchRow, ceilRow - 1, floorRow - 1 })
+            {
+                if (c.At(r, col) == '.') continue;
+                if (c.At(r, col) == '#' && c.Bump[r, col]) { toClear.Add(new Vector2Int(col, r)); continue; }
+                return null;                                       // настоящий камень — место не годится
+            }
+        }
+
+        c.Begin();
+        foreach (var p in toClear) { c.Set(p.y, p.x, '.'); c.Bump[p.y, p.x] = false; }
+        char launch = c.NextGroupId(), catcher = c.NextGroupId(), exit = c.NextGroupId();
+
+        for (int k = 0; k < HatchWidth; k++)
+        {
+            int col = hatch0 + k;
+            c.Set(ceilRow,   col, '.');                            // ЛЮК в полу верхней комнаты
+            c.Set(launchRow, col, char.ToLower(launch));           // ПУСКОВАЯ площадка над люком
+            c.Set(floorRow,  col, char.ToLower(catcher));          // ЛОВЧАЯ площадка на месте пола
+            for (int r = floorRow + 1; r < c.Rows; r++)            // ПРОПАСТЬ под ней: режем оболочку вниз
+            { if (c.At(r, col) == '#') c.Set(r, col, ' '); else break; }
+        }
+        for (int r = s.doorRowTop; r < s.doorRowTop + s.doorHeight; r++)
+            c.Set(r, s.doorCol, char.ToLower(exit));               // ВЫХОД: инверсная стена в проёме
+
+        c.Set(s.buttonAbove.y, s.buttonAbove.x, launch);           // кнопки пусковой и ловчей — НАВЕРХУ,
+        var catchBtn = new Vector2Int(s.buttonAbove.x, s.buttonAbove.y);
+        // ⚠️ Кнопке ловчей нужно СВОЁ место: нажать обе надо ДО прыжка, а две кнопки в одной клетке
+        // не поставить. Ищем соседнюю свободную клетку на том же полу.
+        bool placed = false;
+        for (int d = 1; d <= 6 && !placed; d++)
+        for (int sign = -1; sign <= 1 && !placed; sign += 2)
+        {
+            int col = s.buttonAbove.x + sign * d;
+            if (c.At(s.buttonAbove.y, col) != '.') continue;
+            if (c.At(s.buttonAbove.y + 1, col) != '#') continue;   // должна стоять на полу
+            catchBtn = new Vector2Int(col, s.buttonAbove.y);
+            c.Set(catchBtn.y, catchBtn.x, catcher);
+            placed = true;
+        }
+        if (!placed) { c.Rollback(); RolledBackCount++; return null; }
+        c.Set(s.buttonBelow.y, s.buttonBelow.x, exit);             // кнопка выхода — ТОЛЬКО внутри камеры
+
+        bool pinched = false;
+        for (int r = ceilRow - 1; r <= floorRow + 1 && !pinched; r++)
+        for (int k = -1; k <= HatchWidth && !pinched; k++)
+            if (c.MakesPinch(r, hatch0 + k)) pinched = true;
+        if (pinched) { c.Rollback(); RolledBackCount++; return null; }
+
+        c.Commit(); StampedCount++;
+        var stLaunch = new ModuleStamp
+        { moduleName = Name + ": пусковая", groupId = launch, inverted = false, gates = "прыжок в люк" };
+        stLaunch.AddButton(s.buttonAbove);
+        var stCatch = new ModuleStamp
+        { moduleName = Name + ": ловчая", groupId = catcher, inverted = false, gates = "приземление над пропастью" };
+        stCatch.AddButton(catchBtn);
+        var stExit = new ModuleStamp
+        { moduleName = Name + ": выход", groupId = exit, inverted = true, gates = "выход из камеры (кнопка изнутри)" };
+        stExit.AddButton(s.buttonBelow);
+        return new List<ModuleStamp> { stLaunch, stCatch, stExit };
     }
 }
