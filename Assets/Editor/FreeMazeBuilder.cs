@@ -19,6 +19,12 @@ using UnityEngine;
 /// </summary>
 public static class FreeMazeBuilder
 {
+    /// Диагностический тумблер: строить голую геометрию без декора и монет.
+    /// Нужен, чтобы отличать брак геометрии от брака отделки при замерах.
+    public static bool SkipDressing;
+    /// Битовая маска разрешённых узоров декора (тумба, пилон, балкон, зубцы, сталактит, лесенка).
+    public static int DecorMask = 63;
+
     /// <summary>Комната абстрактного дерева: кто родитель и какой элемент рецепта сидит на её ребре.</summary>
     public class Node
     {
@@ -26,6 +32,18 @@ public static class FreeMazeBuilder
         public PuzzleElement? element;     // элемент на ребре «родитель → эта комната»
         public string route;
         public bool onMainPath;
+        /// <summary>В этой комнате лежит ключ — конец ветки, ради которого в неё и идут.</summary>
+        public bool holdsKey;
+        /// <summary>Та самая комната в КОНЦЕ основного маршрута. ⚠️ Вычислять её как «наибольший id
+        /// среди onMainPath» НЕЛЬЗЯ: добивочные комнаты добавляются позже, получают бо́льшие id и
+        /// частью тоже помечаются основным путём.</summary>
+        public bool isFinish;
+        /// <summary>К этой комнате НЕЛЬЗЯ подвешивать ничего сверх плана. Нужна камере: лишний проём
+        /// в неё означает вход мимо потолка, и весь замок обесценивается.</summary>
+        public bool sealed2;
+        /// <summary>Элемент на ребре к родителю играет роль ВЫХОДА из запертой области: кнопка
+        /// только изнутри. Ставится проходом починки, а не рецептом.</summary>
+        public bool isExit;
     }
 
     public class Built
@@ -33,7 +51,9 @@ public static class FreeMazeBuilder
         public string scheme;
         public List<Node> nodes;
         public RoomLayout.Result layout;
+        public List<ModuleStamp> stamps;   // что построили модули (инверсия, вложенность кнопок)
         public string story;               // человекочитаемо: что и куда легло
+        public string recipeText;          // рецепт, по которому строили (для лога и панели)
     }
 
     /// <summary>
@@ -41,7 +61,11 @@ public static class FreeMazeBuilder
     /// основного маршрута; между соседними элементами вставляется пустая комната-развязка, чтобы
     /// механизмы не лезли друг другу в клетки. Ветки подвешиваются к случайным комнатам основного пути.
     /// </summary>
-    public static List<Node> BuildTree(LevelRecipe recipe, System.Random rng)
+    /// <param name="wantRooms">Сколько комнат должно быть в уровне ВСЕГО. ⭐ Размер задаётся отдельно
+    /// от числа механизмов: уровень может быть большим и просторным при трёх замках, и тесным при
+    /// пяти. 🐞 Раньше размер был жёстко равен «элементы рецепта + развязки», и ползунки размера на
+    /// свободный путь не влияли вовсе — игрок ставил сетку 20×20 и не видел разницы.</param>
+    public static List<Node> BuildTree(LevelRecipe recipe, System.Random rng, int wantRooms = 0)
     {
         var nodes = new List<Node>();
         System.Func<int, PuzzleElement?, string, bool, int> add = (parent, el, route, main) =>
@@ -52,17 +76,38 @@ public static class FreeMazeBuilder
 
         add(-1, null, "старт", true);                       // комната спавна
         var spine = new List<int> { 0 };
+        // ⭐⭐ БЮДЖЕТ КОМНАТ ДЕЛИТСЯ ПО НАЗНАЧЕНИЮ, А НЕ УХОДИТ ЦЕЛИКОМ В ДОБИВКУ.
+        // 🐞 Основной маршрут был ровно «элемент + развязка» — на сорока комнатах это 11 комнат, а
+        // остальные 29 висели случайными отростками по бокам. Механизмы сидели на коротком маршруте,
+        // и замер это подтвердил: они умещались в 53% карты, а игрок увидел «скопление головоломок
+        // буквально в одном месте». Даём маршруту долю бюджета — развязок между механизмами столько,
+        // сколько позволяет размер уровня.
+        int mainElems = 0;
+        foreach (var route in recipe.routes) if (route.isMain) mainElems += route.elements.Count;
+        int spineBudget = Mathf.Max(0, Mathf.RoundToInt(wantRooms * 0.45f) - (2 * mainElems + 1));
+        int gapsCount = Mathf.Max(1, mainElems);
         foreach (var route in recipe.routes)
         {
             if (!route.isMain) continue;
             for (int i = 0; i < route.elements.Count; i++)
             {
                 // Комната-развязка между механизмами: два подряд в соседних комнатах не помещаются.
-                if (i > 0) spine.Add(add(spine[spine.Count - 1], null, route.name, true));
+                // Сверх обязательной добавляем долю бюджета, чтобы механизмы разошлись по уровню.
+                if (i > 0)
+                {
+                    int extra = spineBudget / gapsCount + (rng.Next(100) < 50 ? 1 : 0);
+                    for (int k = 0; k <= extra; k++)
+                        spine.Add(add(spine[spine.Count - 1], null, route.name, true));
+                }
                 spine.Add(add(spine[spine.Count - 1], route.elements[i], route.name, true));
             }
             spine.Add(add(spine[spine.Count - 1], null, route.name, true));   // комната финиша
         }
+        // 🐞 ФИНИШ УЕЗЖАЛ В СЛУЧАЙНУЮ КОМНАТУ. Раньше его искали как «наибольший id среди onMainPath»,
+        // а добивочные комнаты добавляются ниже, получают бо́льшие id и в 30% случаев тоже помечаются
+        // основным путём — финиш оказывался в отростке сбоку от СЕРЕДИНЫ маршрута. Игрок: «старт и
+        // финиш буквально в двух шагах друг от друга» (замер: 29 клеток при габарите 97).
+        if (spine.Count > 1) nodes[spine[spine.Count - 1]].isFinish = true;
 
         foreach (var route in recipe.routes)
         {
@@ -71,18 +116,183 @@ public static class FreeMazeBuilder
             // у спавна и финиша своя работа, механизмы туда не ставим.
             int attach = spine[1 + rng.Next(Mathf.Max(1, spine.Count - 2))];
             int cur = attach;
-            foreach (var el in route.elements) cur = add(cur, el, route.name, false);
+
+            // ⭐ ВЕТКА — ЭТО МАРШРУТ, А НЕ ТУПИЧОК. 🐞 Замер показал: 52 ветки из 58 были ровно в ОДНУ
+            // комнату — открыл дверь, ключ сразу за ней. Никакого «сходить за ключом» в этом нет.
+            // Теперь у ветки есть три части: РАЗБЕГ (чтобы она не начиналась замком), сами механизмы
+            // с развязками между ними, и ХВОСТ — ключ лежит в КОНЦЕ ветки, а не сразу за дверью.
+            // ⭐ САМОДОСТАТОЧНАЯ ВЕТКА — вылазка и камера. Обе несут ключ ВНУТРИ себя и обе кончают
+            // ветку: у камеры за её выходом стоит ровно одна комната, и больше к ней цеплять нельзя,
+            // иначе в неё войдут мимо потолка (и потолок станет декорацией — это уже мерилось).
+            bool isExcursion = route.elements.Count == 1 && route.elements[0] == PuzzleElement.Excursion;
+            bool isVault = route.elements.Count == 1 && route.elements[0] == PuzzleElement.Vault;
+            if (!isExcursion && !isVault && rng.Next(100) < 60)
+                cur = add(cur, null, route.name, false);            // разбег
+            if (!isVault)
+                for (int i = 0; i < route.elements.Count; i++)
+                {
+                    if (i > 0) cur = add(cur, null, route.name, false); // развязка между механизмами
+                    cur = add(cur, route.elements[i], route.name, false);
+                }
+            if (isVault)
+            {
+                // ⭐ ФОРМА КАМЕРЫ В ДЕРЕВЕ: [ветка] —вбок→ [КАМЕРА] —вверх→ [комната с кнопкой].
+                // Камера сама себе родитель верхней комнаты: тогда её боковой проём — это её
+                // СОБСТВЕННОЕ ребро назад, а люк — ребро к ребёнку. Ровно два, как и нужно.
+                // 🐞 Сперва я делал наоборот (камера = ребёнок, dir = Down) — и раскладка не сходилась
+                // НИ РАЗУ: предыдущий механизм приводил маршрут снизу вверх, а камера требовала
+                // немедленно вернуться вниз, туда, где уже стоит дед.
+                // ⭐⭐ ФОРМА КАМЕРЫ: [ветка] —вбок→ [КОМНАТА С КНОПКОЙ] —вниз→ [КАМЕРА] —вбок→ [выход].
+                //
+                // 🐞 Дважды ошибался с этой формой, и оба раза по одной причине — забывал, ОТКУДА
+                // игрок жмёт кнопку потолка. Она снаружи, НАД камерой, значит комната с ней обязана
+                // быть достижима БЕЗ камеры. Когда я вешал её ребёнком камеры, выходил замкнутый круг:
+                // чтобы открыть потолок, надо пройти камеру, а чтобы войти в камеру — открыть потолок.
+                // Приёмка это ловила («проходим False», все группы декоративные), но не объясняла.
+                //
+                // ⭐ ВЫХОД — ОТДЕЛЬНЫЙ ЭЛЕМЕНТ НА РЕБРЕ ИЗ КАМЕРЫ, а не часть модуля камеры: камера лишь
+                // объявляет нужду (SpaceNeed.needsExit), а кем её закрыть, решает словарь
+                // (PuzzleVocabulary.CanBeExit) — сегодня дверь-инверсия или мост, завтра что угодно.
+                int topRoom = add(cur, null, route.name + " (кнопка камеры)", false);
+                int chamber = add(topRoom, PuzzleElement.Vault, route.name + " (камера)", false);
+                nodes[chamber].sealed2 = true;
+                int exitRoom = add(chamber, ExitElement(rng), route.name + " (выход из камеры)", false);
+                nodes[exitRoom].sealed2 = true;
+                nodes[exitRoom].isExit = true;
+                continue;                                          // ключ положит сам модуль
+            }
+            // ⚠️ У вылазки хвоста нет: её камера И ЕСТЬ конец ветки, ключ лежит внутри неё.
+            if (!isExcursion)
+            {
+                // ⭐ ХВОСТ ВЕТКИ ТОЖЕ ЖИВЁТ НА БЮДЖЕТЕ. 🐞 Было `1 + rng(2)` — замер дал среднюю длину
+                // ветки 2,08 комнаты на любом размере уровня, и игрок сказал «ответвления вообще ни о
+                // чём». За ключом должно быть идти интересно, а не «открыл дверь — вот он».
+                int tail = 1 + rng.Next(2) + Mathf.RoundToInt(wantRooms * 0.06f);
+                for (int k = 0; k < tail; k++) cur = add(cur, null, route.name, false);
+            }
+            nodes[cur].holdsKey = true;                             // ключ — в последней комнате ветки
+        }
+
+        // ── ТРИ КЛЮЧА РАЗМЕЧАЕТ ПЛАН, А НЕ АВАРИЙНЫЙ ЗАПАСНОЙ ПРОХОД ─────────────────────────────
+        // 🐞 Ключи привязывались к веткам РЕЦЕПТА, а рецепт — про механизмы: если он не выкатил
+        // ветку, план не размечал ни одного ключа. Замер: размечено 9 из 36, остальные 27 клал
+        // запасной проход в «какие-нибудь комнаты подальше друг от друга». Отсюда и «все ключи лежат
+        // преимущественно в одном тупике»: запасной проход не строит МАРШРУТ, он просто ищет место.
+        // ⚠️ Точки отрыва разносим по маршруту: три ветки из одной комнаты — это не три пути, а куст.
+        {
+            int haveKeys = 0;
+            foreach (var nd in nodes) if (nd.holdsKey) haveKeys++;
+            var used = new List<int>();
+            foreach (var nd in nodes) if (nd.holdsKey)
+            { int c = nd.id; while (c >= 0 && !nodes[c].onMainPath) c = nodes[c].parent; if (c >= 0) used.Add(c); }
+            while (haveKeys < 3 && spine.Count > 3)
+            {
+                // Точка отрыва — комната маршрута подальше от уже занятых.
+                int attach = -1, bestGap = -1;
+                for (int i = 1; i < spine.Count - 1; i++)
+                {
+                    int gap = int.MaxValue;
+                    foreach (int u in used) gap = Mathf.Min(gap, Mathf.Abs(spine.IndexOf(u) - i));
+                    if (used.Count == 0) gap = i;
+                    if (gap > bestGap) { bestGap = gap; attach = spine[i]; }
+                }
+                if (attach < 0) break;
+                used.Add(attach);
+                int cur2 = add(attach, null, "ключ", false);         // разбег
+                int len = 2 + rng.Next(2) + Mathf.RoundToInt(wantRooms * 0.06f);
+                for (int k = 0; k < len; k++) cur2 = add(cur2, null, "ключ", false);
+                nodes[cur2].holdsKey = true;
+                haveKeys++;
+            }
+        }
+
+        // ── ДОБОР ДО ЗАКАЗАННОГО РАЗМЕРА ────────────────────────────────────────────────────────
+        // Лишние комнаты — это просто пространство: коридоры, залы, обходы. Механизмов они не несут,
+        // но именно они делают уровень уровнем, а не связкой из четырёх замков.
+        // Вешаем их к случайным уже существующим комнатам, растя дерево вширь и вглубь.
+        // ⚠️ ВЕШАЕМ НА НАИМЕНЕЕ ЗАГРУЖЕННЫЕ УЗЛЫ. 🐞 Случайный выбор родителя давал узлы с пятью
+        // детьми, а у комнаты всего четыре стороны — раскладка переставала сходиться: замер показал
+        // 27/30 при десяти комнатах, 20/30 при двадцати четырёх и 0/30 при сорока.
+        // ⚠️ Родитель уже занимает одну сторону, значит детей у комнаты не больше трёх.
+        var kidCount = new int[Mathf.Max(wantRooms, nodes.Count) + 8];
+        foreach (var nd in nodes) if (nd.parent >= 0) kidCount[nd.parent]++;
+        int guard = 0;
+        while (nodes.Count < wantRooms && guard++ < 2000)
+        {
+            int at = -1;
+            for (int shot = 0; shot < 12; shot++)
+            {
+                int cand2 = rng.Next(nodes.Count);
+                if (cand2 == 0 && nodes.Count > 2) continue;        // стартовую не обвешиваем
+                if (nodes[cand2].sealed2) continue;                 // камера и её выход — неприкосновенны
+                if (kidCount[cand2] >= (nodes[cand2].parent < 0 ? 3 : 2)) continue;
+                at = cand2; break;
+            }
+            if (at < 0) break;                                      // свободных сторон не осталось
+            kidCount[at]++;
+            add(at, null, "простор", nodes[at].onMainPath && rng.Next(100) < 30);
         }
         return nodes;
     }
 
+    /// <summary>
+    /// Кем закрыть выход из замкнутой области. Спрашиваем СЛОВАРЬ, а не выбираем руками: добавится
+    /// новый паттерн, умеющий возвращать игрока, — он попадёт сюда сам, ничего не переписывая.
+    /// </summary>
+    private static PuzzleElement ExitElement(System.Random rng)
+    {
+        var able = new List<PuzzleElement>();
+        foreach (PuzzleElement e in System.Enum.GetValues(typeof(PuzzleElement)))
+            if (PuzzleVocabulary.CanBeExit(e)) able.Add(e);
+        return able.Count == 0 ? PuzzleElement.Door : able[rng.Next(able.Count)];
+    }
+
+    /// <summary>
+    /// Ближайший предок, в который МОЖНО вложить кнопку. ⚠️ Это обязательно ВОРОТА: полку под чужую
+    /// кнопку умеет пристраивать только вертикальный зигзаг, у двери и моста платформы для этого нет.
+    /// 🐞 Пока хозяином брался любой ближайший механизм, семь вложений из тринадцати доставались
+    /// двери или мосту и молча вырождались в обычные ворота.
+    /// </summary>
+    public static int HostForNested(List<Node> nodes, int id)
+    {
+        int a = nodes[id].parent;
+        while (a >= 0)
+        {
+            var el = nodes[a].element;
+            if (el == PuzzleElement.Gate || el == PuzzleElement.NestedGate) return a;
+            a = nodes[a].parent;
+        }
+        return -1;
+    }
+
     /// <summary>Требования и направления для раскладки — прямо из деклараций словаря.</summary>
-    public static void Requirements(List<Node> nodes, out RoomLayout.RoomReq[] req, out RoomLayout.LinkDir[] dir)
+    public static void Requirements(List<Node> nodes, out RoomLayout.RoomReq[] req, out RoomLayout.LinkDir[] dir,
+                                    System.Random rng = null, int hallPercent = 0)
     {
         int n = nodes.Count;
         req = new RoomLayout.RoomReq[n];
         dir = new RoomLayout.LinkDir[n];
         for (int i = 0; i < n; i++) { req[i] = new RoomLayout.RoomReq(); dir[i] = RoomLayout.LinkDir.Any; }
+
+        // ⭐ ЗАЛЫ — РАЗБРОС МАСШТАБОВ. Часть комнат просит высоту сверх дотяжки; подъём в них разбит
+        // уступами (см. HallLedges). Без этого весь уровень одного размера 3×5 и объёма нет.
+        // ⚠️ Комнаты С МЕХАНИЗМОМ залами не делаем: модули считают геометрию от пола и потолка, и
+        // высокий зал им не по зубам — это отдельная работа.
+        if (rng != null && hallPercent > 0)
+        {
+            var busy = new HashSet<int>();
+            foreach (var nd in nodes)
+                if (nd.element != null) { busy.Add(nd.id); if (nd.parent >= 0) busy.Add(nd.parent); }
+            for (int i = 1; i < n; i++)
+            {
+                if (busy.Contains(i) || nodes[i].holdsKey) continue;
+                if (rng.Next(100) >= hallPercent) continue;
+                req[i].maxH = RoomLayout.MaxHallHeight;
+                req[i].minH = RoomLayout.MaxRoomHeight + 1;
+                req[i].minW = Mathf.Max(req[i].minW, 5);          // узкий высокий зал читается колодцем
+            }
+        }
+
         foreach (var nd in nodes)
         {
             if (nd.element == null) continue;
@@ -95,8 +305,50 @@ public static class FreeMazeBuilder
                 req[id].minW = Mathf.Max(req[id].minW, need.minWidth);
                 req[id].minH = Mathf.Max(req[id].minH, Mathf.Min(need.minHeight, RoomLayout.MaxRoomHeight));
             }
+            // ⚠️ ХОЗЯИНУ ВЛОЖЕННОЙ КНОПКИ НУЖНА ЛИШНЯЯ ШИРИНА. Полка — это пристройка сбоку к верхнему
+            // уступу зигзага, и она не строится, если уступ вместе с ней занял бы всю ширину комнаты
+            // (иначе комната запечатывается). 🐞 Замер: из шести ворот-хозяев полка вышла у трёх.
+            if (nd.element.Value == PuzzleElement.NestedGate)
+            {
+                int host = HostForNested(nodes, nd.id);
+                if (host >= 0)
+                {
+                    req[host].minW = Mathf.Max(req[host].minW, 7);
+                    if (nodes[host].parent >= 0) req[nodes[host].parent].minW = Mathf.Max(req[nodes[host].parent].minW, 7);
+                }
+            }
+
+            // ⭐⭐ ГЕОМЕТРИЯ КАМЕРЫ ЗАКАЗЫВАЕТСЯ, А НЕ ВЫПРАШИВАЕТСЯ.
+            // 🐞 Пока требования камеры проверялись постфактум, она не строилась ни разу из четырёх
+            // заказов: нужно было СРАЗУ комнату ≥7×5, один люк сверху и ровно один боковой проём, а
+            // дерево такое сочетание почти не выдаёт. Тот же урок, что с мостом: сквозной коридор
+            // начал получаться только когда его заказали раскладке (13 мостов из 17).
+            if (nd.element.Value == PuzzleElement.Vault)
+            {
+                // Камера ЛЕЖИТ НИЖЕ комнаты с кнопкой — в неё проваливаются сквозь потолок.
+                dir[nd.id] = RoomLayout.LinkDir.Down;
+                // Комната с кнопкой подходит к маршруту СБОКУ: иначе маршрут, идущий снизу вверх,
+                // упёрся бы в требование тут же вернуться вниз, и раскладка не сошлась бы (проверено).
+                if (nd.parent >= 0) dir[nd.parent] = RoomLayout.LinkDir.Horizontal;
+                // Выход из камеры — тоже вбок: вверх из ямы игрок и так не выберется.
+                foreach (var kid in nodes) if (kid.parent == nd.id) dir[kid.id] = RoomLayout.LinkDir.Horizontal;
+                continue;
+            }
+
             if (need.verticalEdge) dir[nd.id] = RoomLayout.LinkDir.Up;
             else if (need.horizontalEdge) dir[nd.id] = RoomLayout.LinkDir.Horizontal;
+
+            // ⚠️ МОСТУ НУЖЕН СКВОЗНОЙ КОРИДОР, и это надо заказать РАСКЛАДКЕ, а не проверять постфактум.
+            // 🐞 Пока я просто сообщал модулю «это сквозной коридор», не проверяя, мост выходил
+            // декоративным в 31% случаев (ворота — 2%, двери — 0%): его обходили через вертикальную
+            // связь той же комнаты. Комната моста обязана быть проходной насквозь ВБОК — значит и
+            // ребро к ней, и ребро от неё дальше должны быть горизонтальными.
+            if (nd.element.Value == PuzzleElement.Bridge)
+            {
+                dir[nd.id] = RoomLayout.LinkDir.Horizontal;
+                if (nd.parent >= 0 && nodes[nd.parent].parent >= 0)
+                    dir[nd.parent] = RoomLayout.LinkDir.Horizontal;
+            }
         }
     }
 
@@ -106,6 +358,9 @@ public static class FreeMazeBuilder
     /// общего отрезка.
     /// ⚠️ Сетка символов растёт СВЕРХУ ВНИЗ, а раскладка считает Y вверх — перевод здесь, в одном месте.
     /// </summary>
+    /// <summary>Сколько клеток пола комната обязана сохранить, сколько бы люков в неё ни вело.</summary>
+    private const int MinFloorKept = 2;
+
     public static char[,] Render(RoomLayout.Result lay, System.Random rng, out int rows, out int cols)
     {
         int maxX = 0, maxY = 0;
@@ -121,46 +376,747 @@ public static class FreeMazeBuilder
             for (int x = rm.x0; x <= rm.X1; x++)
                 g[toRow(y), x] = '.';
 
+        // Кто из пары ВЫШЕ: у вертикальной связи это `b` по построению раскладки.
+        System.Func<RoomLayout.RoomLink, int> nodesAbove = l2 => l2.b;
+
         foreach (var l in lay.links)
         {
             if (l.vertical)
             {
-                // Люк во всю ширину общего отрезка — по нему и лезут наверх.
-                for (int x = l.from; x <= l.to; x++) g[toRow(l.wall), x] = '.';
+                // ⚠️ ЛЮК УЖЕ ОБЩЕЙ СТЕНЫ, А НЕ ВО ВСЮ ЕЁ ШИРИНУ. Стена между этажами — это ПОЛ верхней
+                // комнаты, и вылезая из люка игрок цепляется за её клетку СБОКУ. Прорежешь весь общий
+                // отрезок — цепляться станет не за что.
+                // 🐞 Первый сквозной прогон именно так и делал: 27 холдов из 94 достижимы, финиш
+                // недостижим. На решётке люк всегда был 2-3 клетки внутри комнаты ровно поэтому.
+                // ⚠️⚠️ У КОМНАТЫ МОЖЕТ БЫТЬ НЕСКОЛЬКО ЛЮКОВ В ПОЛУ, и вместе они съедают его целиком.
+                // 🐞 Поймано на разборе: под комнатой 3 сходились два прохода, из шести клеток пола
+                // оставалась одна — три этажа сливались в колодец высотой 10 рядов без единого уступа,
+                // и половина уровня становилась недостижимой. На решётке такого не бывало: там у
+                // комнаты был ровно один проход вниз.
+                var upper = lay.rooms.Find(rr => rr.id == (nodesAbove(l)));
+                int span = l.to - l.from + 1;
+                int hw = Mathf.Min(span, 2 + rng.Next(2));
+                if (upper != null)
+                {
+                    int free = 0;
+                    for (int x = upper.x0; x <= upper.X1; x++) if (g[toRow(l.wall), x] == '#') free++;
+                    hw = Mathf.Min(hw, Mathf.Max(0, free - MinFloorKept));
+                }
+                if (hw < 1) continue;                            // пол верхней комнаты кончился
+                int off = span > hw ? rng.Next(span - hw + 1) : 0;
+                for (int x = l.from + off; x < l.from + off + hw; x++) g[toRow(l.wall), x] = '.';
             }
             else
             {
-                // Дверной проём: от пола вверх, высотой 2..вся общая часть — как было на решётке.
-                int h = Mathf.Min(l.to - l.from + 1, 2 + rng.Next(2));
-                for (int k = 0; k < h; k++) g[toRow(l.from + k), l.wall] = '.';
+                // Проём режем на всю высоту, что запросила связь: она уже учла перепад полов.
+                // Для ЛИШНЕГО ребра это может быть не одна стена, а короткий ТОННЕЛЬ сквозь камень.
+                for (int y = l.from; y <= l.to; y++)
+                for (int x = l.wall; x <= Mathf.Max(l.wall, l.wallEnd); x++)
+                    if (x >= 0 && x < cols) g[toRow(y), x] = '.';
+
+                // ⭐ СТУПЕНИ В ПРОЁМЕ (идея игрока): если полы соседей расходятся больше дотяжки,
+                // перепад разбивается площадками через каждые Climb рядов. Ставим их со стороны
+                // НИЖНЕЙ комнаты, вплотную к стене — там они читаются как лестница, а не как мусор.
+                var ra = lay.rooms.Find(r2 => r2.id == l.a);
+                var rb = lay.rooms.Find(r2 => r2.id == l.b);
+                if (ra == null || rb == null) continue;
+                int gap = Mathf.Abs(ra.y0 - rb.y0);
+                if (gap <= MazeCanvas.Climb) continue;
+                var low = ra.y0 < rb.y0 ? ra : rb;                 // из чьей комнаты лезем вверх
+                int dir = low.X1 < l.wall ? -1 : +1;               // вглубь нижней комнаты от стены
+                for (int step = MazeCanvas.Climb; step < gap; step += MazeCanvas.Climb)
+                {
+                    int y = low.y0 + step;
+                    for (int k = 1; k <= 2; k++)                   // площадка шириной 2 клетки
+                    {
+                        int x = l.wall + dir * k;
+                        if (x < low.x0 || x > low.X1) break;
+                        g[toRow(y), x] = '#';
+                    }
+                }
             }
         }
         return g;
     }
 
-    /// <summary>Полный проход: рецепт → дерево → роли → раскладка → сетка. null, если не уложилось.</summary>
-    public static Built Build(LevelRecipe recipe, System.Random rng)
+    /// <summary>
+    /// ⭐ ОБРЕЗКА ОБОЛОЧКИ — перенос со старого пути. Оставляем вокруг вырезанного пространства
+    /// <see cref="RockShell"/> клеток камня, остальное превращаем в пустоту. Без этого уровень
+    /// обрамлён сплошным прямоугольником камня и силуэта нет вовсе — именно это игрок и увидел,
+    /// когда сказал «как играбельный уровень очень слабо».
+    ///
+    /// ⚠️ СРЕЗАЕМ ТОЛЬКО КАМЕНЬ, СВЯЗАННЫЙ С ВНЕШНЕЙ ГРАНИЦЕЙ. Иначе середина крупного массива
+    /// оказывается дальше оболочки и выедается ИЗНУТРИ — получается запечатанная камера, визуально
+    /// неотличимая от комнаты, куда невозможно попасть (обжигались на этом на решётке).
+    /// ⚠️ Обрезка идёт последней и сама может оставить два тайла углом к углу — такие клетки
+    /// возвращаем в камень, проверка зажимов не разбирает, игровая это зона или оболочка.
+    /// </summary>
+    private const int RockShell = 2;
+
+    private static void TrimShell(char[,] g, int rows, int cols)
     {
-        var nodes = BuildTree(recipe, rng);
+        var dRock = new int[rows, cols];
+        for (int r = 0; r < rows; r++) for (int c = 0; c < cols; c++) dRock[r, c] = int.MaxValue;
+        var q = new Queue<Vector2Int>();
+        for (int r = 0; r < rows; r++)
+        for (int c = 0; c < cols; c++)
+            if (g[r, c] != '#') { dRock[r, c] = 0; q.Enqueue(new Vector2Int(c, r)); }
+        while (q.Count > 0)
+        {
+            var cur = q.Dequeue();
+            for (int k = 0; k < 4; k++)
+            {
+                int nr = cur.y + (k == 0 ? -1 : k == 1 ? 1 : 0), nc = cur.x + (k == 2 ? -1 : k == 3 ? 1 : 0);
+                if (nr < 0 || nr >= rows || nc < 0 || nc >= cols || dRock[nr, nc] != int.MaxValue) continue;
+                dRock[nr, nc] = dRock[cur.y, cur.x] + 1; q.Enqueue(new Vector2Int(nc, nr));
+            }
+        }
+        var outside = new bool[rows, cols];
+        var qOut = new Queue<Vector2Int>();
+        System.Action<int, int> seed = (r, c) =>
+        {
+            if (r < 0 || r >= rows || c < 0 || c >= cols || outside[r, c]) return;
+            if (g[r, c] != '#' || dRock[r, c] <= RockShell) return;
+            outside[r, c] = true; qOut.Enqueue(new Vector2Int(c, r));
+        };
+        for (int c = 0; c < cols; c++) { seed(0, c); seed(rows - 1, c); }
+        for (int r = 0; r < rows; r++) { seed(r, 0); seed(r, cols - 1); }
+        while (qOut.Count > 0)
+        {
+            var cur = qOut.Dequeue();
+            for (int k = 0; k < 4; k++)
+                seed(cur.y + (k == 0 ? -1 : k == 1 ? 1 : 0), cur.x + (k == 2 ? -1 : k == 3 ? 1 : 0));
+        }
+        for (int r = 0; r < rows; r++) for (int c = 0; c < cols; c++) if (outside[r, c]) g[r, c] = ' ';
+
+        for (int iter = 0; iter < 8; iter++)
+        {
+            int restored = 0;
+            for (int r = 0; r + 1 < rows; r++)
+            for (int c = 0; c + 1 < cols; c++)
+            {
+                bool tl = g[r, c] == '#',     tr = g[r, c + 1] == '#';
+                bool bl = g[r + 1, c] == '#', br = g[r + 1, c + 1] == '#';
+                if (!((tl && br && !tr && !bl) || (tr && bl && !tl && !br))) continue;
+                if (g[r, c + 1] == ' ')          { g[r, c + 1] = '#'; restored++; }
+                else if (g[r + 1, c] == ' ')     { g[r + 1, c] = '#'; restored++; }
+                else if (g[r, c] == ' ')         { g[r, c] = '#'; restored++; }
+                else if (g[r + 1, c + 1] == ' ') { g[r + 1, c + 1] = '#'; restored++; }
+            }
+            if (restored == 0) break;
+        }
+    }
+
+    /// <summary>
+    /// ⭐ ДЕКОР И МОНЕТЫ — перенос со старого пути. Без них комнаты голые, и уровень читается как
+    /// чертёж, а не как место: именно этого не хватало, когда игрок сказал «очень слабо».
+    ///
+    /// ⚠️ ЗАЩИЩЁННЫЕ КЛЕТКИ. На решётке были маски `noBump`/`noFill`, тут их нет, поэтому список
+    /// неприкосновенного собираем сами: клетки проходов и по клетке над ними (посадочные холды), а
+    /// также ступени. Декор, заткнувший проём или посадочный холд, рвёт маршрут — а поймать это можно
+    /// будет только приёмкой, то есть дорого и поздно.
+    /// ⚠️ Кладём ПОСЛЕ объектов и механизмов и трогаем только чистый воздух: так декор физически не
+    /// может занять место кнопки, ключа или платформы.
+    /// </summary>
+    private static void Decorate(char[,] g, int rows, int cols, MazeCanvas.RoomRect[] rects,
+                                 bool[,] guarded, HashSet<int> noDecor, System.Random rng)
+    {
+        // ── Инвариант отделки: узор не имеет права ЗАПЕЧАТАТЬ воздушный карман ──
+        // 🐞 Тумба и зубцы садились в ходовую полосу у пола, воздух при этом оставался связным (проверял),
+        // но карман отрезался от внешнего контура: «замуровано» 0→8, а вместе с ним терялся ключ
+        // (сиды 2, 10, 14). Считаем воздух, достижимый от края: узор вправе съесть ровно свои клетки.
+        System.Func<int> openAir = () =>
+        {
+            var seen = new bool[rows, cols];
+            var q = new Queue<Vector2Int>();
+            System.Action<int, int> push = (r, c) =>
+            { if (!seen[r, c] && g[r, c] != '#') { seen[r, c] = true; q.Enqueue(new Vector2Int(c, r)); } };
+            for (int c = 0; c < cols; c++) { push(0, c); push(rows - 1, c); }
+            for (int r = 0; r < rows; r++) { push(r, 0); push(r, cols - 1); }
+            int n = 0;
+            int[] dx = { 1, -1, 0, 0 }, dy = { 0, 0, 1, -1 };
+            while (q.Count > 0)
+            {
+                var p = q.Dequeue(); n++;
+                for (int k = 0; k < 4; k++)
+                {
+                    int nx = p.x + dx[k], ny = p.y + dy[k];
+                    if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) continue;
+                    push(ny, nx);
+                }
+            }
+            return n;
+        };
+        int openBefore = openAir();
+
+        var placed = new List<Vector2Int>();
+        System.Func<int, int, bool> put = (r, c) =>
+        {
+            if (r < 0 || r >= rows || c < 0 || c >= cols) return false;
+            if (g[r, c] != '.' || guarded[r, c]) return false;
+            g[r, c] = '#';
+            placed.Add(new Vector2Int(c, r));
+            // Диагональный зажим: два тайла углом к углу, пэдам не пролезть.
+            for (int rr = r - 1; rr <= r; rr++)
+            for (int cc = c - 1; cc <= c; cc++)
+            {
+                if (rr < 0 || rr + 1 >= rows || cc < 0 || cc + 1 >= cols) continue;
+                bool tl = g[rr, cc] == '#',     tr = g[rr, cc + 1] == '#';
+                bool bl = g[rr + 1, cc] == '#', br = g[rr + 1, cc + 1] == '#';
+                if ((tl && br && !tr && !bl) || (tr && bl && !tl && !br))
+                { g[r, c] = '.'; placed.RemoveAt(placed.Count - 1); return false; }
+            }
+            return true;
+        };
+        for (int id = 0; id < rects.Length; id++)
+        {
+            var rm = rects[id];
+            if (rm.w == 0) continue;
+            // ⚠️⚠️ В КОМНАТАХ С МЕХАНИЗМОМ ДЕКОРА НЕТ. 🐞 Балкон и лесенка дают лишние зацепы, и
+            // подъём, ради которого стоят ворота, становится возможен БЕЗ них — механизм превращается
+            // в декоративный. Замер: брак подскочил 2 → 9 из 16, и все девять именно такие.
+            if (noDecor.Contains(id)) continue;
+            if (rng.Next(100) >= 55) continue;                 // деталь примерно в половине комнат
+            int rFloor = rm.row0 + rm.h - 1, w = rm.w, h = rm.h;
+            int pick = rng.Next(6);
+            if ((DecorMask & (1 << pick)) == 0) continue;       // диагностика: гасим отдельный паттерн
+            placed.Clear();
+            switch (pick)
+            {
+                case 0:                                        // ТУМБА: 1-2 клетки на полу
+                {
+                    int bw = 1 + rng.Next(2), off = 1 + rng.Next(Mathf.Max(1, w - bw - 1));
+                    for (int k = 0; k < bw; k++) put(rFloor, rm.col0 + off + k);
+                    break;
+                }
+                case 1:                                        // ПИЛОН: столб от пола вверх
+                {
+                    if (w < 4) break;                          // в узкой комнате столб = пробка
+                    int off = 1 + rng.Next(w - 2), ph = 1 + rng.Next(Mathf.Min(2, h - 1));
+                    for (int k = 0; k < ph; k++) put(rFloor - k, rm.col0 + off);
+                    break;
+                }
+                case 2:                                        // БАЛКОН: полка у стены на высоте 2
+                {
+                    if (h < 4) break;
+                    bool left = rng.Next(2) == 0;
+                    int lw = 2 + rng.Next(Mathf.Max(1, w - 3));
+                    for (int k = 0; k < lw; k++) put(rFloor - 2, rm.col0 + (left ? k : w - 1 - k));
+                    break;
+                }
+                case 3:                                        // ЗУБЦЫ: два выступа с зазором
+                {
+                    if (w < 5) break;
+                    int off = 1 + rng.Next(Mathf.Max(1, w - 4));
+                    put(rFloor, rm.col0 + off);
+                    put(rFloor, rm.col0 + Mathf.Min(w - 2, off + 2));
+                    break;
+                }
+                case 4:                                        // СТАЛАКТИТ: свисает с потолка, не холд
+                {
+                    if (h < 4) break;
+                    int sw = 1 + rng.Next(2), off = 1 + rng.Next(Mathf.Max(1, w - sw - 1));
+                    for (int k = 0; k < sw; k++) put(rm.row0, rm.col0 + off + k);
+                    break;
+                }
+                default:                                       // ЛЕСЕНКА: две ступени вразнобой
+                {
+                    if (w < 4 || h < 4) break;
+                    int off = 1 + rng.Next(Mathf.Max(1, w - 3));
+                    put(rFloor,     rm.col0 + off);
+                    put(rFloor - 2, rm.col0 + Mathf.Min(w - 1, off + 2));
+                    break;
+                }
+            }
+            if (placed.Count == 0) continue;
+            int openAfter = openAir();
+            if (openAfter < openBefore - placed.Count)
+                foreach (var p in placed) g[p.y, p.x] = '.';    // узор запечатал карман — откатываем
+            else openBefore = openAfter;
+        }
+    }
+
+    /// <summary>Монеты: дорожка-приманка по комнатам. Кладём только в чистый воздух над полом.</summary>
+    private static void DropCoins(char[,] g, int rows, int cols, MazeCanvas.RoomRect[] rects,
+                                  int budget, System.Random rng)
+    {
+        int left = budget;
+        foreach (var rm in rects)
+        {
+            if (left <= 0) break;
+            if (rm.w == 0) continue;
+            int air = rm.row0 + rm.h - 1;
+            int want = 2 + rng.Next(3);
+            for (int dy = 0; dy < 2 && want > 0 && left > 0; dy++)
+            for (int k = 0; k < rm.w && want > 0 && left > 0; k++)
+            {
+                int r = air - dy, c = rm.col0 + k;
+                if (r < 0 || r >= rows || c < 0 || c >= cols) continue;
+                if (g[r, c] != '.') continue;
+                if (g[r + 1, c] == '#' || dy > 0)               // над полом либо на клетку выше
+                {
+                    // ⚠️ Не занимаем зазор ключа: спрайт ключа шире своей клетки.
+                    if (c > 0 && g[r, c - 1] == '*') continue;
+                    if (c + 1 < cols && g[r, c + 1] == '*') continue;
+                    g[r, c] = '$'; want--; left--;
+                }
+            }
+        }
+    }
+
+    /// <summary>Клетка воздуха над полом комнаты, куда можно поставить объект (кнопку, ключ, флаг).</summary>
+    private static int FloorSpot(char[,] g, MazeCanvas.RoomRect r, int rows, int cols)
+    {
+        int air = r.row0 + r.h - 1, floor = r.row0 + r.h;
+        for (int d = 0; d < r.w; d++)
+        {
+            int mid = r.w / 2;
+            int off = mid + (d % 2 == 0 ? d / 2 : -(d / 2 + 1));
+            if (off < 0 || off >= r.w) continue;
+            int c = r.col0 + off;
+            if (air < 0 || air >= rows || floor >= rows || c < 0 || c >= cols) continue;
+            if (g[air, c] == '.' && g[floor, c] == '#') return c;
+        }
+        return -1;
+    }
+
+    /// <summary>
+    /// ⭐ ОБСТАВИТЬ УРОВЕНЬ: спавн, финиш, ключи, чекпоинты — и вызвать модули на тех рёбрах, которым
+    /// рецепт назначил элемент. Это то, что превращает пустую геометрию в уровень.
+    ///
+    /// ⚠️ Порядок важен: сперва объекты, потом механизмы. Вылазке нужен ключ уже лежащим в её камере,
+    /// а модули могут занять клетки, куда объект потом не встанет.
+    /// </summary>
+    private static void Furnish(char[,] g, int rows, int cols, List<Node> nodes,
+                                MazeCanvas.RoomRect[] rects, List<RoomLayout.RoomLink> links,
+                                System.Random rng, List<ModuleStamp> stamps, System.Text.StringBuilder story)
+    {
+        // ⚠️ Уступы зала — ДО объектов: объект должен встать на готовый пол, а не быть замурован.
+        HallLedges(g, rows, cols, rects, rng);
+        PlaceObjects(g, rows, cols, nodes, rects);
+        FurnishLinks(g, rows, cols, nodes, rects, links, rng, stamps, story);
+    }
+
+    /// <summary>
+    /// ⭐ СПАВН, ФИНИШ, ТРИ КЛЮЧА И ЧЕКПОИНТ. Зависит ТОЛЬКО от прямоугольников комнат и дерева,
+    /// поэтому одинаково годится и решётчатой раскладке, и раскладке расталкиванием.
+    /// </summary>
+    public static void PlaceObjects(char[,] g, int rows, int cols, List<Node> nodes,
+                                    MazeCanvas.RoomRect[] rects)
+    {
+        // ── Спавн в стартовой комнате, финиш в КОНЦЕ основного маршрута (см. Node.isFinish) ──
+        int lastMain = 0;
+        foreach (var nd in nodes) if (nd.isFinish) lastMain = nd.id;
+        if (lastMain == 0) foreach (var nd in nodes) if (nd.onMainPath) lastMain = nd.id;
+        System.Action<int, char> put = (id, ch) =>
+        {
+            int c = FloorSpot(g, rects[id], rows, cols);
+            if (c >= 0) g[rects[id].row0 + rects[id].h - 1, c] = ch;
+        };
+        put(0, '@');
+        put(lastMain, '^');
+
+        // ── КЛЮЧИ: РОВНО ТРИ, как требует прогрессия (артефакты собираются в картинку-мир) ──
+        // 🐞 Сперва ключ клался только в конец ветки — и уровень, где рецепт не дал ни одной ветки,
+        // выходил ВООБЩЕ БЕЗ КЛЮЧЕЙ. Концы веток остаются лучшими местами (за ключом надо сходить),
+        // но добираем из комнат маршрута, начиная с дальних от спавна.
+        // 🐞 Сперва я добирал ключи «с конца списка узлов» — а последними в дерево добавляются узлы
+        // ОДНОЙ И ТОЙ ЖЕ ветки, и все три ключа ложились в один тупик (поймано игроком). Теперь
+        // разносим: каждый следующий ключ обязан быть подальше по дереву от уже поставленных.
+        System.Func<int, int, int> treeDist = (x, y) =>
+        {
+            var upX = new List<int>(); int cur = x;
+            for (int g = 0; g < 64 && cur >= 0; g++) { upX.Add(cur); cur = nodes[cur].parent; }
+            cur = y;
+            for (int d = 0; d < 64 && cur >= 0; d++)
+            { int i2 = upX.IndexOf(cur); if (i2 >= 0) return i2 + d; cur = nodes[cur].parent; }
+            return 99;
+        };
+        // ⚠️ КАМЕРА ПРИНОСИТ СВОЙ КЛЮЧ. Он лежит в её кармане и кладётся модулем, поэтому обычных
+        // ключей нужно на столько же меньше. 🐞 Иначе на уровне их становится четыре при трёх
+        // положенных прогрессией (артефакты собираются в картинку-мир, лишний ломает счёт).
+        int vaultKeys = 0;
+        foreach (var nd in nodes) if (nd.element == PuzzleElement.Vault) vaultKeys++;
+        int wantKeys = Mathf.Max(0, 3 - vaultKeys);
+
+        var keySpots = new List<int>();
+        foreach (var nd in nodes) if (nd.holdsKey) keySpots.Add(nd.id);
+        while (keySpots.Count > wantKeys) keySpots.RemoveAt(keySpots.Count - 1);
+        // Кандидаты по убыванию удалённости от спавна: за дальним ключом идти интереснее.
+        var cand = new List<int>();
+        for (int i = 1; i < nodes.Count; i++) if (i != lastMain && !keySpots.Contains(i)) cand.Add(i);
+        cand.Sort((x, y) => treeDist(0, y).CompareTo(treeDist(0, x)));
+        for (int minGap = 3; minGap >= 0 && keySpots.Count < wantKeys; minGap--)
+            foreach (int id in cand)
+            {
+                if (keySpots.Count >= wantKeys) break;
+                if (keySpots.Contains(id)) continue;
+                bool farEnough = true;
+                foreach (int k in keySpots) if (treeDist(id, k) < minGap) { farEnough = false; break; }
+                if (farEnough) keySpots.Add(id);
+            }
+        foreach (int id in keySpots) put(id, '*');
+
+        // Чекпоинт в середине основного пути — прогресс должен фиксироваться по дороге.
+        var mainIds = new List<int>();
+        foreach (var nd in nodes) if (nd.onMainPath) mainIds.Add(nd.id);
+        if (mainIds.Count >= 4) put(mainIds[mainIds.Count / 2], '=');
+    }
+
+    /// <summary>
+    /// ⭐ УСТУПЫ В ЗАЛЕ. Зал выше дотяжки, и без опор он непроходим — это ровно то, чем ручные уровни
+    /// игрока набирают объём: большое открытое пространство, размеченное площадками вразнобой.
+    ///
+    /// ⚠️⚠️ ОТСЧЁТ ОТ РЯДА КАМНЯ, А НЕ ВОЗДУХА. Холд — это камень, НАД которым воздух; пол зала как
+    /// опора лежит на ряд ниже его нижнего ряда воздуха. Ошибка на единицу даёт 4 ряда между опорами
+    /// при подъёме 3, и зал становится непроходим целиком (обжёгся на этом в коридорной ветке).
+    /// ⚠️ Площадки УЗКИЕ и жмутся к стенам поочерёдно: во всю ширину они запечатывают зал.
+    /// </summary>
+    public static void HallLedges(char[,] g, int rows, int cols, MazeCanvas.RoomRect[] rects,
+                                  System.Random rng)
+    {
+        foreach (var rm in rects)
+        {
+            if (rm.w == 0 || rm.h <= RoomLayout.MaxRoomHeight) continue;
+            int top = rm.row0, floorRow = rm.row0 + rm.h;        // ряд КАМНЯ под залом
+            // ⚠️⚠️ ШАГ ВБОК ОГРАНИЧЕН ДОТЯЖКОЙ, А НЕ ШИРИНОЙ ЗАЛА.
+            // 🐞 Сперва площадки просто чередовались у противоположных стен — в зале шириной 8 это
+            // скачок вбок на 6 при подъёме 3, а дотяжка ограничена ещё и СУММОЙ (≤ ReachSumCells = 7).
+            // Замер был однозначным: финиш достижим 2 уровня из 5 вместо 5, ключи 6 из 15 вместо 15.
+            // Теперь это лестница: каждая следующая площадка в паре клеток от предыдущей.
+            int maxStep = Mathf.Max(1, LevelModel.ReachSumCells - MazeCanvas.Climb - 1);
+            int cx = rm.col0 + rng.Next(Mathf.Max(1, rm.w - 2));
+            int stepDir = rng.Next(2) == 0 ? 1 : -1;
+            // ⚠️⚠️ ЛЕСТНИЦА ПРИВЯЗАНА К ПОТОЛКУ, А НЕ К ПОЛУ.
+            // 🐞 Считая от пола, я получал верхнюю площадку в ЧЕТЫРЁХ рядах от потолка при подъёме 3 —
+            // и люк в потолке зала становился недосягаем, то есть зал резал уровень надвое. Замер:
+            // финиш 2 уровня из 5, ключи 7 из 15. От потолка низ сходится сам собой: последний
+            // промежуток до пола выходит ≤ Climb при любой высоте зала.
+            for (int r = top + MazeCanvas.Climb - 1; r < floorRow; r += MazeCanvas.Climb)
+            {
+                int lw = Mathf.Clamp(2, 1, rm.w - 2);
+                cx += stepDir * (1 + rng.Next(maxStep));
+                if (cx < rm.col0) { cx = rm.col0; stepDir = 1; }
+                if (cx > rm.col0 + rm.w - 1 - lw) { cx = rm.col0 + rm.w - 1 - lw; stepDir = -1; }
+                for (int k = 0; k < lw; k++)
+                {
+                    int c = cx + k;
+                    if (r >= 0 && r < rows && c >= 0 && c < cols && g[r, c] == '.') g[r, c] = '#';
+                }
+            }
+        }
+    }
+
+    /// <summary>Ступени в связях и модули механизмов — это уже про КОНКРЕТНУЮ модель связи
+    /// (дыра в общей стене), поэтому живёт отдельно от расстановки объектов.</summary>
+    private static void FurnishLinks(char[,] g, int rows, int cols, List<Node> nodes,
+                                     MazeCanvas.RoomRect[] rects, List<RoomLayout.RoomLink> links,
+                                     System.Random rng, List<ModuleStamp> stamps,
+                                     System.Text.StringBuilder story)
+    {
+        int lastMain = 0;
+        foreach (var nd in nodes) if (nd.isFinish) lastMain = nd.id;
+        if (lastMain == 0) foreach (var nd in nodes) if (nd.onMainPath) lastMain = nd.id;
+
+        // ── КАМЕННАЯ СТУПЕНЬКА В КАЖДОЙ ВЕРТИКАЛЬНОЙ СВЯЗИ ──────────────────────────────────────
+        // 🐞 Без неё первый же сквозной прогон дал 100% брака: люк прорезан, а лезть к нему не по чему —
+        // подъём с пола нижней комнаты до её потолка это H+1 рядов, вчетверо больше дотяжки. На решётке
+        // такую ступеньку клал сам рендер, и при переносе она потерялась.
+        // ⚠️ Высота выстрадана: ступенька на Climb рядов над полом, тогда ОБА участка (пол→ступенька и
+        // ступенька→потолок) укладываются в дотяжку при H ≤ Climb+2.
+        var stepRowOf = new Dictionary<int, int>();               // ребёнок → ряд ступеньки
+        foreach (var l in links)
+        {
+            if (!l.vertical) continue;
+            // Ниже та комната, у которой ряд больше (сетка растёт вниз).
+            int lower = rects[l.a].row0 > rects[l.b].row0 ? l.a : l.b;
+            // ⚠️ ВЫСОТА ПОДЪЁМА ПОДСТРАИВАЕТСЯ ПОД КОМНАТУ. 🐞 Жёсткие 3 ряда в комнате высотой 3
+            // ставили ступеньку прямо в потолок, и такая связь оставалась непроходимой вовсе —
+            // на решётке подъём считался как min(Climb, H−1) ровно поэтому.
+            int climb = Mathf.Min(MazeCanvas.Climb, rects[lower].h - 1);
+            if (climb < 2) continue;                              // совсем низкая — долезут и так
+            int stepRow = rects[lower].row0 + rects[lower].h - climb;
+            if (stepRow <= rects[lower].row0) continue;
+            // ⚠️⚠️ УСТУП НЕ ВО ВСЮ ШИРИНУ КОМНАТЫ. 🐞 Класть его на весь общий отрезок нельзя: в узкой
+            // комнате он становится СПЛОШНЫМ ПЕРЕКРЫТИЕМ и запечатывает её — игрок стоит на полу, а
+            // выше не пройти. Ровно эта ошибка уже была на решётке («ступенька во всю ширину
+            // запечатывает комнату», 25 схем из 40 с глухими карманами), и при переносе я повторил её:
+            // люк сузил, а уступ — нет. Оставляем свободной хотя бы одну колонку комнаты.
+            int span = l.to - l.from + 1;
+            int lw = Mathf.Min(span, 2 + rng.Next(2));
+            lw = Mathf.Min(lw, Mathf.Max(1, rects[lower].w - 1));
+            int loff = span > lw ? rng.Next(span - lw + 1) : 0;
+            for (int x = l.from + loff; x < l.from + loff + lw; x++)
+                if (stepRow >= 0 && stepRow < rows && x >= 0 && x < cols) g[stepRow, x] = '#';
+            int child = nodes[l.b].parent == l.a ? l.b : l.a;
+            stepRowOf[child] = stepRow;
+        }
+
+        // ── Модули на назначенных рёбрах ──
+        var canvas = new MazeCanvas(g, rows, cols, rects,
+                                    new bool[rows, cols], new bool[rows, cols], new bool[rows, cols], rng);
+        var linkOf = new Dictionary<int, RoomLayout.RoomLink>();
+        foreach (var l in links)
+        {
+            // Связь помним по РЕБЁНКУ: у него и записан элемент рецепта.
+            if (l.extra) continue;                            // лишнее ребро — механизма на нём нет
+            int child = nodes[l.b].parent == l.a ? l.b : l.a;
+            linkOf[child] = l;
+        }
+
+        // ── ВЛОЖЕННЫЙ ТРИГГЕР: КТО КОМУ ХОЗЯИН ──────────────────────────────────────────────────
+        // 🐞 До этого `NestedGate` разбирался тем же case, что и обычные ворота, и строил ровно их:
+        // замер дал 0 вложенных кнопок на 55 механизмов при 20 заказанных. Рецепт при этом честно
+        // начислял за вложенность 5 баллов — то есть сложность врала, а игрок видел одни и те же
+        // ворота (63 из 92 построенных). Хозяин — БЛИЖАЙШИЙ ПРЕДОК С МЕХАНИЗМОМ: только он гарантированно
+        // открывается раньше по маршруту, иначе вложенная кнопка оказывается заперта навсегда.
+        var hostOf = new Dictionary<int, int>();                  // вложенный узел → узел-хозяин
+        var needsShelf = new HashSet<int>();
+        foreach (var nd in nodes)
+        {
+            if (nd.element != PuzzleElement.NestedGate) continue;
+            int a = HostForNested(nodes, nd.id);
+            if (a < 0) continue;
+            hostOf[nd.id] = a; needsShelf.Add(a);
+        }
+        var stampOf = new Dictionary<int, ModuleStamp>();
+
+        foreach (var nd in nodes)
+        {
+            if (nd.element == null || nd.parent < 0) continue;
+            RoomLayout.RoomLink link;
+            if (!linkOf.TryGetValue(nd.id, out link)) continue;
+            canvas.SetNextGroupIndex(stamps.Count);
+
+            var site = new MazeSite
+            {
+                room = new Vector2Int(nd.parent, 0), roomAbove = new Vector2Int(nd.id, 0),
+                roomId = nd.parent, roomAboveId = nd.id,
+                onRoute = nd.onMainPath, hasFloorBelow = false, throughCorridor = true,
+                buttonBelow = new Vector2Int(-1, -1), buttonAbove = new Vector2Int(-1, -1)
+            };
+            // Кнопки: по одной на каждой стороне ребра, на полу своей комнаты.
+            int cb = FloorSpot(g, rects[nd.parent], rows, cols);
+            int ca = FloorSpot(g, rects[nd.id], rows, cols);
+            if (cb < 0 || ca < 0) { story.Append("нет места под кнопки у ").Append(nd.id).Append("; "); continue; }
+            site.buttonBelow = new Vector2Int(cb, rects[nd.parent].row0 + rects[nd.parent].h - 1);
+            site.buttonAbove = new Vector2Int(ca, rects[nd.id].row0 + rects[nd.id].h - 1);
+
+            ModuleStamp st = null;
+            switch (nd.element.Value)
+            {
+                case PuzzleElement.Gate:
+                case PuzzleElement.NestedGate:
+                    if (!link.vertical) break;
+                    // Внизу тот, у кого пол ниже: подъём всегда снизу вверх.
+                    bool parentBelow = rects[nd.parent].row0 > rects[nd.id].row0;
+                    site.roomId = parentBelow ? nd.parent : nd.id;
+                    site.roomAboveId = parentBelow ? nd.id : nd.parent;
+                    site.shaftCol0 = link.from; site.shaftWidth = link.to - link.from + 1;
+                    // Каменную ступеньку этой связи модуль уберёт: её место займёт его зигзаг.
+                    int sr; site.shaftStepRow = stepRowOf.TryGetValue(nd.id, out sr) ? sr : -1;
+                    site.buttonBelow = parentBelow ? site.buttonBelow : site.buttonAbove;
+                    site.buttonAbove = parentBelow ? site.buttonAbove : site.buttonBelow;
+                    // Этому механизму предстоит принять чужую кнопку — просим у него полку.
+                    site.wantButtonShelf = needsShelf.Contains(nd.id);
+                    // ⚠️ Кнопка «открыть» садится НА ПОЛКУ ХОЗЯИНА: чтобы до неё дотянуться, придётся
+                    // сперва открыть хозяина. Это и есть вложенность — иерархия, а не соседство.
+                    int hostId; ModuleStamp hostSt = null;
+                    if (hostOf.TryGetValue(nd.id, out hostId) && stampOf.TryGetValue(hostId, out hostSt)
+                        && hostSt.shelfCell.x >= 0)
+                        site.buttonBelow = hostSt.shelfCell;
+                    else hostSt = null;                            // полки не вышло — строим обычные ворота
+                    st = new VerticalGateModule().Stamp(canvas, site);
+                    if (st != null && hostSt != null)
+                        for (int i = 0; i < st.buttons.Count; i++)
+                            if (st.buttons[i] == site.buttonBelow) st.buttonHosts[i] = hostSt.groupId;
+                    break;
+                case PuzzleElement.Door:
+                    if (link.vertical) break;
+                    site.doorCol = link.wall;
+                    site.doorRowTop = link.from; site.doorHeight = link.to - link.from + 1;
+                    // Проём режется от пола вверх — берём только вырезанную часть столбца.
+                    int top = link.from, hgt = 0;
+                    for (int r = rects[nd.id].row0 + rects[nd.id].h - 1; r >= 0 && g[r, link.wall] == '.'; r--)
+                    { top = r; hgt++; }
+                    if (hgt < 2) break;
+                    site.doorRowTop = top; site.doorHeight = hgt;
+                    // ⭐ Роль ВЫХОДА: кнопка только со стороны запертой области. Внутри — комната
+                    // самого узла (камера висит на нём ребёнком), снаружи — родитель, откуда пришли.
+                    site.exitOnly = nd.isExit;
+                    site.insideIsBelow = false;                    // buttonAbove = комната nd.id
+                    st = new InvertedDoorModule().Stamp(canvas, site);
+                    break;
+                case PuzzleElement.Bridge:
+                    // ⚠️ ПРОВЕРЯЕМ, а не декларируем: комната моста обязана быть проходной насквозь
+                    // вбок — ровно два боковых прохода и ни одного вертикального. Иначе мост обходят
+                    // и приёмка справедливо зовёт его декоративным.
+                    int hor = 0, vert = 0;
+                    foreach (var l2 in links)
+                    {
+                        if (l2.a != nd.parent && l2.b != nd.parent) continue;
+                        if (l2.vertical) vert++; else hor++;
+                    }
+                    if (vert > 0 || hor != 2)
+                    { story.Append("мост: комната ").Append(nd.parent).Append(" не сквозной коридор; "); break; }
+                    site.roomId = nd.parent;
+                    st = new TimedBridgeModule().Stamp(canvas, site);
+                    break;
+                case PuzzleElement.Vault:
+                {
+                    if (!link.vertical) break;
+                    // Камера — та комната, что НИЖЕ: в неё проваливаются сквозь потолок.
+                    bool pBelow = rects[nd.parent].row0 > rects[nd.id].row0;
+                    // ⚠️⚠️ У КАМЕРЫ ДВА ВЫХОДА, И ВТОРОЙ ЗАПЕРТ ИЗНУТРИ.
+                    // 🐞 Сперва я потребовал, чтобы камера была ТУПИКОМ — и это неверно, поправлено
+                    // игроком: в оригинале выход есть, это инверсная стена D (твёрдая в покое, кнопка
+                    // внутри убирает её). Тупик же означал бы, что из камеры не выйти вовсе.
+                    // Но обычный боковой проём оставлять нельзя: через него входят мимо потолка, и
+                    // модель верно зовёт потолок декоративным. Поэтому боковой проём ЗАКЛАДЫВАЕМ.
+                    int chamber = pBelow ? nd.parent : nd.id;
+                    RoomLayout.RoomLink exitLink = null; int vertCount = 0, horCount = 0;
+                    foreach (var l2 in links)
+                    {
+                        if (l2.a != chamber && l2.b != chamber) continue;
+                        if (l2.vertical) vertCount++;
+                        else { horCount++; exitLink = l2; }
+                    }
+                    if (vertCount != 1 || horCount != 1)
+                    { story.Append("камера: у комнаты ").Append(chamber).Append(" не 1 люк + 1 проём; "); break; }
+                    site.doorCol = exitLink.wall;
+                    site.doorRowTop = exitLink.from; site.doorHeight = exitLink.to - exitLink.from + 1;
+                    site.roomId = pBelow ? nd.parent : nd.id;
+                    site.roomAboveId = pBelow ? nd.id : nd.parent;
+                    // Кнопка потолка живёт в комнате СВЕРХУ — только оттуда камеру и открывают.
+                    site.buttonAbove = pBelow ? site.buttonAbove : site.buttonBelow;
+                    Vector2Int keyCell;
+                    var trio = new VaultModule().StampAll(canvas, site, out keyCell);
+                    if (trio == null) break;
+                    // ⚠️ Ключ кладём САМИ и сразу: он часть паттерна, а не отдельная расстановка.
+                    if (keyCell.x >= 0) g[keyCell.y, keyCell.x] = '*';
+                    foreach (var one in trio) { stamps.Add(one); }
+                    stampOf[nd.id] = trio[0];
+                    story.Append(PuzzleVocabulary.Name(nd.element.Value)).Append(" на ")
+                         .Append(site.roomId).Append("; ");
+                    continue;                                  // штампы уже добавлены
+                }
+            }
+            if (st == null) { story.Append("не встал ").Append(PuzzleVocabulary.Name(nd.element.Value))
+                                   .Append(" на ").Append(nd.parent).Append("→").Append(nd.id).Append("; "); continue; }
+            stampOf[nd.id] = st;
+            stamps.Add(st);
+        }
+    }
+
+    /// <summary>Полный проход: рецепт → дерево → роли → раскладка → сетка. null, если не уложилось.</summary>
+    /// <param name="extraEdgesPercent">Сколько рёбер СВЕРХ дерева открыть, в процентах от числа
+    /// связей. Идея из статьи про генерацию подземелий (там 8-10%): уровень перестаёт быть деревом,
+    /// появляются петли и обходные пути. ⚠️ Открываются только безопасные — см. проверку внутри.</param>
+    public static Built Build(LevelRecipe recipe, System.Random rng, int wantRooms = 0,
+                              int extraEdgesPercent = 10, int hallPercent = 0)
+    {
+        var nodes = BuildTree(recipe, rng, wantRooms);
         RoomLayout.RoomReq[] req; RoomLayout.LinkDir[] dir;
-        Requirements(nodes, out req, out dir);
+        Requirements(nodes, out req, out dir, rng, hallPercent);
         var parent = new int[nodes.Count];
         for (int i = 0; i < nodes.Count; i++) parent[i] = nodes[i].parent;
 
         var lay = RoomLayout.Build(nodes.Count, parent, req, dir, rng);
         if (lay == null) return null;
 
+        // ── ЛИШНИЕ РЁБРА: петли сверх дерева ────────────────────────────────────────────────────
+        // ⚠️⚠️ ГЛАВНАЯ ОПАСНОСТЬ: лишний проход может ОБОЙТИ механизм, и тот станет декоративным —
+        // приёмка его забракует, и вся затея выйдет в минус. Поэтому открываем только те рёбра, чей
+        // путь ПО ДЕРЕВУ не пересекает ни одного замка: такая петля ничего не обходит, она просто
+        // даёт второй способ пройти уже открытый участок.
+        System.Func<int, int, bool> pathHasElement = (x, y) =>
+        {
+            var upX = new List<int>(); int cur = x;
+            for (int g = 0; g < 64 && cur >= 0; g++) { upX.Add(cur); cur = nodes[cur].parent; }
+            var branchY = new List<int>(); cur = y;
+            int meet = -1;
+            for (int d = 0; d < 64 && cur >= 0; d++)
+            { if (upX.Contains(cur)) { meet = cur; break; } branchY.Add(cur); cur = nodes[cur].parent; }
+            if (meet < 0) return true;                        // общий предок не нашёлся — не рискуем
+            foreach (int id in branchY) if (nodes[id].element != null) return true;
+            for (int i = 0; i < upX.Count && upX[i] != meet; i++)
+                if (nodes[upX[i]].element != null) return true;
+            return false;
+        };
+        var cands = RoomLayout.FindAdjacent(lay);
+        for (int i = cands.Count - 1; i > 0; i--)
+        { int j = rng.Next(i + 1); var tmp = cands[i]; cands[i] = cands[j]; cands[j] = tmp; }
+        int wantExtra = Mathf.RoundToInt(lay.links.Count * extraEdgesPercent / 100f);
+        foreach (var c in cands)
+        {
+            if (wantExtra <= 0) break;
+            if (pathHasElement(c.a, c.b)) continue;
+            lay.links.Add(c); wantExtra--;
+        }
+
         int rows, cols;
         var g = Render(lay, rng, out rows, out cols);
-        var sb = new System.Text.StringBuilder();
-        for (int r = 0; r < rows; r++) { for (int c = 0; c < cols; c++) sb.Append(g[r, c]); sb.Append('\n'); }
+
+        // Прямоугольники комнат в координатах СЕТКИ (Y вниз) — их же получит холст модулей.
+        var rects = new MazeCanvas.RoomRect[nodes.Count];
+        foreach (var rm in lay.rooms)
+            rects[rm.id] = new MazeCanvas.RoomRect
+            { col0 = rm.x0, row0 = rows - 1 - rm.Y1, w = rm.w, h = rm.h };
 
         var story = new System.Text.StringBuilder();
         story.Append("комнат ").Append(nodes.Count).Append(", габарит ").Append(cols).Append('×').Append(rows).Append(": ");
-        foreach (var nd in nodes)
-            if (nd.element != null)
-                story.Append(PuzzleVocabulary.Name(nd.element.Value)).Append(" на ребре ")
-                     .Append(nd.parent).Append("→").Append(nd.id).Append("; ");
-        return new Built { scheme = sb.ToString(), nodes = nodes, layout = lay, story = story.ToString() };
+        var stamps = new List<ModuleStamp>();
+        Furnish(g, rows, cols, nodes, rects, lay.links, rng, stamps, story);
+        foreach (var st in stamps) story.Append(st.moduleName).Append(' ').Append(st.groupId).Append("; ");
+
+        // ── Неприкосновенное: проходы, клетки над ними (посадочные холды) и ступени ──
+        var guarded = new bool[rows, cols];
+        System.Action<int, int> guard = (r, c) =>
+        { if (r >= 0 && r < rows && c >= 0 && c < cols) guarded[r, c] = true; };
+        foreach (var l in lay.links)
+        {
+            if (l.vertical)
+            {
+                int wr = rows - 1 - l.wall;
+                for (int x = l.from; x <= l.to; x++) { guard(wr, x); guard(wr - 1, x); guard(wr + 1, x); }
+            }
+            else
+            {
+                for (int y = l.from; y <= l.to; y++)
+                for (int x = l.wall; x <= Mathf.Max(l.wall, l.wallEnd); x++)
+                { int rr = rows - 1 - y; guard(rr, x); guard(rr, x - 1); guard(rr, x + 1); }
+            }
+        }
+        foreach (var st in stamps) foreach (var bcell in st.buttons)
+        { guard(bcell.y, bcell.x); guard(bcell.y - 1, bcell.x); }
+        // ⚠️ ОБЪЕКТЫ И ИХ ОКРЕСТНОСТЬ. 🐞 Декор садился вплотную к ключу и перекрывал подход: замер
+        // дал «ключи 2/3» на двух схемах из шестнадцати. У ключа спрайт ШИРЕ своей клетки, ему нужен
+        // зазор с боков — это правило было на решётке, при переносе потерялось.
+        for (int r = 0; r < rows; r++)
+        for (int c = 0; c < cols; c++)
+        {
+            char ch = g[r, c];
+            if (ch != '*' && ch != '@' && ch != '^' && ch != '=') continue;
+            for (int dr = -1; dr <= 1; dr++)
+            for (int dc = -2; dc <= 2; dc++) guard(r + dr, c + dc);
+        }
+
+        if (!SkipDressing)
+        {
+            var noDecor = new HashSet<int>();
+            foreach (var nd in nodes)
+                if (nd.element != null) { noDecor.Add(nd.id); if (nd.parent >= 0) noDecor.Add(nd.parent); }
+            Decorate(g, rows, cols, rects, guarded, noDecor, rng);
+            DropCoins(g, rows, cols, rects, 8 + nodes.Count * 2, rng);
+        }
+
+        // ⚠️ Обрезка — САМОЙ ПОСЛЕДНЕЙ: до неё камень нужен целиком (модули на него опираются),
+        // а после неё правки геометрии уже нельзя — они снова оставят зажимы.
+        TrimShell(g, rows, cols);
+
+        var sb = new System.Text.StringBuilder();
+        for (int r = 0; r < rows; r++) { for (int c = 0; c < cols; c++) sb.Append(g[r, c]); sb.Append('\n'); }
+        return new Built { scheme = sb.ToString(), nodes = nodes, layout = lay,
+                           stamps = stamps, story = story.ToString() };
     }
 }

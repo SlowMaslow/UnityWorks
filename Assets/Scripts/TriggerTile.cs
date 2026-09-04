@@ -18,6 +18,9 @@ public class TriggerTile : MonoBehaviour
              "Пусто — найдём сам по материалу с 'red' в имени.")]
     public Renderer colorTarget;
 
+    /// <summary>Телеметрия: кнопку нажали (группа, точка). Только сообщает, ни на что не влияет.</summary>
+    public static event System.Action<string, Vector3> Pressed;
+
     private float _lastFire = -999f;
     private Animator _anim;
 
@@ -84,6 +87,7 @@ public class TriggerTile : MonoBehaviour
         if (other.gameObject.layer != pads && rb.gameObject.layer != pads) return; // только пэды
 
         _lastFire = Time.time;
+        if (Pressed != null) Pressed(groupId, transform.position);
         DisappearingPlatform.ActivateGroup(groupId);
     }
 }

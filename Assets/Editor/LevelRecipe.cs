@@ -17,7 +17,10 @@ public enum PuzzleElement
     /// <summary>Ворота, кнопка которых стоит НА платформе предыдущих (призрачная, пока те не вызваны).</summary>
     NestedGate,
     /// <summary>Вылазка: односторонний вход провалом на ловчую площадку, выход через стену изнутри.</summary>
-    Excursion
+    Excursion,
+    /// <summary>Камера: потолок исчезает по кнопке снаружи, внутри полка с кнопкой, за стенкой —
+    /// ключ. Разобрана из ручного Level_11 игрока (см. <see cref="VaultModule"/>).</summary>
+    Vault
 }
 
 /// <summary>
@@ -46,6 +49,17 @@ public struct SpaceNeed
     public bool needsHostPlatform;
     /// <summary>Требует ключа в своей комнате (иначе запирать нечего).</summary>
     public bool holdsKey;
+
+    /// <summary>
+    /// ⭐ ЭЛЕМЕНТ СОЗДАЁТ ОБЛАСТЬ, ИЗ КОТОРОЙ НЕ ВЫЙТИ ТЕМ ЖЕ ПУТЁМ, и потому требует ВЫХОДА.
+    /// Камера — ровно такая: провалился сквозь потолок, а обратно наверх уже не забраться.
+    ///
+    /// ⚠️ Чем закрыть выход, элемент НЕ РЕШАЕТ. Иначе получается то, что я и сделал в первой версии
+    /// камеры: вшил инверсную стену внутрь модуля — а выходом с тем же успехом может быть мост на
+    /// таймере обратно к маршруту или любой будущий паттерн. Поэтому элемент лишь ЗАЯВЛЯЕТ нужду,
+    /// а подбирает исполнителя словарь (см. <see cref="CanBeExit"/>).
+    /// </summary>
+    public bool needsExit;
 }
 
 /// <summary>Что каждый элемент требует от места. Добавляешь элемент — дописываешь строку СЮДА.</summary>
@@ -74,6 +88,14 @@ public static class PuzzleVocabulary
                 return new SpaceNeed { rooms = 2, minWidth = 4, minHeight = 4,
                                        verticalEdge = true, needsHostPlatform = true };
 
+            // Камере нужна комната-коробка под собой и комната сверху, откуда открывают потолок.
+            // Ширина — под карман с ключом, стенку и полку; высота — пол, полка на дотяжке, кнопка.
+            case PuzzleElement.Vault:
+                return new SpaceNeed { rooms = 2,
+                                       minWidth = VaultModule.MinChamberWidth,
+                                       minHeight = VaultModule.MinChamberHeight,
+                                       verticalEdge = true, holdsKey = true, needsExit = true };
+
             // ⚠️ Глубина 5 обязательна: ключ лежит в 1-2 рядах над полом камеры, то есть в H−1 рядах
             // под полом верхней комнаты. При H ≤ 4 игрок достаёт его СВЕРХУ ЧЕРЕЗ ЛЮК, не спускаясь,
             // и вся вылазка становится украшением (поймано приёмкой на сиде 16).
@@ -100,6 +122,20 @@ public static class PuzzleVocabulary
     ///     через стену: четыре идеи сразу.
     /// ⚠️ Числа — не замер, а первая калибровка «на глаз». Уточнять по плейтестам.
     /// </summary>
+    /// <summary>
+    /// ⭐ КТО УМЕЕТ БЫТЬ ВЫХОДОМ из замкнутой области — то есть вернуть игрока к маршруту оттуда,
+    /// откуда он пришёл в одну сторону. Требование объявляет элемент (<see cref="SpaceNeed.needsExit"/>),
+    /// а исполнителя выбирают ЗДЕСЬ — это единственное место, куда дописывается новый умелец.
+    ///
+    /// Сегодня их двое:
+    ///   • ДВЕРЬ-ИНВЕРСИЯ — стена, твёрдая в покое, кнопка изнутри её убирает (идиома D и E у игрока);
+    ///   • МОСТ НА ТАЙМЕРЕ — возвращает через пропасть, тоже «нажал и успей».
+    /// ⚠️ Ворота выходом не считаются: они дают ПОДЪЁМ, а из ямы наверх подъём и так закрыт — иначе
+    /// область не была бы замкнутой.
+    /// </summary>
+    public static bool CanBeExit(PuzzleElement e)
+        => e == PuzzleElement.Door || e == PuzzleElement.Bridge;
+
     public static int Difficulty(PuzzleElement e)
     {
         switch (e)
@@ -109,6 +145,8 @@ public static class PuzzleVocabulary
             case PuzzleElement.Bridge:     return 4;
             case PuzzleElement.NestedGate: return 5;
             case PuzzleElement.Excursion:  return 9;
+            // Три группы и вложенная кнопка внутри: дороже вложенных ворот, дешевле вылазки.
+            case PuzzleElement.Vault:      return 7;
         }
         return 2;
     }
@@ -122,6 +160,7 @@ public static class PuzzleVocabulary
             case PuzzleElement.Bridge:     return "мост";
             case PuzzleElement.NestedGate: return "ворота с вложенной кнопкой";
             case PuzzleElement.Excursion:  return "вылазка";
+            case PuzzleElement.Vault:      return "камера с ключом";
         }
         return e.ToString();
     }
@@ -291,6 +330,9 @@ public class LevelRecipe
             // Элемент годится, если не перелетает цель больше чем на 2 балла.
             if (allowExcursion && groups + 3 <= maxGroups && cost(PuzzleElement.Excursion) <= left + 2)
                 pick.Add(PuzzleElement.Excursion);
+            // ⚠️ Камера съедает ЧЕТЫРЕ группы разом (потолок, полка, карман, выход) — считаем отдельно.
+            if (groups + 4 <= maxGroups && cost(PuzzleElement.Vault) <= left + 2)
+                pick.Add(PuzzleElement.Vault);
             if (cost(PuzzleElement.NestedGate) <= left + 2) pick.Add(PuzzleElement.NestedGate);
             if (cost(PuzzleElement.Door)       <= left + 2) pick.Add(PuzzleElement.Door);
             if (cost(PuzzleElement.Bridge)     <= left + 2) pick.Add(PuzzleElement.Bridge);
@@ -298,6 +340,15 @@ public class LevelRecipe
             if (pick.Count == 0) break;                       // ближе к цели уже не подойти
             var e = pick[rng.Next(pick.Count)];
 
+            // Камера — тоже ВЕТКА ЦЕЛИКОМ: провал сквозь потолок, ключ в кармане, выход стеной изнутри.
+            // Внутри маршрута ей не место: к её комнате нельзя подвешивать ничего, кроме выхода.
+            if (e == PuzzleElement.Vault)
+            {
+                rec.routes.Add(new RouteSpec { name = "ветка к ключу " + rec.routes.Count,
+                                               elements = { PuzzleElement.Vault } });
+                groups += 4;
+                continue;
+            }
             if (e == PuzzleElement.Excursion)
             {
                 // Вылазка — это ВЕТКА ЦЕЛИКОМ: вход провалом, выход стеной, ключ внутри.

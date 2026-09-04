@@ -38,7 +38,74 @@ public static class RoomLayout
         public bool vertical;         // true: b НАД a (подъём); false: b сбоку
         public int from, to;          // общий отрезок: столбцы для вертикальной связи, ряды для боковой
         public int wall;              // ряд-стена между ними (верт.) либо столбец-стена (гор.)
+        /// <summary>Связь СВЕРХ дерева: даёт петлю, механизма на ней нет.</summary>
+        public bool extra;
+        /// <summary>Для ТОННЕЛЯ: последний столбец прорезаемого хода (у обычной связи равен wall).
+        /// 🐞 Пока лишними рёбрами могли стать только комнаты, стоящие ровно через одну стену,
+        /// петель выходило 0.4 на уровень и процент ни на что не влиял — несвязанные комнаты почти
+        /// всегда стоят дальше. Тоннель снимает это ограничение (и это ровно коридоры из статьи).</summary>
+        public int wallEnd;
     }
+
+    /// <summary>Насколько длинный ход можно прорезать сквозь камень ради петли.</summary>
+    private const int MaxTunnel = 7;
+
+
+    /// <summary>
+    /// ⭐ КАНДИДАТЫ В ЛИШНИЕ РЁБРА: пары комнат, которые СТОЯТ РЯДОМ (через одну стену и с достаточным
+    /// перекрытием), но в дереве не связаны. Идея из разбора статьи про генерацию подземелий: там к
+    /// остовному дереву добавляют 8-10% рёбер, и уровень перестаёт быть деревом — появляются петли.
+    ///
+    /// Нам это нужно не для красоты: ВЫЛАЗКА требует у камеры ДВУХ связей (вход провалом сверху и
+    /// выход стеной вбок), а дерево даёт одну — потому она на свободном пути и не строилась.
+    ///
+    /// ⚠️ Здесь только ГЕОМЕТРИЯ. Решать, какие из этих рёбер безопасно открыть, — не дело раскладки:
+    /// лишний проход может обойти механизм и сделать его декоративным.
+    /// </summary>
+    public static List<RoomLink> FindAdjacent(Result r)
+    {
+        var linked = new HashSet<long>();
+        foreach (var l in r.links) linked.Add(Key(l.a, l.b));
+        var found = new List<RoomLink>();
+        for (int i = 0; i < r.rooms.Count; i++)
+        for (int j = i + 1; j < r.rooms.Count; j++)
+        {
+            var a = r.rooms[i]; var b = r.rooms[j];
+            if (linked.Contains(Key(a.id, b.id))) continue;
+            // Соседи по горизонтали: между ними от одной стены до короткого ТОННЕЛЯ.
+            var left = a.X1 < b.x0 ? a : b; var right = a.X1 < b.x0 ? b : a;
+            int gapX = right.x0 - left.X1 - 1;
+            if (gapX >= 1 && gapX <= MaxTunnel)
+            {
+                int lo = Mathf.Max(a.y0, b.y0), hi = Mathf.Min(a.Y1, b.Y1);
+                if (hi - lo + 1 < MinOverlap || Mathf.Abs(a.y0 - b.y0) > MaxFloorStep) continue;
+                // ⚠️ Ход не должен вспороть третью комнату по дороге.
+                int tLo = Mathf.Min(a.y0, b.y0), tHi = Mathf.Max(a.y0, b.y0) + MinOverlap - 1;
+                bool blocked = false;
+                foreach (var o in r.rooms)
+                {
+                    if (o.id == a.id || o.id == b.id) continue;
+                    if (o.x0 <= right.x0 - 1 && left.X1 + 1 <= o.X1 && o.y0 <= tHi + 1 && tLo - 1 <= o.Y1)
+                    { blocked = true; break; }
+                }
+                if (blocked) continue;
+                found.Add(new RoomLink { a = a.id, b = b.id, vertical = false, extra = true,
+                    from = tLo, to = tHi, wall = left.X1 + 1, wallEnd = right.x0 - 1 });
+                continue;
+            }
+            // Соседи по вертикали: одна стена, перекрытие по ширине.
+            bool aUnder = b.y0 == a.Y1 + 2, bUnder = a.y0 == b.Y1 + 2;
+            if (!aUnder && !bUnder) continue;
+            int lo2 = Mathf.Max(a.x0, b.x0), hi2 = Mathf.Min(a.X1, b.X1);
+            if (hi2 - lo2 + 1 < MinOverlap) continue;
+            int vw = aUnder ? a.Y1 + 1 : b.Y1 + 1;
+            found.Add(new RoomLink { a = aUnder ? a.id : b.id, b = aUnder ? b.id : a.id,
+                vertical = true, extra = true, from = lo2, to = hi2, wall = vw, wallEnd = vw });
+        }
+        return found;
+    }
+
+    private static long Key(int a, int b) => (long)Mathf.Min(a, b) * 100000 + Mathf.Max(a, b);
 
     /// <summary>Что комната требует от размера. Заполняется из ролей рецепта.</summary>
     public class RoomReq
@@ -60,8 +127,28 @@ public static class RoomLayout
     /// <summary>⚠️ Высота комнаты ограничена КЛИМБОМ: подъёмы строим ≤3 рядов, отсюда H ≤ Climb+2.
     /// Выше — только двухъярусные залы, и там подъём делится уступами.</summary>
     public const int MaxRoomHeight = MazeCanvas.Climb + 2;
+
+    /// <summary>
+    /// ⭐ ПОТОЛОК ЗАЛА. Обычная комната ограничена дотяжкой (<see cref="MaxRoomHeight"/>): выше игроку
+    /// не за что зацепиться. Зал снимает это ограничение тем, что подъём в нём разбит УСТУПАМИ —
+    /// ровно так, как это сделано в ручных уровнях игрока.
+    ///
+    /// Зачем вообще: замер объёма (вертикальные пробеги открытого пространства) — в ручных уровнях
+    /// 22-31% пробегов выше шести клеток и максимум 22-30, у генератора 5-7% и максимум 11-14. То
+    /// есть у нас был ОДИН масштаб, 3×5 на весь уровень, и оттого «примитивный прямоугольник» вместо
+    /// объёма. Разброс масштабов — то же, чем добиваются естественности в Cogmind (разбор статьи).
+    /// </summary>
+    public const int MaxHallHeight = MazeCanvas.Climb * 4;
     /// <summary>Сколько клеток общей стены нужно, чтобы прорезать проход (люк — 2 клетки минимум).</summary>
     private const int MinOverlap = 2;
+
+    /// <summary>
+    /// ⭐ Насколько пол соседней комнаты может отличаться по высоте. Дотяжкой НЕ ограничен: не хватает
+    /// вылета — рендер достраивает ступени прямо в проёме (идея игрока 2026-09-03).
+    /// ⚠️ Предел всё же есть: очень высокая лестница шириной в клетку читается как колодец, а не как
+    /// проход между комнатами.
+    /// </summary>
+    public const int MaxFloorStep = MazeCanvas.Climb * 2;
     /// <summary>
     /// Камня между НЕ связанными комнатами. ⚠️ ОДНА КЛЕТКА — ровно как было на решётке
     /// (`colX[x+1] = colX[x] + colW[x] + 1`), и там это выглядело нормально все эти месяцы.
@@ -113,7 +200,9 @@ public static class RoomLayout
         System.Func<RoomReq, int[]> size = r => new[]
         {
             Mathf.Clamp(r.minW + rng.Next(3), r.minW, r.maxW),
-            Mathf.Clamp(r.minH + rng.Next(2), r.minH, Mathf.Min(r.maxH, MaxRoomHeight))
+            // ⚠️ Потолок берём из САМОГО требования: зал просит больше, обычная комната — как раньше.
+            Mathf.Clamp(r.minH + rng.Next(r.maxH > MaxRoomHeight ? 6 : 2), r.minH,
+                        Mathf.Min(r.maxH, MaxHallHeight))
         };
 
         var s0 = size(req[root]);
@@ -177,15 +266,40 @@ public static class RoomLayout
                         RoomBox cand; RoomLink lk;
                         if (d == LinkDir.Horizontal)
                         {
-                            // ⚠️ Полы выравниваем: иначе через проём нельзя просто перейти.
+                            // ⭐ ПОЛЫ СОСЕДЕЙ НЕ ОБЯЗАНЫ СОВПАДАТЬ — достаточно, чтобы разница влезала
+                            // в дотяжку: проём режется от НИЖНЕГО пола вверх, и получается ступенька.
+                            // 🐞 Жёсткое выравнивание не давало горизонтальной связи НИ ОДНОЙ степени
+                            // свободы: ребёнку фиксировались и X, и Y, оставалось ровно два положения
+                            // (слева/справа), и укладка не сходилась на больших деревьях. Заодно это
+                            // чинит вид: уровень перестаёт быть плоской лентой из комнат в один ряд.
+                            // ⚠️ СТОРОНА — МОНЕТКОЙ, И ЭТО ПРОВЕРЕНО. Я пробовал разворачивать основной
+                            // маршрут всегда в одну сторону, думая, что «гармошка» и сводит спавн с
+                            // финишем. Замер сказал: без разворота спавн→финиш 53% габарита (худший
+                            // случай 46%), с разворотом 54% (худший 38%) — то есть пользы ноль, а
+                            // худший случай хуже. Сводил их не изгиб маршрута, а то, что финиш вообще
+                            // ставился не в его конец (см. Node.isFinish в FreeMazeBuilder).
                             bool toRight = rng.Next(2) == 0;
                             lastRight = toRight;
                             int x = toRight ? pb.X1 + 2 : pb.x0 - 1 - cw;
-                            cand = new RoomBox { id = k, x0 = x, y0 = pb.y0, w = cw, h = ch };
+                            // ⭐ ПЕРЕПАД ПОЛОВ НЕ ОГРАНИЧЕН ДОТЯЖКОЙ (идея игрока): не хватает вылета —
+                            // в проёме достраиваются СТУПЕНИ. Это тот же зигзаг, только применённый к
+                            // связи. Благодаря этому у горизонтального ребра появляется свобода по Y,
+                            // которой раньше не было вовсе (фиксировались и X, и Y — ровно два
+                            // положения на выбор, оттого укладка и не сходилась на больших деревьях).
+                            // ⚠️ Разумный предел всё же нужен: слишком высокая лестница в одну клетку
+                            // ширины читается как колодец, а не как проход.
+                            int drop = rng.Next(-MaxFloorStep, MaxFloorStep + 1);
+                            cand = new RoomBox { id = k, x0 = x, y0 = pb.y0 + drop, w = cw, h = ch };
                             int lo = Mathf.Max(cand.y0, pb.y0), hi = Mathf.Min(cand.Y1, pb.Y1);
                             if (hi - lo + 1 < MinOverlap) continue;
-                            lk = new RoomLink { a = v, b = k, vertical = false, from = lo, to = hi,
-                                                wall = toRight ? pb.X1 + 1 : pb.x0 - 1 };
+                            // Проём идёт от НИЖНЕГО пола до верхнего плюс запас — войти можно с любой
+                            // стороны, а ступени в нём достроит рендер.
+                            int lowFloor = Mathf.Min(cand.y0, pb.y0);
+                            int topNeed = Mathf.Max(cand.y0, pb.y0) + MinOverlap - 1;
+                            if (topNeed > hi) continue;
+                            int wcol = toRight ? pb.X1 + 1 : pb.x0 - 1;
+                            lk = new RoomLink { a = v, b = k, vertical = false,
+                                                from = lowFloor, to = topNeed, wall = wcol, wallEnd = wcol };
                         }
                         else
                         {
@@ -198,8 +312,9 @@ public static class RoomLayout
                             cand = new RoomBox { id = k, x0 = x, y0 = y, w = cw, h = ch };
                             int l2 = Mathf.Max(cand.x0, pb.x0), h2 = Mathf.Min(cand.X1, pb.X1);
                             if (h2 - l2 + 1 < MinOverlap) continue;
+                            int wrow = up ? pb.Y1 + 1 : pb.y0 - 1;
                             lk = new RoomLink { a = up ? v : k, b = up ? k : v, vertical = true,
-                                                from = l2, to = h2, wall = up ? pb.Y1 + 1 : pb.y0 - 1 };
+                                                from = l2, to = h2, wall = wrow, wallEnd = wrow };
                         }
                         // Комната обязана уместиться в область роста СВОЕЙ ветки.
                         if (cand.x0 < region[v, 0] || cand.X1 > region[v, 1] ||
@@ -239,8 +354,8 @@ public static class RoomLayout
         for (int i = 0; i < n; i++) { boxes[i].x0 += dx; boxes[i].y0 += dy; res.rooms.Add(boxes[i]); }
         foreach (var l in res.links)
         {
-            if (l.vertical) { l.from += dx; l.to += dx; l.wall += dy; }
-            else            { l.from += dy; l.to += dy; l.wall += dx; }
+            if (l.vertical) { l.from += dx; l.to += dx; l.wall += dy; l.wallEnd += dy; }
+            else            { l.from += dy; l.to += dy; l.wall += dx; l.wallEnd += dx; }
         }
         res.Width = maxX - minX + 1 + Shell * 2;
         res.Height = maxY - minY + 1 + Shell * 2;
@@ -279,7 +394,11 @@ public static class RoomLayout
             {
                 bool ok = b.x0 == a.X1 + 2 || a.x0 == b.X1 + 2;
                 if (!ok) sb.Append($"связь {l.a}-{l.b}: между ними не одна стена; ");
-                if (a.y0 != b.y0) sb.Append($"связь {l.a}-{l.b}: полы не выровнены; ");
+                // Полы могут различаться: перепад в проёме разбивается ступенями (см. MaxFloorStep).
+                if (Mathf.Abs(a.y0 - b.y0) > MaxFloorStep)
+                    sb.Append($"связь {l.a}-{l.b}: перепад полов сверх допустимого; ");
+                if (Mathf.Min(a.Y1, b.Y1) - Mathf.Max(a.y0, b.y0) + 1 < MinOverlap)
+                    sb.Append($"связь {l.a}-{l.b}: комнаты почти не перекрываются по высоте; ");
             }
         }
         return sb.ToString();

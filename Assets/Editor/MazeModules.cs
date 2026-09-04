@@ -36,6 +36,22 @@ public class MazeCanvas
     /// </summary>
     public const int ReachSide = 6;
 
+    /// <summary>Прямоугольник комнаты в СЕТКЕ СИМВОЛОВ: (col0, row0) — левый ВЕРХНИЙ угол интерьера.</summary>
+    public struct RoomRect { public int col0, row0, w, h; }
+
+    /// <summary>
+    /// ⭐ КОМНАТЫ ХРАНЯТСЯ ПРЯМОУГОЛЬНИКАМИ ПО ID, а не как пересечение колонки и строки.
+    ///
+    /// Это тот самый переход, ради которого заводилась <see cref="RoomLayout"/>: на решётке размер
+    /// комнаты был `colW[cx] × rowH[cy]`, то есть общий для всей колонки и всей строки, и комната не
+    /// могла быть большой сама по себе. Модули при этом обращались к холсту по (cx,cy).
+    ///
+    /// ⚠️ ОБА ГЕНЕРАТОРА КОРМЯТ ОДИН И ТОТ ЖЕ API. Решётчатый просто выкладывает сюда прямоугольники,
+    /// посчитанные из своей сетки (id = cy*CW + cx), свободный — из раскладки по дереву. Модулям всё
+    /// равно, кто их вызвал, и переносить их дважды не пришлось.
+    /// </summary>
+    private readonly RoomRect[] _rooms;
+
     private readonly int[] _colX, _rowY, _colW, _rowH;
     private readonly List<(int r, int c, char ch)> _journal = new List<(int, int, char)>();
     private bool _recording;
@@ -48,7 +64,25 @@ public class MazeCanvas
         G = g; Rows = rows; Cols = cols; CW = cw; CH = ch;
         _colX = colX; _rowY = rowY; _colW = colW; _rowH = rowH;
         Bump = bump; NoBump = noBump; NoFill = noFill; Rng = rng;
+        // Решётка выкладывает свои комнаты прямоугольниками: id = cy*CW + cx.
+        _rooms = new RoomRect[cw * ch];
+        for (int cx = 0; cx < cw; cx++)
+        for (int cy = 0; cy < ch; cy++)
+            _rooms[cy * cw + cx] = new RoomRect
+            { col0 = colX[cx], row0 = rowY[ch - 1 - cy], w = colW[cx], h = rowH[cy] };
     }
+
+    /// <summary>Холст для генератора БЕЗ решётки: комнаты приходят готовыми прямоугольниками.</summary>
+    public MazeCanvas(char[,] g, int rows, int cols, RoomRect[] rooms,
+                      bool[,] bump, bool[,] noBump, bool[,] noFill, System.Random rng)
+    {
+        G = g; Rows = rows; Cols = cols; CW = 0; CH = 0;
+        _rooms = rooms;
+        Bump = bump; NoBump = noBump; NoFill = noFill; Rng = rng;
+    }
+
+    /// <summary>Номер комнаты решётки — чтобы старый генератор мог назвать её так же, как модули.</summary>
+    public int RoomId(int cx, int cy) => cy * CW + cx;
 
     // ─── Сетка ────────────────────────────────────────────────────────────────
     public char At(int r, int c) => (r >= 0 && r < Rows && c >= 0 && c < Cols) ? G[r, c] : '#';
@@ -61,12 +95,15 @@ public class MazeCanvas
     }
 
     // ─── Комнаты ──────────────────────────────────────────────────────────────
-    public int C0(int cx) => _colX[cx];                 // левый столбец интерьера
-    public int R0(int cy) => _rowY[CH - 1 - cy];        // верхний ряд интерьера (cy=0 — низ)
-    public int W(int cx) => _colW[cx];
-    public int H(int cy) => _rowH[cy];
-    public int FloorRow(int cy) => R0(cy) + H(cy);      // ряд-СТЕНА под комнатой = её пол
-    public int AirRow(int cy) => R0(cy) + H(cy) - 1;    // нижний ряд ВОЗДУХА в комнате
+    // ⚠️ ВСЕ ЭТИ МЕТОДЫ ТЕПЕРЬ ПРИНИМАЮТ id КОМНАТЫ, а не индекс колонки/строки. Раньше размер был
+    // пересечением общей ширины колонки и общей высоты строки — из-за этого комната не могла быть
+    // большой сама по себе, и «заказ геометрии» упирался в потолок трижды подряд.
+    public int C0(int room) => _rooms[room].col0;       // левый столбец интерьера
+    public int R0(int room) => _rooms[room].row0;       // верхний ряд интерьера
+    public int W(int room)  => _rooms[room].w;
+    public int H(int room)  => _rooms[room].h;
+    public int FloorRow(int room) => R0(room) + H(room);   // ряд-СТЕНА под комнатой = её пол
+    public int AirRow(int room)   => R0(room) + H(room) - 1; // нижний ряд ВОЗДУХА в комнате
 
     // ─── Журнал: правка модуля либо ложится целиком, либо откатывается ────────
     /// <summary>
@@ -106,9 +143,9 @@ public class MazeCanvas
     }
 
     /// <summary>Свободная клетка воздуха НАД полом комнаты — куда можно поставить кнопку/объект.</summary>
-    public int FindFloorSpot(int cy, int cx, int preferFromMid = 0)
+    public int FindFloorSpot(int room, int preferFromMid = 0)
     {
-        int air = AirRow(cy), floor = FloorRow(cy), w = W(cx), c0 = C0(cx);
+        int air = AirRow(room), floor = FloorRow(room), w = W(room), c0 = C0(room);
         for (int d = 0; d < w; d++)
         {
             int mid = w / 2;
@@ -124,8 +161,11 @@ public class MazeCanvas
 /// <summary>Место-кандидат под модуль: комната (или пара комнат по вертикали) и её контекст.</summary>
 public class MazeSite
 {
-    public Vector2Int room;            // комната, в которую штампуем
+    public Vector2Int room;            // комната в координатах ДЕРЕВА (для отладки и логов)
     public Vector2Int roomAbove;       // для вертикальных связок (иначе (-1,-1))
+    /// <summary>⭐ ГЕОМЕТРИЯ БЕРЁТСЯ ПО ЭТИМ id, а не по (cx,cy): комнаты теперь прямоугольники
+    /// произвольного размера, и решётка — лишь один из способов их получить.</summary>
+    public int roomId = -1, roomAboveId = -1;
     public bool onRoute;               // лежит ли на маршруте спавн→финиш
     public bool hasFloorBelow;         // есть ли под комнатой этаж (падение не смертельно)
     public bool throughCorridor;       // сквозной горизонтальный коридор (вход слева, выход справа)
@@ -150,6 +190,20 @@ public class MazeSite
     /// пристройку, а хваты остаются свободными.
     /// </summary>
     public bool wantButtonShelf;
+
+    /// <summary>
+    /// ⭐ РОЛЬ «ВЫХОД»: проход открывается ТОЛЬКО ИЗНУТРИ замкнутой области. Кнопка ставится с одной
+    /// стороны — со стороны запертого, — и снаружи войти этим путём нельзя.
+    ///
+    /// ⚠️ Это свойство РОЛИ, а не элемента: та же дверь-инверсия в середине маршрута обязана иметь
+    /// кнопки с обеих сторон (иначе игрок, перейдя, не вернётся). 🐞 Если выпустить выход с двумя
+    /// кнопками, в камеру войдут сбоку мимо потолка, и потолок станет декоративным — модель это
+    /// поймает, но уровень к тому времени уже собран впустую.
+    /// </summary>
+    public bool exitOnly;
+
+    /// <summary>Какая из сторон прохода — ВНУТРИ запертой области (для <see cref="exitOnly"/>).</summary>
+    public bool insideIsBelow;
 }
 
 /// <summary>Что модуль пообещал компоновщику: какую группу он завёл и что она держит.</summary>
@@ -231,9 +285,9 @@ public class TimedBridgeModule : IMazeModule
         // 🐞 Так и было: приёмка браковала КАЖДУЮ схему с мостом (16 из 16 на замере 7×6) с вердиктом
         // «группа декоративная», а генератор молча перебрасывал сид, пока мост не исчезнет. Мосты
         // пропали из выдачи давно и незаметно — нашлось только когда компоновщик стал печатать замысел.
-        if (c.W(s.room.x) < MazeCanvas.ReachSide + 2) return false;
-        int floorRow = c.FloorRow(s.room.y);
-        int c0 = c.C0(s.room.x) + 1, c1 = c.C0(s.room.x) + c.W(s.room.x) - 2;
+        if (c.W(s.roomId) < MazeCanvas.ReachSide + 2) return false;
+        int floorRow = c.FloorRow(s.roomId);
+        int c0 = c.C0(s.roomId) + 1, c1 = c.C0(s.roomId) + c.W(s.roomId) - 2;
         for (int x = c0; x <= c1; x++) if (c.At(floorRow, x) != '#') return false;
         return true;
     }
@@ -241,8 +295,8 @@ public class TimedBridgeModule : IMazeModule
     public ModuleStamp Stamp(MazeCanvas c, MazeSite s)
     {
         if (!Fits(c, s)) return null;
-        int floorRow = c.FloorRow(s.room.y);
-        int cLeft = c.C0(s.room.x), cRight = c.C0(s.room.x) + c.W(s.room.x) - 1;
+        int floorRow = c.FloorRow(s.roomId);
+        int cLeft = c.C0(s.roomId), cRight = c.C0(s.roomId) + c.W(s.roomId) - 1;
         int c0 = cLeft + 1, c1 = cRight - 1, rAir = floorRow - 1;
         char grp = c.NextGroupId();
 
@@ -299,10 +353,10 @@ public class VerticalGateModule : IMazeModule
     public bool Fits(MazeCanvas c, MazeSite s)
     {
         if (s.shaftWidth <= 0 || s.shaftCol0 < 0) return false;
-        if (c.H(s.room.y) < 4) return false;                       // при H=3 долезут и без ступеньки
+        if (c.H(s.roomId) < 4) return false;                       // при H=3 долезут и без ступеньки
         if (s.buttonBelow.x < 0 || s.buttonAbove.x < 0) return false;   // некуда поставить пару кнопок
-        int stepRow = c.FloorRow(s.room.y) - MazeCanvas.Climb;
-        return stepRow > c.R0(s.room.y);                           // иначе упрётся в потолок
+        int stepRow = c.FloorRow(s.roomId) - MazeCanvas.Climb;
+        return stepRow > c.R0(s.roomId);                           // иначе упрётся в потолок
     }
 
     /// <summary>
@@ -325,9 +379,9 @@ public class VerticalGateModule : IMazeModule
     public ModuleStamp Stamp(MazeCanvas c, MazeSite s)
     {
         if (!Fits(c, s)) return null;
-        int floorRow = c.FloorRow(s.room.y);
-        int ceilRow  = c.R0(s.room.y) - 1;
-        int w = c.W(s.room.x), col0 = c.C0(s.room.x);
+        int floorRow = c.FloorRow(s.roomId);
+        int ceilRow  = c.R0(s.roomId) - 1;
+        int w = c.W(s.roomId), col0 = c.C0(s.roomId);
 
         int step = 2 + c.Rng.Next(2);                              // 2 или 3 ряда между уступами
         // Соседние уступы на разных сторонах: вбок между ними W−2·len+1, вверх step.
@@ -449,8 +503,12 @@ public class InvertedDoorModule : IMazeModule
         c.Begin();
         for (int r = s.doorRowTop; r < s.doorRowTop + s.doorHeight; r++)
             c.Set(r, s.doorCol, char.ToLower(grp));
-        c.Set(s.buttonBelow.y, s.buttonBelow.x, grp);             // кнопка со стороны старта
-        c.Set(s.buttonAbove.y, s.buttonAbove.x, grp);             // кнопка с той стороны — на обратный путь
+        // ⭐ В РОЛИ ВЫХОДА кнопка ставится ТОЛЬКО ИЗНУТРИ: снаружи этим путём не войти, и вход в
+        // область остаётся единственным — тем, ради которого она и запиралась.
+        var inside = s.insideIsBelow ? s.buttonBelow : s.buttonAbove;
+        var outside = s.insideIsBelow ? s.buttonAbove : s.buttonBelow;
+        c.Set(inside.y, inside.x, grp);
+        if (!s.exitOnly) c.Set(outside.y, outside.x, grp);        // обычная дверь — на обратный путь
 
         // Заложенный проём не должен породить диагональный зажим с соседним камнем.
         bool pinched = false;
@@ -461,9 +519,11 @@ public class InvertedDoorModule : IMazeModule
 
         c.Commit(); StampedCount++;
         var st = new ModuleStamp
-        { moduleName = Name, groupId = grp, inverted = true, gates = "дверной проём между комнатами" };
-        st.AddButton(s.buttonBelow);
-        st.AddButton(s.buttonAbove);
+        { moduleName = s.exitOnly ? Name + ": выход изнутри" : Name,
+          groupId = grp, inverted = true,
+          gates = s.exitOnly ? "выход из запертой области" : "дверной проём между комнатами" };
+        st.AddButton(inside);
+        if (!s.exitOnly) st.AddButton(outside);
         return st;
     }
 }
@@ -500,15 +560,15 @@ public class ExcursionModule
 
     public bool Fits(MazeCanvas c, MazeSite s)
     {
-        if (s.roomAbove.x < 0) return false;
-        if (c.W(s.room.x) < HatchWidth + 4) return false;         // люк + по 2 клетки пола по краям
-        if (c.H(s.roomAbove.y) < 4) return false;                 // в верхней комнате нужна высота под пусковую
+        if (s.roomAboveId < 0) return false;
+        if (c.W(s.roomId) < HatchWidth + 4) return false;         // люк + по 2 клетки пола по краям
+        if (c.H(s.roomAboveId) < 4) return false;                 // в верхней комнате нужна высота под пусковую
         // ⚠️⚠️ КАМЕРА ОБЯЗАНА БЫТЬ ГЛУБОКОЙ. 🐞 Иначе ключ достают СВЕРХУ ЧЕРЕЗ ЛЮК, не спускаясь:
         // ключ лежит в 1-2 рядах над полом камеры, то есть в H−1 рядах под полом верхней комнаты,
         // а дотяжка вниз — 3 ряда. При H ≤ 4 игрок просто протягивает руку в люк, и вся вылазка
         // превращается в украшение (поймано приёмкой: пусковая и ловчая помечены декоративными,
         // сид 16). Нужен H = Climb+2 = 5: тогда ключ уходит на 4 ряда и за дотяжку не влезает.
-        if (c.H(s.room.y) < MazeCanvas.Climb + 2) return false;
+        if (c.H(s.roomId) < MazeCanvas.Climb + 2) return false;
         if (s.doorCol < 0 || s.doorHeight < 2) return false;      // ребро наружу — горизонтальный проём
         if (s.buttonBelow.x < 0 || s.buttonAbove.x < 0) return false;
         return true;
@@ -519,13 +579,13 @@ public class ExcursionModule
     {
         if (!Fits(c, s)) { RolledBackCount++; return null; }
 
-        int ceilRow  = c.R0(s.room.y) - 1;                        // ряд-стена: пол верхней комнаты
-        int floorRow = c.FloorRow(s.room.y);                      // пол камеры
-        int hatch0   = c.C0(s.room.x) + (c.W(s.room.x) - HatchWidth) / 2;
+        int ceilRow  = c.R0(s.roomId) - 1;                        // ряд-стена: пол верхней комнаты
+        int floorRow = c.FloorRow(s.roomId);                      // пол камеры
+        int hatch0   = c.C0(s.roomId) + (c.W(s.roomId) - HatchWidth) / 2;
         int launchRow = ceilRow - MazeCanvas.Climb;               // пусковая: на 3 ряда над полом верхней
 
         // Предусловия по клеткам — ДО единой правки, чтобы не пришлось откатывать половину.
-        if (launchRow <= c.R0(s.roomAbove.y)) return null;         // упрётся в потолок верхней комнаты
+        if (launchRow <= c.R0(s.roomAboveId)) return null;         // упрётся в потолок верхней комнаты
         // ⚠️ ДЕКОР СНОСИМ, КАМЕНЬ — НЕТ. Тумбы и пилоны ставятся раньше и легко попадают в клетки,
         // которые вылазке нужны пустыми: путь от люка вверх, место над ловчей, площадка пусковой.
         // 🐞 Пока модуль на них просто отказывался, он не строился НИ РАЗУ, хотя место было годным —

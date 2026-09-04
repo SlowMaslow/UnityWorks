@@ -458,12 +458,22 @@ public class ClimbController : MonoBehaviour
             }
     }
 
+    /// <summary>
+    /// ⭐ ТЕЛЕМЕТРИЯ ПЕРЕХВАТА: пэд i встал на опору в точке pos. Нужна, чтобы ЗАМЕРИТЬ, сколько
+    /// перехватов игрок успевает за окно платформы — единственное число модели проходимости, которое
+    /// до сих пор стоит прикидкой (см. LevelModel.MoveBudget). Дотяжку калибровали так же, замером.
+    /// ⚠️ Событие только СООБЩАЕТ, ни на что не влияет: подписчиков может не быть вовсе.
+    /// </summary>
+    public static event System.Action<int, Vector3> PadGripped;
+
     private void SetState(int i, PadState s)
     {
         if (debugVerbose && state[i] != s)
             Debug.Log($"[Climb] Pad{i}: {state[i]} → {s}  padY={padRb[i].position.y:F2}  " +
                       $"BODY_Y={bodyRb.position.y:F2}  tilt={bodyRb.transform.eulerAngles.z:F0}°  t={Time.time:F1}");
+        bool newGrip = s == PadState.Gripped && state[i] != PadState.Gripped;
         state[i] = s;
+        if (newGrip && PadGripped != null) PadGripped(i, padRb[i].position);
         var rb = padRb[i];
         switch (s)
         {
