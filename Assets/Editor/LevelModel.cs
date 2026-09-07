@@ -17,9 +17,14 @@ public class LevelSpec
     public HashSet<Vector2Int> rock = new HashSet<Vector2Int>();
     public List<LevelGroup> groups = new List<LevelGroup>();
     public Vector2Int spawn;
+    /// <summary>Спавн задан. Отдельный флаг, потому что клетка (0,0) — законная позиция.</summary>
+    public bool hasSpawn;
     public LevelTarget finish = new LevelTarget();
     public List<LevelTarget> artifacts = new List<LevelTarget>();
     public List<LevelTarget> checkpoints = new List<LevelTarget>();
+    /// <summary>Монеты: модели проходимости они не нужны, но уровень из описания собирается целиком,
+    /// и терять их на полпути незачем.</summary>
+    public List<Vector2Int> coins = new List<Vector2Int>();
 
     public int IndexOfGroup(string id)
     {
@@ -50,6 +55,7 @@ public class LevelSpec
         var copy = new LevelSpec { cell = cell, spawn = spawn, finish = finish };
         copy.artifacts.AddRange(artifacts);
         copy.checkpoints.AddRange(checkpoints);
+        copy.coins.AddRange(coins);
         foreach (var k in rock) copy.rock.Add(k);
         if (groups[gi].inverted) foreach (var k in groups[gi].tiles) copy.rock.Add(k);
 
@@ -62,12 +68,12 @@ public class LevelSpec
         {
             if (i == gi) continue;
             var src = groups[i];
-            var g = new LevelGroup { id = src.id, inverted = src.inverted };
+            var g = new LevelGroup { id = src.id, inverted = src.inverted, window = src.window };
             g.tiles.AddRange(src.tiles);
             foreach (var b in src.buttons)
                 g.buttons.Add(new LevelButton
                 {
-                    cell = b.cell, center = b.center, half = b.half,
+                    cell = b.cell, center = b.center, half = b.half, mount = b.mount,
                     // Кнопка внутри УДАЛЁННОЙ группы недоступна навсегда — не «без хозяина»!
                     host = b.host < 0 ? b.host : (map[b.host] < 0 ? LevelButton.HostGone : map[b.host])
                 });
@@ -83,9 +89,36 @@ public class LevelGroup
     public string id = "A";
     /// <summary>Тайлы твёрдые ПОКА кнопку не нажали (стена, которая открывается).</summary>
     public bool inverted;
+    /// <summary>Сколько секунд группа активна после нажатия (DisappearingPlatform.activeWindow).
+    /// В сетке символов этого нет вовсе — ещё одна причина, по которой схема не источник истины.</summary>
+    public float window = 5f;
+
+    /// <summary>
+    /// ⭐⭐ КЛАПАН ВОЗВРАТА: дверь, которой игрок ВЫХОДИТ из ветки обратно на маршрут. Кнопка у неё
+    /// только изнутри — снаружи этим путём не войти.
+    ///
+    /// Зачем отдельный признак. Критерий «механизм несущий» спрашивает: убери группу — пропала ли
+    /// хоть одна цель? У клапана не пропадает НИЧЕГО: убери его, и проход просто всегда открыт,
+    /// цели достижимы тем более. По этому критерию он вечно «холостой» — а работа у него другая:
+    /// не пускать игрока в ветку с обратной стороны и не давать ему застрять внутри.
+    /// ⚠️ Что мы этим НЕ проверяем: что клапан не открывает лишнего. Это гарантируется построением —
+    /// кнопка ставится только со стороны ветки (InvertedDoorModule, exitOnly).
+    /// </summary>
+    public bool returnValve;
     public List<Vector2Int> tiles = new List<Vector2Int>();
     public List<LevelButton> buttons = new List<LevelButton>();
 }
+
+/// <summary>
+/// ⭐ К ЧЕМУ КНОПКА ПРИКРЕПЛЕНА. Свойство самостоятельное, и путать его с вложенностью нельзя:
+/// «на чём держится» и «внутри какой группы лежит» — две разные оси (поправлено игроком).
+/// 🐞 До этого крепления не существовало вовсе: импорт ставил ЛЮБУЮ кнопку через SurfaceBelow —
+/// «съезжай вниз до первой твёрдой клетки и встань сверху». Кнопка, нарисованная под потолком
+/// (так висит группа B в ручном Level_11), уезжала на три ряда вниз и садилась на исчезающую
+/// платформу — то есть повисала в воздухе, стоило той пропасть. Модель при этом считала геометрию
+/// по схеме и расхождения не видела.
+/// </summary>
+public enum MountSide { Floor, Ceiling, WallLeft, WallRight }
 
 /// <summary>Кнопка группы. <see cref="host"/> — индекс группы, ВНУТРИ которой она лежит (или -1):
 /// пока хозяин в превью, кнопка полупрозрачна и без коллайдера, нажать её нельзя.</summary>
@@ -101,6 +134,9 @@ public class LevelButton
     public Vector2Int cell;
     public Vector2 center, half;   // габарит коллайдера в ДРОБНЫХ клетках
     public int host = NoHost;
+    /// <summary>К какой поверхности прижата. Пол — как было; потолок и стены появились потому, что
+    /// в ручных уровнях кнопки висят и так тоже.</summary>
+    public MountSide mount = MountSide.Floor;
 }
 
 /// <summary>Цель касания: ключ, флаг, чекпоинт. Габарит берётся из коллайдера — подбор это

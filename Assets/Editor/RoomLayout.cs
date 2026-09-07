@@ -50,6 +50,10 @@ public static class RoomLayout
     /// <summary>Насколько длинный ход можно прорезать сквозь камень ради петли.</summary>
     private const int MaxTunnel = 7;
 
+    /// <summary>Счётчики поэтапной укладки — чтобы решать по замеру, а не по ощущению.</summary>
+    public static int StatBuilds, StatRestarts, StatRelaxed, StatStageRetries;
+    public static void ResetStats() { StatBuilds = StatRestarts = StatRelaxed = StatStageRetries = 0; }
+
 
     /// <summary>
     /// ⭐ КАНДИДАТЫ В ЛИШНИЕ РЁБРА: пары комнат, которые СТОЯТ РЯДОМ (через одну стену и с достаточным
@@ -107,11 +111,97 @@ public static class RoomLayout
 
     private static long Key(int a, int b) => (long)Mathf.Min(a, b) * 100000 + Mathf.Max(a, b);
 
+    /// <summary>Мешает ли третья комната прорезать ход между этими двумя (для тоннеля вбок).</summary>
+    private static bool Blocked(RoomBox a, RoomBox b, RoomBox[] boxes, int n, int skipA, int skipB)
+    {
+        var left = a.X1 < b.x0 ? a : b; var right = a.X1 < b.x0 ? b : a;
+        if (right.x0 - left.X1 - 1 <= 1) return false;          // общая стена — резать нечего
+        int tLo = Mathf.Min(a.y0, b.y0), tHi = Mathf.Max(a.y0, b.y0) + MinOverlap - 1;
+        for (int i = 0; i < n; i++)
+        {
+            var o = boxes[i];
+            if (o == null || o == a || o == b || o.id == skipA || o.id == skipB) continue;
+            if (o.x0 <= right.x0 - 1 && left.X1 + 1 <= o.X1 && o.y0 <= tHi + 1 && tLo - 1 <= o.Y1) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Можно ли прорезать проход между комнатами: либо общая стена, либо короткий ТОННЕЛЬ сквозь
+    /// камень — ровно то же, что считает соседством <see cref="FindAdjacent"/>.
+    /// ⚠️ Требовать именно общую стену оказалось слишком строго: петля замыкалась в 16% случаев.
+    /// Тоннель рендер уже умеет (RoomLink.wallEnd), и для двери он ничем не хуже стены.
+    /// </summary>
+    private static bool Touches(RoomBox a, RoomBox b)
+    {
+        if (a == null || b == null) return false;
+        var left = a.X1 < b.x0 ? a : b; var right = a.X1 < b.x0 ? b : a;
+        int gapX = right.x0 - left.X1 - 1;
+        if (gapX >= 1 && gapX <= MaxTunnel)
+        {
+            int lo = Mathf.Max(a.y0, b.y0), hi = Mathf.Min(a.Y1, b.Y1);
+            if (hi - lo + 1 >= MinOverlap && Mathf.Abs(a.y0 - b.y0) <= MaxFloorStep) return true;
+        }
+        bool stacked = a.Y1 + 2 == b.y0 || b.Y1 + 2 == a.y0;
+        if (!stacked) return false;
+        int lo2 = Mathf.Max(a.x0, b.x0), hi2 = Mathf.Min(a.X1, b.X1);
+        return hi2 - lo2 + 1 >= MinOverlap;
+    }
+
     /// <summary>Что комната требует от размера. Заполняется из ролей рецепта.</summary>
     public class RoomReq
     {
         public int minW = 3, minH = 3;
         public int maxW = 8, maxH = MaxRoomHeight;
+        /// <summary>
+        /// ⭐ КОМНАТА ОБЯЗАНА ВСТАТЬ РОВНО ПОД РОДИТЕЛЕМ, столбец в столбец. Нужна паттерну, который
+        /// занимает не одну комнату, а НЕСКОЛЬКО ЭТАЖЕЙ: у камеры это коридор трассы и вырытый под
+        /// ним подвал с ключом и колодцем возврата.
+        /// 🐞 Без этого паттерн приходилось «рыть в сплошном камне», и замер показал, почему так
+        /// нельзя: сплошного массива под коридором не бывает — из 110 посадок 104 отбивались именно
+        /// на требовании камня. Место под паттерн надо РЕЗЕРВИРОВАТЬ, а не искать.
+        /// </summary>
+        public bool alignX;
+        /// <summary>
+        /// ⭐ ЖЕЛАЕМОЕ направление — в отличие от жёсткого <c>dir[]</c> это лишь порядок перебора:
+        /// сперва пробуем его, не вышло — обычные варианты. Нужно ветке-петле, которой надо уйти
+        /// вверх, пройти вбок и вернуться вниз к трассе.
+        /// 🐞 Жёстким требованием то же самое не строится: раскладка не сошлась НИ РАЗУ из сорока —
+        /// спускающийся конец ветки упирается в уже занятые комнаты маршрута, а запасного хода нет.
+        /// </summary>
+        public LinkDir prefer = LinkDir.Any;
+
+        /// <summary>
+        /// ⭐⭐ КОМНАТА ВЫХОДИТ ИЗ ОБЛАСТИ РОСТА СВОЕЙ ВЕТКИ. Нужна ветке-ПЕТЛЕ: она обязана вернуться
+        /// туда, откуда ушла, а область роста именно это и запрещает — ветки разводятся по секторам,
+        /// чтобы не наезжать друг на друга.
+        /// 🐞 Замер, доказавший, что дело в области, а не в направлениях: форма «вверх → вбок → вниз»
+        /// жёстко — раскладка не сошлась ни разу из 40; мягко — сходится, но концов веток рядом с
+        /// трассой стало МЕНЬШЕ (1 из 120 против 6 без всякой формы).
+        /// </summary>
+        public bool freeRegion;
+
+        /// <summary>
+        /// ⭐⭐ КОМНАТА ОБЯЗАНА ВСТАТЬ ВПЛОТНУЮ К ЭТОЙ (id) — помимо связи с родителем. Так замыкается
+        /// петля: последнее звено ветки касается комнаты маршрута, и между ними можно поставить дверь.
+        /// −1 — требования нет.
+        /// ⚠️ Требование МЯГКОЕ по последствиям: если места нет, звено ставится как обычно, а петля
+        /// в этот раз не замкнётся. Жёсткое требование ронять раскладку целиком не имеет права.
+        /// </summary>
+        public int nextTo = -1;
+        /// <summary>⭐ Годится соседство с ЛЮБОЙ из этих комнат. Петле неважно, в какую именно точку
+        /// трассы выйти — важно выйти. Назначать одну конкретную оказалось слишком строго: она к
+        /// моменту укладки бывает уже обстроена со всех сторон.</summary>
+        public List<int> nextToAny;
+
+        /// <summary>
+        /// ⭐⭐ ТЯНУТЬ КОМНАТУ К ЭТОЙ (id): из всех годных мест выбирается БЛИЖАЙШЕЕ к ней, а не первое
+        /// попавшееся. Этим ветка-петля и наводится на трассу — иначе она бредёт случайно, и её конец
+        /// оказывается рядом с целью только по удаче.
+        /// 🐞 Замер без притяжения: петля замыкалась в 8 случаях из 86 (9%). Само требование
+        /// соседства при этом верное — не хватало именно наведения.
+        /// </summary>
+        public int pullTo = -1;
     }
 
     /// <summary>Куда обязан встать ребёнок относительно родителя (диктуется ролью на ребре).</summary>
@@ -173,41 +263,156 @@ public static class RoomLayout
     /// </remarks>
     public static Result Build(int n, int[] parent, RoomReq[] req, LinkDir[] dir,
                                System.Random rng, int tries = 300)
-    {
-        for (int attempt = 0; attempt < tries; attempt++)
-        {
-            var res = TryBuild(n, parent, req, dir, rng);
-            if (res != null) return res;
-        }
-        return null;
-    }
+        => BuildStaged(n, parent, req, dir, rng, null, tries);
 
-    private static Result TryBuild(int n, int[] parent, RoomReq[] req, LinkDir[] dir, System.Random rng)
+    /// <summary>
+    /// ⭐⭐ ПОЭТАПНАЯ УКЛАДКА (предложение игрока). Комнаты кладутся не одной попыткой на весь
+    /// уровень, а группами: сперва хребет старт→финиш, потом каждая ветка отдельно, добор последним.
+    /// Не встала группа — переигрывается ТОЛЬКО она, а всё уже поставленное остаётся.
+    ///
+    /// 🐞 Зачем. Прежняя укладка была «всё или ничего»: не встала одна комната — в мусор шла вся
+    /// попытка, и снаружи это перезапускалось до 300 раз с нуля. Цена видна на замере петли: стык
+    /// с трассой при жёстком требовании получался в 4 случаях из 4, а раскладка сходилась 4 попытки
+    /// из 40 — губило не требование, а именно безоткатность.
+    ///
+    /// ⚠️ ОБЛАСТЕЙ РОСТА ЗДЕСЬ БОЛЬШЕ НЕТ. Они существовали ровно затем, чтобы ранняя ветка не
+    /// занимала место поздней при отсутствии отката. С поэтапной укладкой откат есть, а области
+    /// мешали: именно они разносили комнаты так, что конец ветки в 60 случаях из 86 не касался
+    /// ничего, и петлю нельзя было замкнуть. Раскидистость уровня при этом не порок, а цель
+    /// (решение игрока): уровень должен казаться насыщенным, а не линейным.
+    /// </summary>
+    /// <param name="stageOf">Номер этапа для каждого узла (null — всё одним этапом). Корень кладётся
+    /// первым независимо от номера.</param>
+    public static Result BuildStaged(int n, int[] parent, RoomReq[] req, LinkDir[] dir,
+                                     System.Random rng, int[] stageOf, int triesPerStage = 60)
     {
-        var boxes = new RoomBox[n];
-        var res = new Result();
-
-        // Порядок обхода: родитель всегда раньше ребёнка.
-        var order = new List<int>();
         var kids = new List<int>[n];
         for (int i = 0; i < n; i++) kids[i] = new List<int>();
         int root = -1;
         for (int i = 0; i < n; i++) { if (parent[i] < 0) root = i; else kids[parent[i]].Add(i); }
         if (root < 0) return null;
+
+        // Порядок обхода: родитель всегда раньше ребёнка.
+        var order = new List<int>();
         var stack = new Stack<int>(); stack.Push(root);
         while (stack.Count > 0) { int v = stack.Pop(); order.Add(v); foreach (int k in kids[v]) stack.Push(k); }
 
-        System.Func<RoomReq, int[]> size = r => new[]
+        // Этапы в порядке возрастания номера; корень уже стоит, его пропускаем.
+        var stages = new List<List<int>>();
         {
-            Mathf.Clamp(r.minW + rng.Next(3), r.minW, r.maxW),
-            // ⚠️ Потолок берём из САМОГО требования: зал просит больше, обычная комната — как раньше.
-            Mathf.Clamp(r.minH + rng.Next(r.maxH > MaxRoomHeight ? 6 : 2), r.minH,
-                        Mathf.Min(r.maxH, MaxHallHeight))
-        };
+            var byStage = new Dictionary<int, List<int>>();
+            foreach (int id in order)
+            {
+                if (id == root) continue;
+                int st = stageOf != null ? stageOf[id] : 0;
+                List<int> l;
+                if (!byStage.TryGetValue(st, out l)) { l = new List<int>(); byStage[st] = l; }
+                l.Add(id);
+            }
+            var nums = new List<int>(byStage.Keys); nums.Sort();
+            foreach (int st in nums) stages.Add(byStage[st]);
+        }
 
-        var s0 = size(req[root]);
+        // ⚠️ ВНЕШНИЙ ПЕРЕЗАПУСК ПОВЕРХ ЭТАПОВ. Этапы дают дешёвый откат, но не всесильны: если
+        // ранние комнаты обстроили точку отрыва со всех сторон, ветке физически некуда встать, а
+        // переигрывать ранний этап поздний уже не может. 🐞 Замер: одни этапы дали 29 уровней из 40.
+        // Перезапуск возвращает утраченное, оставаясь во много раз дешевле прежних 300 попыток —
+        // те начинали с нуля ВСЕГДА, а эти только когда действительно тупик.
+        RoomBox[] boxes = null; Result res = null;
+        bool allOk = false;
+        StatBuilds++;
+        for (int restart = 0; restart < 12 && !allOk; restart++)
+        {
+            if (restart > 0) StatRestarts++;
+        boxes = new RoomBox[n];
+        res = new Result();
+        var s0 = Size(req[root], rng);
         boxes[root] = new RoomBox { id = root, x0 = 0, y0 = 0, w = s0[0], h = s0[1] };
+        allOk = true;
 
+        foreach (var stageNodes in stages)
+        {
+            bool ok = false;
+            for (int attempt = 0; attempt < triesPerStage && !ok; attempt++)
+            {
+                int linksBefore = res.links.Count;
+                ok = PlaceStage(n, parent, req, dir, rng, boxes, res, stageNodes);
+                if (!ok)
+                {
+                    StatStageRetries++;
+                    // Откат ТОЛЬКО этого этапа: всё, что стояло раньше, остаётся на месте.
+                    foreach (int id in stageNodes) boxes[id] = null;
+                    res.links.RemoveRange(linksBefore, res.links.Count - linksBefore);
+                }
+            }
+            // ⚠️ ПОСЛЕДНЯЯ СТУПЕНЬ: уровень не должен умирать из-за УКРАШЕНИЯ. Замыкание петли и
+            // притяжение к трассе — пожелания; если этап из-за них не встаёт, снимаем их и кладём
+            // ветку как обычную. 🐞 Без этой ступени этапы дали скачок замыкания (9% → 38%), но
+            // уронили 11 уровней из 40: не встал этап — не встал весь уровень.
+            if (!ok)
+            {
+                StatRelaxed++;
+                var savedNext = new List<int>[stageNodes.Count];
+                var savedPull = new int[stageNodes.Count];
+                for (int i = 0; i < stageNodes.Count; i++)
+                {
+                    savedNext[i] = req[stageNodes[i]].nextToAny; savedPull[i] = req[stageNodes[i]].pullTo;
+                    req[stageNodes[i]].nextToAny = null; req[stageNodes[i]].pullTo = -1;
+                }
+                for (int attempt = 0; attempt < triesPerStage && !ok; attempt++)
+                {
+                    int linksBefore = res.links.Count;
+                    ok = PlaceStage(n, parent, req, dir, rng, boxes, res, stageNodes);
+                    if (!ok)
+                    {
+                        foreach (int id in stageNodes) boxes[id] = null;
+                        res.links.RemoveRange(linksBefore, res.links.Count - linksBefore);
+                    }
+                }
+                for (int i = 0; i < stageNodes.Count; i++)
+                { req[stageNodes[i]].nextToAny = savedNext[i]; req[stageNodes[i]].pullTo = savedPull[i]; }
+            }
+            if (!ok) { allOk = false; break; }
+        }
+        }
+        if (!allOk) return null;
+
+        // Нормализация: сдвигаем всё так, чтобы осталось место под оболочку.
+        int minX = int.MaxValue, minY = int.MaxValue, maxX = int.MinValue, maxY = int.MinValue;
+        for (int i = 0; i < n; i++)
+        {
+            if (boxes[i] == null) return null;
+            minX = Mathf.Min(minX, boxes[i].x0); minY = Mathf.Min(minY, boxes[i].y0);
+            maxX = Mathf.Max(maxX, boxes[i].X1); maxY = Mathf.Max(maxY, boxes[i].Y1);
+        }
+        const int Shell = 3;
+        int dx = Shell - minX, dy = Shell - minY;
+        for (int i = 0; i < n; i++) { boxes[i].x0 += dx; boxes[i].y0 += dy; res.rooms.Add(boxes[i]); }
+        foreach (var l in res.links)
+        {
+            if (l.vertical) { l.from += dx; l.to += dx; l.wall += dy; l.wallEnd += dy; }
+            else            { l.from += dy; l.to += dy; l.wall += dx; l.wallEnd += dx; }
+        }
+        res.Width = maxX - minX + 1 + Shell * 2;
+        res.Height = maxY - minY + 1 + Shell * 2;
+        return res;
+    }
+
+    private static int[] Size(RoomReq r, System.Random rng) => new[]
+    {
+        Mathf.Clamp(r.minW + rng.Next(3), r.minW, r.maxW),
+        // ⚠️ Потолок берём из САМОГО требования: зал просит больше, обычная комната — как раньше.
+        Mathf.Clamp(r.minH + rng.Next(r.maxH > MaxRoomHeight ? 6 : 2), r.minH,
+                    Mathf.Min(r.maxH, MaxHallHeight))
+    };
+
+    /// <summary>
+    /// Разместить узлы одного ЭТАПА относительно уже стоящих комнат. false — этап не встал целиком;
+    /// откат делает вызывающий, и откатывает он только этот этап.
+    /// </summary>
+    private static bool PlaceStage(int n, int[] parent, RoomReq[] req, LinkDir[] dir,
+                                   System.Random rng, RoomBox[] boxes, Result res, List<int> stageNodes)
+    {
         // Свободно ли место: со всеми уложенными, кроме родителя, держим зазор Margin.
         System.Func<RoomBox, int, bool> free = (cand, exceptId) =>
         {
@@ -221,21 +426,13 @@ public static class RoomLayout
             return true;
         };
 
-        // ⭐ ОБЛАСТЬ РОСТА ВЕТКИ. 🐞 Пока комнаты клались просто жадно, укладка не сходилась в
-        // половине случаев: ранняя ветка занимала место, нужное поздней, и отката не было.
-        // Теперь каждая ветка получает полуплоскость за стеной родителя, и ВСЕ её потомки обязаны
-        // остаться в ней — пересечением с областями предков. Ветки перестают лезть друг в друга.
-        var region = new int[n, 4];                    // xmin, xmax, ymin, ymax
-        const int Far = 100000;
-        for (int i = 0; i < n; i++)
-        { region[i, 0] = -Far; region[i, 1] = Far; region[i, 2] = -Far; region[i, 3] = Far; }
-
-        foreach (int v in order)
         {
-            foreach (int k in kids[v])
+            foreach (int k in stageNodes)
             {
+                int v = parent[k];
+                if (v < 0 || boxes[v] == null) return false;
                 var pb = boxes[v];
-                var sz = size(req[k]);
+                var sz = Size(req[k], rng);
                 int cw = sz[0], ch = sz[1];
 
                 // Какие направления вообще дозволены ролью на этом ребре.
@@ -255,13 +452,27 @@ public static class RoomLayout
                 }
                 for (int i = dirs.Count - 1; i > 0; i--)
                 { int j = rng.Next(i + 1); var tmp = dirs[i]; dirs[i] = dirs[j]; dirs[j] = tmp; }
+                // Желаемое направление уходит в начало очереди — но остальные остаются запасными.
+                if (req[k].prefer != LinkDir.Any && dirs.Count > 1)
+                { dirs.Remove(req[k].prefer); dirs.Insert(0, req[k].prefer); }
 
                 RoomBox placed = null; RoomLink link = null;
                 var placedDir = LinkDir.Any; bool placedRight = false, lastRight = false;
+                // ⚠️ ЗАМЫКАНИЕ ПЕТЛИ — ЖЕЛАНИЕ, А НЕ УЛЬТИМАТУМ. Первый проход ищет место, где звено
+                // касается комнаты маршрута; не нашлось — второй проход ставит его как обычно.
+                // 🐞 Жёстким это требование роняло ВСЮ раскладку: сошлось 4 попытки из 40 (петля при
+                // этом замыкалась в 4 из 4 — то есть механизм верный, губила именно безысходность).
+                bool relaxNextTo = false;
+                // Притяжение: перебираем ВСЕ варианты и берём ближайший к цели, а не первый годный.
+                bool pulling = req[k].pullTo >= 0 && req[k].pullTo < n && boxes[req[k].pullTo] != null;
+                long bestScore = long.MaxValue;
+                for (int pass = 0; pass < 2 && placed == null; pass++)
+                {
+                relaxNextTo = pass == 1;
                 foreach (var d in dirs)
                 {
-                    if (placed != null) break;
-                    for (int shot = 0; shot < 12 && placed == null; shot++)
+                    if (placed != null && !pulling) break;
+                    for (int shot = 0; shot < 12 && (placed == null || pulling); shot++)
                     {
                         RoomBox cand; RoomLink lk;
                         if (d == LinkDir.Horizontal)
@@ -307,6 +518,7 @@ public static class RoomLayout
                             int y = up ? pb.Y1 + 2 : pb.y0 - 1 - ch;
                             // Сдвиг вбок случайный, но общий отрезок не меньше MinOverlap.
                             int lo = pb.x0 - (cw - MinOverlap), hi = pb.X1 - (MinOverlap - 1);
+                            if (req[k].alignX) { lo = pb.x0; hi = pb.x0; }   // этаж под этажом, столбец в столбец
                             if (hi < lo) continue;
                             int x = lo + rng.Next(hi - lo + 1);
                             cand = new RoomBox { id = k, x0 = x, y0 = y, w = cw, h = ch };
@@ -316,50 +528,39 @@ public static class RoomLayout
                             lk = new RoomLink { a = up ? v : k, b = up ? k : v, vertical = true,
                                                 from = l2, to = h2, wall = wrow, wallEnd = wrow };
                         }
-                        // Комната обязана уместиться в область роста СВОЕЙ ветки.
-                        if (cand.x0 < region[v, 0] || cand.X1 > region[v, 1] ||
-                            cand.y0 < region[v, 2] || cand.Y1 > region[v, 3]) continue;
                         if (!free(cand, v)) continue;
+                        // Замыкание петли: звено должно касаться заданной комнаты с достаточным
+                        // перекрытием — иначе прохода между ними не прорезать.
+                        if (!relaxNextTo && req[k].nextTo >= 0 && req[k].nextTo < n
+                            && boxes[req[k].nextTo] != null
+                            && !Touches(cand, boxes[req[k].nextTo])) continue;
+                        if (!relaxNextTo && req[k].nextToAny != null && req[k].nextToAny.Count > 0)
+                        {
+                            bool anyOk = false;
+                            foreach (int t2 in req[k].nextToAny)
+                                if (t2 >= 0 && t2 < n && boxes[t2] != null && t2 != v
+                                    && Touches(cand, boxes[t2]) && !Blocked(cand, boxes[t2], boxes, n, k, v))
+                                { anyOk = true; break; }
+                            if (!anyOk) continue;
+                        }
+                        if (pulling)
+                        {
+                            var tb = boxes[req[k].pullTo];
+                            long ddx = (cand.x0 + cand.X1) / 2 - (tb.x0 + tb.X1) / 2;
+                            long ddy = (cand.y0 + cand.Y1) / 2 - (tb.y0 + tb.Y1) / 2;
+                            long score = ddx * ddx + ddy * ddy;
+                            if (score >= bestScore) continue;
+                            bestScore = score;
+                        }
                         placed = cand; link = lk; placedDir = d; placedRight = lastRight;
                     }
                 }
-                if (placed == null) return null;               // место не нашлось — вся раскладка заново
-                boxes[k] = placed; res.links.Add(link);
-                // ⚠️ СУЖАЕМ ОБЛАСТЬ ТОЛЬКО ТАМ, ГДЕ ЕСТЬ КОГО РАЗВОДИТЬ. 🐞 Сперва я урезал её у
-                // каждого ребёнка — и змейка, шагнув вправо, уже никогда не могла вернуться влево:
-                // основной путь упирался в собственную границу, укладка не сходилась в половине
-                // случаев. У единственного ребёнка соседей нет, делить нечего, область наследуется
-                // целиком. Столкновения всё равно проверяются глобально, так что это безопасно.
-                for (int q = 0; q < 4; q++) region[k, q] = region[v, q];
-                if (kids[v].Count > 1)
-                {
-                    if (placedDir == LinkDir.Up)        region[k, 2] = Mathf.Max(region[k, 2], pb.Y1 + 2);
-                    else if (placedDir == LinkDir.Down) region[k, 3] = Mathf.Min(region[k, 3], pb.y0 - 2);
-                    else if (placedRight)               region[k, 0] = Mathf.Max(region[k, 0], pb.X1 + 2);
-                    else                                region[k, 1] = Mathf.Min(region[k, 1], pb.x0 - 2);
                 }
+                if (placed == null) return false;              // этот этап не встал — переиграем его
+                boxes[k] = placed; res.links.Add(link);
             }
         }
-
-        // Нормализация: сдвигаем всё так, чтобы осталось место под оболочку.
-        int minX = int.MaxValue, minY = int.MaxValue, maxX = int.MinValue, maxY = int.MinValue;
-        for (int i = 0; i < n; i++)
-        {
-            if (boxes[i] == null) return null;
-            minX = Mathf.Min(minX, boxes[i].x0); minY = Mathf.Min(minY, boxes[i].y0);
-            maxX = Mathf.Max(maxX, boxes[i].X1); maxY = Mathf.Max(maxY, boxes[i].Y1);
-        }
-        const int Shell = 3;
-        int dx = Shell - minX, dy = Shell - minY;
-        for (int i = 0; i < n; i++) { boxes[i].x0 += dx; boxes[i].y0 += dy; res.rooms.Add(boxes[i]); }
-        foreach (var l in res.links)
-        {
-            if (l.vertical) { l.from += dx; l.to += dx; l.wall += dy; l.wallEnd += dy; }
-            else            { l.from += dy; l.to += dy; l.wall += dx; l.wallEnd += dx; }
-        }
-        res.Width = maxX - minX + 1 + Shell * 2;
-        res.Height = maxY - minY + 1 + Shell * 2;
-        return res;
+        return true;
     }
 
     /// <summary>

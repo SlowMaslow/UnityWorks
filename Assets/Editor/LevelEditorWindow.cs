@@ -187,6 +187,33 @@ public class LevelEditorWindow : EditorWindow
     // нему свойства от прошлой генерации нельзя.
     private System.Collections.Generic.List<ModuleStamp> _mazeStamps = new System.Collections.Generic.List<ModuleStamp>();
     private string _mazeStampsFor = "";
+    /// <summary>⭐ Описание последнего сгенерированного уровня. Именно из него уровень и строится:
+    /// схема в поле — только вид для глаз, и читать её обратно больше не нужно.</summary>
+    private LevelSpec _mazeSpec;
+
+    /// <summary>
+    /// ⭐⭐ ОПИСАНИЕ ДЛЯ ТЕКСТА, КОТОРЫЙ СЕЙЧАС В ПОЛЕ, — или null, если это чужой текст.
+    ///
+    /// 🐞 Поле окна для этого не годится, и это стоило игроку целого прогона впустую. Окно
+    /// редактора — ScriptableObject; при перезагрузке домена (перекомпиляция, вход в Play, смена
+    /// раскладки) Unity сериализует его, и обычные C#-объекты обнуляются, а строки выживают. Замер
+    /// после жалобы «ничего не изменилось»: ключ схемы 3150 символов на месте, штампов 0, описание
+    /// null. Import при этом МОЛЧА уходил на разбор символов и строил уровень без инверсии,
+    /// вложенности и крепления. Поэтому описание лежит на диске, а поле — лишь быстрый путь.
+    /// ⚠️ Молчать тут нельзя: если ключ совпал, а описания нет нигде, кричим, а не подменяем тихо.
+    /// </summary>
+    private LevelSpec SpecForCurrentScheme()
+    {
+        if (string.IsNullOrEmpty(_schemeText)) return null;
+        if (_mazeSpec != null && _mazeStampsFor == _schemeText) return _mazeSpec;
+        var fromDisk = LevelSpecIO.LoadFor(_schemeText);
+        if (fromDisk != null) { _mazeSpec = fromDisk; _mazeStampsFor = _schemeText; return fromDisk; }
+        if (_mazeStampsFor == _schemeText)
+            Debug.LogWarning("[LevelEditor] Схема сгенерирована, но её ОПИСАНИЕ потеряно "
+                + "(перезагрузка домена и файл не найден). Уровень будет собран из символов — "
+                + "без инверсии, вложенности и крепления кнопок. Сгенерируй заново.");
+        return null;
+    }
 
     // ─── Tiles ────────────────────────────────────────────────────────────────
     private Sprite[]   _tileSprites = {};
@@ -1024,7 +1051,7 @@ public class LevelEditorWindow : EditorWindow
         var finish = root.transform.Find("Flag_finish");
         if (spawn == null || finish == null) return null;
 
-        var spec = new LevelSpec { cell = cell };
+        var spec = new LevelSpec { cell = cell, hasSpawn = true };
         System.Func<Vector3, Vector2Int> K = p => new Vector2Int(
             Mathf.RoundToInt(p.x / cell), Mathf.RoundToInt(p.y / cell));
 
@@ -1530,7 +1557,14 @@ public class LevelEditorWindow : EditorWindow
             var prev = GUI.backgroundColor;
             GUI.backgroundColor = new Color(0.4f, 0.7f, 1f);
             if (GUILayout.Button("🗺 Import → New Level", GUILayout.Height(26)))
-                ImportScheme(_schemeText);
+            {
+                // ⭐ Если в поле лежит СГЕНЕРИРОВАННЫЙ уровень, строим его из ОПИСАНИЯ, а не из
+                // символов: только там есть окно группы, вложенность и сторона крепления кнопки.
+                // Текст, набранный руками, по-прежнему разбирается из сетки — с её ограничениями.
+                var spec = SpecForCurrentScheme();
+                if (spec != null) BuildLevelFromSpec(spec);
+                else ImportScheme(_schemeText);
+            }
             GUI.backgroundColor = prev;
             if (GUILayout.Button("Check reachability", GUILayout.Height(26), GUILayout.Width(150)))
                 CheckSchemeReachability(ParseScheme(_schemeText));
@@ -1724,6 +1758,64 @@ public class LevelEditorWindow : EditorWindow
     /// Переброс сида здесь тот же, что и у решётчатого: генератор не отдаёт брак. Замер на 40 схемах
     /// БЕЗ перебросов дал 7% брака (у решётчатого 36-56%), так что перебросов почти не потребуется.
     /// </summary>
+    /// <summary>
+    /// Проложить ходы от безвыходных мест к основному маршруту. Кластеры берём крупные: одиночная
+    /// клетка на кожуре — это складка рельефа, а не ловушка, и резать ради неё уровень незачем.
+    /// </summary>
+    private int CarveReturnPaths(FreeMazeBuilder.Built built, System.Collections.Generic.List<Vector2Int> stuck)
+    {
+        // Комнаты основного маршрута — куда игрока и возвращаем.
+        var mainRooms = new System.Collections.Generic.List<RoomLayout.RoomBox>();
+        foreach (var nd in built.nodes)
+        {
+            if (!nd.onMainPath) continue;
+            var rm = built.layout.rooms.Find(r => r.id == nd.id);
+            if (rm != null) mainRooms.Add(rm);
+        }
+        if (mainRooms.Count == 0) return 0;
+
+        var set = new System.Collections.Generic.HashSet<Vector2Int>(stuck);
+        var seen = new System.Collections.Generic.HashSet<Vector2Int>();
+        int carvedTotal = 0, fixedClusters = 0;
+        foreach (var start in stuck)
+        {
+            if (!seen.Add(start)) continue;
+            var cluster = new System.Collections.Generic.List<Vector2Int>();
+            var q = new System.Collections.Generic.Queue<Vector2Int>();
+            q.Enqueue(start); cluster.Add(start);
+            while (q.Count > 0)
+            {
+                var k = q.Dequeue();
+                for (int dx = -1; dx <= 1; dx++)
+                for (int dy = -1; dy <= 1; dy++)
+                {
+                    var nb = new Vector2Int(k.x + dx, k.y + dy);
+                    if (set.Contains(nb) && seen.Add(nb)) { q.Enqueue(nb); cluster.Add(nb); }
+                }
+            }
+            if (cluster.Count < 4) continue;                 // складка рельефа, не ловушка
+            if (fixedClusters >= 4) break;                   // больше четырёх ходов уровень не украсят
+
+            // Точка отрыва: ближайшая комната основного маршрута.
+            Vector2Int from = cluster[0];
+            foreach (var k in cluster) if (k.y > from.y) from = k;   // из верхней клетки лезть ближе
+            RoomLayout.RoomBox best = null; int bestD = int.MaxValue;
+            foreach (var rm in mainRooms)
+            {
+                int cx = (rm.x0 + rm.X1) / 2, cy = (rm.y0 + rm.Y1) / 2;
+                int d = Mathf.Abs(cx - from.x) + Mathf.Abs(cy - from.y);
+                if (d < bestD) { bestD = d; best = rm; }
+            }
+            if (best == null) continue;
+            var to = new Vector2Int(Mathf.Clamp(from.x, best.x0, best.X1), best.y0);
+            int carved = FreeMazeBuilder.CarveReturn(built.grid, built.rows, built.cols, from, to);
+            if (carved > 0) { carvedTotal += carved; fixedClusters++; }
+        }
+        if (carvedTotal > 0)
+            Debug.Log($"[Свободный] Дорога назад: {fixedClusters} ход(ов), клеток {carvedTotal}.");
+        return carvedTotal;
+    }
+
     private string GenerateFreeScheme()
     {
         // ⚠️ ПОПЫТОК МНОГО, ПОТОМУ ЧТО РАСКЛАДКА РЕДКАЯ, А НЕ ПОТОМУ ЧТО СХЕМЫ ПЛОХИЕ.
@@ -1733,6 +1825,7 @@ public class LevelEditorWindow : EditorWindow
         const int MaxTries = 24;
         string best = null; int bestScore = int.MinValue;
         System.Collections.Generic.List<ModuleStamp> bestStamps = null;
+        LevelSpec bestSpec = null;
         string bestRecipe = "", bestStory = "";
         // ⚠️ ПОТОЛОК РАЗМЕРА ЖИВЁТ В РАСКЛАДКЕ, А НЕ ЗДЕСЬ. На сорока комнатах RoomLayout сходится
         // лишь в 2 попытках из 8, а сид фиксирован — поэтому неудачный сид давал пустое поле при
@@ -1760,21 +1853,10 @@ public class LevelEditorWindow : EditorWindow
             if (b != null) b.recipeText = rec.Points + "б: " + rec.Describe();
             return b;
         };
-        System.Func<FreeMazeBuilder.Built, SchemeReport> check = (b) =>
-        {
-            var inv = new System.Collections.Generic.HashSet<string>();
-            var hosts = new System.Collections.Generic.Dictionary<Vector2Int, string>();
-            foreach (var st in b.stamps)
-            {
-                if (st.inverted) inv.Add(st.groupId.ToString());
-                for (int i = 0; i < st.buttons.Count && i < st.buttonHosts.Count; i++)
-                    if (st.buttonHosts[i] != '\0') hosts[st.buttons[i]] = st.buttonHosts[i].ToString();
-            }
-            var lines = b.scheme.Replace("\r", "").Split('\n');
-            var grid = new char[lines.Length][];
-            for (int i = 0; i < lines.Length; i++) grid[i] = lines[i].ToCharArray();
-            return AnalyseScheme(grid, inv, hosts);
-        };
+        // ⭐⭐ ПРОВЕРЯЕМ ОПИСАНИЕ, А НЕ СТРОКУ. Раньше здесь схема разбиралась обратно из символов, а
+        // инверсия и хозяева кнопок собирались рядом в два словаря и ехали отдельными аргументами.
+        // Теперь генератор отдаёт LevelSpec, и пересобирать нечего — а заодно нечего и забыть.
+        System.Func<FreeMazeBuilder.Built, SchemeReport> check = (b) => AnalyseSpec(b.spec);
 
         for (int tryNo = 0; tryNo < MaxTries; tryNo++)
         {
@@ -1801,10 +1883,41 @@ public class LevelEditorWindow : EditorWindow
                 }
             }
 
+            // ⭐⭐ ДОРОГА НАЗАД НА ТРАССУ. Игрок вправе уйти во второстепенный маршрут и даже наружу,
+            // но выбраться на основную трассу он обязан МОЧЬ ВСЕГДА (правило игрока). Спрашиваем у
+            // модели, откуда финиш уже не достать, и прокладываем ход к ближайшей комнате основного
+            // маршрута — то есть примерно туда, откуда он с трассы и свернул.
+            // ⚠️ Чиним ПОСЛЕ разбора, а не до: место прохода умеет назвать только модель. Попытка
+            // угадать его по геометрии стоила замера с отрицательным результатом (уступы под люками:
+            // безвыходных 247 → 266, достижимых 745 → 644).
+            if (rep.stuckCells.Count > 0 && built.grid != null)
+            {
+                // ⚠️⚠️ СНИМОК ПЕРЕД ПРАВКОЙ — ОБЯЗАТЕЛЕН. Ход прорезается ПО ЖИВОЙ СЕТКЕ, и замер
+                // показал, что он умеет ломать: на двух схемах из шести чистый уровень становился
+                // бракованным (тоннель обходит механизм, и группа делается холостой). Без отката
+                // такая правка оставалась бы в уровне навсегда — отчёт отвергли, а дырка осталась.
+                var backup = (char[,])built.grid.Clone();
+                string schemeBackup = built.scheme; var specBackup = built.spec;
+                int carved = CarveReturnPaths(built, rep.stuckCells);
+                bool kept = false;
+                if (carved > 0)
+                {
+                    FreeMazeBuilder.Refresh(built);
+                    var rep2 = check(built);
+                    // Берём починку, только если она СТРОГО ЛУЧШЕ: меньше безвыходных клеток и не
+                    // добавила брака. Дорога назад не стоит того, чтобы обесценить головоломку.
+                    if (rep2.stuckCells.Count < rep.stuckCells.Count && (!rep2.Bad || rep.Bad))
+                    { rep = rep2; kept = true; }
+                }
+                if (carved > 0 && !kept)
+                { built.grid = backup; built.scheme = schemeBackup; built.spec = specBackup; }
+            }
+
             var recipe = built.recipeText;
             if (!rep.Bad)
             {
-                _mazeStamps = built.stamps; _mazeStampsFor = built.scheme;
+                _mazeStamps = built.stamps; _mazeStampsFor = built.scheme; _mazeSpec = built.spec;
+                LevelSpecIO.SaveFor(built.spec, built.scheme);   // переживёт перезагрузку домена
                 _mazeRecipeText = recipe;
                 _mazePlanText = built.story;
                 Debug.Log($"[Свободный] Рецепт: {_mazeRecipeText}");
@@ -1815,11 +1928,12 @@ public class LevelEditorWindow : EditorWindow
             int score = -1000 * ((rep.finishOk ? 0 : 1) + (rep.artTotal - rep.artOk))
                         - 100 * rep.idleGroups.Count - rep.deadInternal;
             if (score > bestScore)
-            { bestScore = score; best = built.scheme; bestStamps = built.stamps;
+            { bestScore = score; best = built.scheme; bestStamps = built.stamps; bestSpec = built.spec;
               bestRecipe = recipe; bestStory = built.story; }
         }
         if (best == null) { Debug.LogWarning("[Свободный] Раскладка не сошлась ни разу."); return ""; }
-        _mazeStamps = bestStamps; _mazeStampsFor = best;
+        _mazeStamps = bestStamps; _mazeStampsFor = best; _mazeSpec = bestSpec;
+        LevelSpecIO.SaveFor(bestSpec, best);
         _mazeRecipeText = bestRecipe; _mazePlanText = bestStory;
         Debug.LogWarning($"[Свободный] За {MaxTries} попыток чистой схемы не вышло — отдаю лучшую. "
                        + "Жми «Проверить схему», чтобы увидеть, что не так.");
@@ -3223,6 +3337,143 @@ public class LevelEditorWindow : EditorWindow
     private static bool IsSolidCell(char ch) // тайл, дающий поверхность (обычный или исчезающий)
         => ch == '#' || (ch >= 'a' && ch <= 'z');
 
+    /// <summary>
+    /// ⭐⭐ СБОРКА УРОВНЯ ИЗ ОПИСАНИЯ. Строит по <see cref="LevelSpec"/> напрямую: сетка символов
+    /// здесь не участвует вовсе.
+    ///
+    /// Что это чинит по сравнению со сборкой из схемы:
+    ///   • СТОРОНА КРЕПЛЕНИЯ. 🐞 Раньше любая кнопка ставилась через SurfaceBelow — «съезжай вниз до
+    ///     первой твёрдой клетки и встань на неё». Кнопка, нарисованная под потолком (так висит
+    ///     группа B в ручном Level_11, поворот 180°), уезжала вниз и садилась на исчезающую
+    ///     платформу — то есть повисала в воздухе, стоило той пропасть. Модель считала по схеме и
+    ///     расхождения не видела. Теперь крепление — поле кнопки, а не догадка по соседям;
+    ///   • ОКНО И ИНВЕРСИЯ группы берутся из описания, а не из тумблеров панели;
+    ///   • ВЛОЖЕННОСТЬ — родительством, как и было, но хозяин приходит полем, а не боковым словарём.
+    /// </summary>
+    private void BuildLevelFromSpec(LevelSpec spec)
+    {
+        if (spec == null) { Debug.LogWarning("[LevelEditor] Описания уровня нет."); return; }
+        if (_pfTile == null || _tileSprites == null || _tileSprites.Length == 0)
+        { Debug.LogWarning("[LevelEditor] Нет Tile.prefab/спрайтов тайлсета."); return; }
+        if (_root != null &&
+            !EditorUtility.DisplayDialog("Собрать уровень",
+                "Текущий уровень будет закрыт и построен из описания. Продолжить?", "Да", "Отмена"))
+            return;
+        if (_root != null) DestroyImmediate(_root);
+
+        _root = BuildLevelScaffold(_levelName);
+        _loadedPrefabPath = null;
+        float cell = spec.cell > 0f ? spec.cell : _tileCell;
+        System.Func<Vector2Int, Vector3> world = k => new Vector3(k.x * cell, k.y * cell, 0f);
+
+        // Твёрдость для автотайлинга: камень плюс тайлы всех групп — ровно как читает игрок.
+        var solid = new System.Collections.Generic.HashSet<Vector2Int>(spec.rock);
+        foreach (var g in spec.groups) foreach (var k in g.tiles) solid.Add(k);
+        System.Func<int, int, bool> isSolid = (x, y) => solid.Contains(new Vector2Int(x, y));
+        System.Action<Transform, Vector2Int> tile = (parent, k) =>
+        {
+            // Ряд сетки нужен PickAutoTile только для разнообразия спрайтов — берём y с обратным знаком.
+            SpawnTileSprite(parent, world(k), PickAutoTile(
+                !isSolid(k.x, k.y + 1), !isSolid(k.x, k.y - 1),
+                !isSolid(k.x - 1, k.y), !isSolid(k.x + 1, k.y), -k.y, k.x));
+        };
+
+        var tilesGrp = GetGroup("Tiles");
+        foreach (var k in spec.rock) tile(tilesGrp, k);
+
+        foreach (var g in spec.groups)
+        {
+            string gid = g.id.ToUpperInvariant();
+            var container = GetOrCreateDisappearGroup(gid, false);
+            var dp = container.GetComponent<DisappearingPlatform>();
+            if (dp != null)
+            {
+                dp.inverted = g.inverted;
+                dp.activeWindow = Mathf.Max(0.5f, g.window);
+                dp.warningTime = Mathf.Min(dp.warningTime, dp.activeWindow * 0.5f);
+                EditorUtility.SetDirty(dp);
+            }
+            foreach (var k in g.tiles) tile(container.transform, k);
+        }
+
+        // Кнопки — вторым проходом: контейнеры хозяев к этому моменту уже существуют.
+        for (int gi = 0; gi < spec.groups.Count; gi++)
+        {
+            var g = spec.groups[gi];
+            string gid = g.id.ToUpperInvariant();
+            foreach (var b in g.buttons)
+            {
+                Transform parent = (b.host >= 0 && b.host < spec.groups.Count)
+                    ? GetOrCreateDisappearGroup(spec.groups[b.host].id.ToUpperInvariant(), false).transform
+                    : GetGroup("Triggers");
+                Vector3 pos; Quaternion rot = Quaternion.identity;
+                float half = cell * 0.5f;
+                switch (b.mount)
+                {
+                    case MountSide.Ceiling:
+                        pos = world(new Vector2Int(b.cell.x, b.cell.y + 1)) + Vector3.down * half;
+                        // Развёрнута как у игрока в Level_11: (0, 180, 180).
+                        rot = Quaternion.Euler(0f, 180f, 180f);
+                        break;
+                    case MountSide.WallLeft:
+                        pos = world(new Vector2Int(b.cell.x - 1, b.cell.y)) + Vector3.right * half;
+                        rot = Quaternion.Euler(0f, 0f, -90f);
+                        break;
+                    case MountSide.WallRight:
+                        pos = world(new Vector2Int(b.cell.x + 1, b.cell.y)) + Vector3.left * half;
+                        rot = Quaternion.Euler(0f, 0f, 90f);
+                        break;
+                    default:
+                        // Пол: обычно опора прямо под кнопкой, но если её нарисовали с просветом —
+                        // спускаемся до первой твёрдой клетки, а не вешаем кнопку в воздухе.
+                        pos = world(new Vector2Int(b.cell.x, b.cell.y - 1)) + Vector3.up * half;
+                        if (!isSolid(b.cell.x, b.cell.y - 1))
+                            for (int y = b.cell.y - 2; y > b.cell.y - 40; y--)
+                                if (isSolid(b.cell.x, y))
+                                { pos = world(new Vector2Int(b.cell.x, y)) + Vector3.up * half; break; }
+                        break;
+                }
+                var go = PlaceFromPrefab(_pfButton, pos, parent, "Trigger");
+                if (go != null) go.transform.rotation = rot;
+                var tt = go != null ? go.GetComponentInChildren<TriggerTile>(true) : null;
+                if (tt != null) { tt.groupId = gid; EditorUtility.SetDirty(tt); }
+            }
+        }
+
+        // ⚠️ Флаг и чекпоинт рисуются В ВОЗДУХЕ над полкой, а стоять должны НА ней. Опору ищем
+        // спуском, а не берём соседнюю клетку: между меткой и полом может быть просвет.
+        System.Func<Vector2Int, Vector3> onSurface = k =>
+        {
+            for (int y = k.y - 1; y > k.y - 40; y--)
+                if (isSolid(k.x, y)) return world(new Vector2Int(k.x, y)) + Vector3.up * (cell * 0.5f);
+            return world(k);
+        };
+
+        var artGrp = GetGroup("Artifacts");
+        foreach (var a in spec.artifacts) PlaceFromPrefab(_pfArtifact, world(a.cell), artGrp, "Artifact");
+        foreach (var c in spec.coins) PlaceFromPrefab(_pfCoin, world(c), GetGroup("Coins"), "Coin");
+        foreach (var c in spec.checkpoints)
+            PlaceFromPrefab(_pfFlag, onSurface(c.cell), GetGroup("Checkpoints"), "Flag");
+        if (spec.hasSpawn)
+        {
+            var sp = _root.transform.Find("SpawnPoint");
+            if (sp != null) sp.position = world(spec.spawn);
+        }
+        if (spec.finish.exists) PlaceFinish(onSurface(spec.finish.cell));
+
+        var fall = _root.transform.Find("FallCollider");
+        if (fall != null)
+        {
+            int minY = int.MaxValue, minX = int.MaxValue, maxX = int.MinValue;
+            foreach (var k in solid)
+            { minY = Mathf.Min(minY, k.y); minX = Mathf.Min(minX, k.x); maxX = Mathf.Max(maxX, k.x); }
+            fall.position = new Vector3((minX + maxX) * 0.5f * cell, (minY - 4) * cell, 0f);
+        }
+        EditorSceneManager.MarkSceneDirty(UnityEngine.SceneManagement.SceneManager.GetActiveScene());
+        Debug.Log($"[LevelEditor] Уровень собран из описания: камня {spec.rock.Count}, "
+                + $"групп {spec.groups.Count}, ключей {spec.artifacts.Count}, монет {spec.coins.Count}.");
+    }
+
     private void ImportScheme(string text)
     {
         var grid = ParseScheme(text);
@@ -3753,6 +4004,11 @@ public class LevelEditorWindow : EditorWindow
         /// проверка стоит примерно как ещё один поиск.
         /// </summary>
         public int stuckStates;
+        /// <summary>⭐ КЛЕТКИ, ИЗ КОТОРЫХ ФИНИША УЖЕ НЕ ДОСТАТЬ — те, где НИ ОДНО достигнутое состояние
+        /// не ведёт к финишу. Не «сколько тупиков», а «где именно»: без этого проход возврата строить
+        /// некуда, и первая же попытка чинить по геометрии промахнулась мимо (уступы под люками:
+        /// 247 → 266 безвыходных, достижимых 745 → 644).</summary>
+        public System.Collections.Generic.List<Vector2Int> stuckCells = new System.Collections.Generic.List<Vector2Int>();
         /// <summary>
         /// ⭐⭐ ГЛАВНЫЙ КРИТЕРИЙ: существует ОДНО прохождение, в котором собраны все артефакты и
         /// достигнут финиш, с учётом времени окон. Заменяет прежнюю связку «каждый ключ достижим
@@ -3862,7 +4118,7 @@ public class LevelEditorWindow : EditorWindow
         // автономного генератора стоило бы непроходимого уровня у игрока на экране.
         // ⚠️ Инверсию и вложенность кнопок сама СХЕМА выразить не может: в ASCII только «a-z тайлы,
         // A-Z кнопки». Здесь все группы обычные и без хозяев — это ограничение ФОРМАТА, не модели.
-        var spec = new LevelSpec { cell = _tileCell, spawn = spawn };
+        var spec = new LevelSpec { cell = _tileCell, spawn = spawn, hasSpawn = true };
         foreach (var k in rock) spec.rock.Add(k);
         foreach (var kv in groupTiles)
         {
@@ -3894,6 +4150,33 @@ public class LevelEditorWindow : EditorWindow
         foreach (var a in arts) spec.artifacts.Add(mkT(a));
         foreach (var c in checkpoints) spec.checkpoints.Add(mkT(c));
 
+        return AnalyseSpec(spec, rep);
+    }
+
+    /// <summary>
+    /// ⭐⭐ ВЕРДИКТ ПО ОПИСАНИЮ УРОВНЯ. Единственное место, где живёт приёмка; сетка символов сюда
+    /// уже не попадает вовсе.
+    ///
+    /// Зачем разделено. Раньше разбор начинался с char-сетки, а всё, чего она не выражает — инверсия
+    /// групп, окно, вложенность кнопок, сторона крепления, — приезжало БОКОВЫМИ КАНАЛАМИ рядом с ней.
+    /// Стоило пути забыть канал, и вердикт врал: заведомо запертая кнопка считалась вечно доступной,
+    /// а уровень — проходимым. Так «ломались» Level_07, 10 и 11, ровно те, где вложенность и есть.
+    /// Теперь генератор отдаёт <see cref="LevelSpec"/> напрямую, а сетка осталась видом для глаз.
+    /// </summary>
+    private SchemeReport AnalyseSpec(LevelSpec spec)
+    {
+        var rep = new SchemeReport();
+        rep.artTotal = spec.artifacts.Count;
+        rep.cpTotal = spec.checkpoints.Count;
+        if (!spec.hasSpawn) { rep.noSpawn = true; return rep; }
+        if (!spec.finish.exists) rep.noFinish = true;
+        return AnalyseSpec(spec, rep);
+    }
+
+    /// <summary>Тот же вердикт, но с уже начатым отчётом — для пути, который пришёл из сетки.</summary>
+    private SchemeReport AnalyseSpec(LevelSpec spec, SchemeReport rep)
+    {
+        int RS = Mathf.RoundToInt(_reachSideCells), RU = Mathf.RoundToInt(_reachUpCells);
         var model = new LevelModel(spec, RS, RU) { MoveBudget = _moveBudget };
         model.Search();
         if (model.TooManyGroups) { rep.tooManyGroups = true; return rep; }
@@ -3909,12 +4192,28 @@ public class LevelEditorWindow : EditorWindow
         };
         rep.finishOk = !spec.finish.exists || canGet(spec.finish);
 
-        // ⚠️ ЗАПИРАНИЕ ВОЗМОЖНО ТОЛЬКО ПРИ ОДНОСТОРОННИХ МЕХАНИЗМАХ. Если у каждой группы кнопки с
-        // обеих сторон, любой проход переоткрывается — запереться нечем, и платить за проверку
-        // (примерно ещё один поиск) незачем. Считаем ровно тогда, когда есть чем запереться.
-        bool anyOneWay = false;
-        foreach (var g0 in spec.groups) if (g0.buttons.Count < 2) { anyOneWay = true; break; }
-        if (anyOneWay) rep.stuckStates = model.StuckStates();
+        // ⚠️⚠️ ТУПИКИ СЧИТАЕМ ВСЕГДА. 🐞 Здесь стоял пропуск: «если у каждой группы кнопки с обеих
+        // сторон, запереться нечем — платить за лишний поиск незачем». Замер его опроверг. Гоняем
+        // модель напрямую на шести уровнях: безвыходных клеток 31, 23, 18, 24 и 151 — а приёмка на
+        // пяти из шести не искала их ВООБЩЕ, потому что у всех групп было по две кнопки. Двусторонняя
+        // кнопка спасает только того, кто на нужной стороне; за захлопнувшейся стеной она бесполезна.
+        // Цена — примерно ещё один поиск на схему, и она того стоит: без этого «дорогу назад» просто
+        // некуда строить, генератор не видит, что игрок заперся.
+        {
+            rep.stuckStates = model.StuckStates();
+            // Клетка безвыходная, если КАЖДОЕ достигнутое в ней состояние тупиковое. Если хоть одно
+            // ведёт к финишу — игрок оттуда выберется, и чинить там нечего.
+            var flags = model.StuckFlags;
+            var reachedAt = new bool[model.N]; var safeAt = new bool[model.N];
+            for (int st = 0; st < model.TOTAL; st++)
+            {
+                if (!model.Seen[st]) continue;
+                int ci = st % model.N; reachedAt[ci] = true;
+                if (flags == null || !flags[st]) safeAt[ci] = true;
+            }
+            for (int i = 0; i < model.N; i++)
+                if (reachedAt[i] && !safeAt[i]) rep.stuckCells.Add(model.Cells[i]);
+        }
         // ⭐ Проходимость целиком: всё собрано И финиш достигнут В ОДНОМ прохождении.
         rep.playable = model.AllKeysAndFinish();
         foreach (var a in spec.artifacts) if (canGet(a)) rep.artOk++;
@@ -3969,7 +4268,10 @@ public class LevelEditorWindow : EditorWindow
                 // Правильное сравнение — не «были ли тупики», а «стало ли их БОЛЬШЕ без этой группы».
                 // Так критерий начинает видеть стены, ради которых всё и затевалось.
                 if (!somethingLost && m2.StuckStates() > rep.stuckStates) somethingLost = true;
-                if (!somethingLost) rep.idleGroups.Add(spec.groups[gi].id.ToUpperInvariant());
+                // ⭐ КЛАПАН ВОЗВРАТА холостым не считаем: он и не должен держать цель, его работа —
+                // выпустить игрока на маршрут и не пустить обратно (см. LevelGroup.returnValve).
+                if (!somethingLost && !spec.groups[gi].returnValve)
+                    rep.idleGroups.Add(spec.groups[gi].id.ToUpperInvariant());
             }
 
             // Длиннейший путь в графе зависимостей = сцепление. Мемоизация со «страховочной» единицей
@@ -4008,7 +4310,7 @@ public class LevelEditorWindow : EditorWindow
 
         // Холды и замурованные зоны — по ОБЪЕДИНЕНИЮ всех групп: клетка холд, если она твёрдая и над
         // ней пусто хоть при какой-то маске (так же, как оверлей достижимости в ComputeRoute).
-        var union = new System.Collections.Generic.HashSet<Vector2Int>(rock);
+        var union = new System.Collections.Generic.HashSet<Vector2Int>(spec.rock);
         foreach (var g in spec.groups) foreach (var k in g.tiles) union.Add(k);
         var allHolds = new System.Collections.Generic.List<Vector2Int>();
         foreach (var k in union) if (!union.Contains(new Vector2Int(k.x, k.y + 1))) allHolds.Add(k);
@@ -4183,7 +4485,12 @@ public class LevelEditorWindow : EditorWindow
     /// <summary>Лог-обёртка над <see cref="AnalyseScheme"/> — то, что видит игрок в консоли.</summary>
     private void CheckSchemeReachability(char[][] grid)
     {
-        var rep = AnalyseScheme(grid, InvertedGroupsFor(_schemeText), ButtonHostsFor(_schemeText));
+        // ⭐ Для СГЕНЕРИРОВАННОГО уровня спрашиваем описание: в нём есть окно, вложенность и сторона
+        // крепления, а в сетке символов — нет. Ручной текст по-прежнему разбирается из сетки.
+        var specNow = SpecForCurrentScheme();
+        var rep = specNow != null
+            ? AnalyseSpec(specNow)
+            : AnalyseScheme(grid, InvertedGroupsFor(_schemeText), ButtonHostsFor(_schemeText));
         if (rep.noSpawn) { Debug.LogWarning("[Reach] ⚠ В схеме НЕТ спавна '@' — проверять нечего."); return; }
         if (rep.tooManyGroups)
         { Debug.LogWarning("[Reach] ⚠ Слишком много групп для точного поиска по состояниям."); return; }

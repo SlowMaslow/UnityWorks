@@ -223,10 +223,26 @@ public class ModuleStamp
     /// про этот канал, получит уровень, где заведомо запертая кнопка считается вечно доступной.
     /// </summary>
     public List<char> buttonHosts = new List<char>();
+    /// <summary>Сторона крепления каждой кнопки (тот же индекс). Ось, независимая от вложенности:
+    /// «на чём держится» и «внутри какой группы лежит» — разные вопросы.</summary>
+    public List<MountSide> buttonMounts = new List<MountSide>();
 
-    /// <summary>Единственный способ добавить кнопку: два списка иначе разъезжаются.</summary>
-    public void AddButton(Vector2Int cell, char host = '\0')
-    { buttons.Add(cell); buttonHosts.Add(host); }
+    /// <summary>Окно активности группы в секундах — свойство группы, а не клетки.</summary>
+    public float window = 5f;
+    /// <summary>Это КЛАПАН ВОЗВРАТА — дверь из ветки на маршрут, кнопка только изнутри.</summary>
+    public bool returnValve;
+
+    /// <summary>Единственный способ добавить кнопку: списки иначе разъезжаются.</summary>
+    public void AddButton(Vector2Int cell, char host = '\0', MountSide mount = MountSide.Floor)
+    { buttons.Add(cell); buttonHosts.Add(host); buttonMounts.Add(mount); }
+
+    /// <summary>Сторона крепления кнопки по её клетке (по умолчанию пол).</summary>
+    public MountSide MountOf(Vector2Int cell)
+    {
+        for (int i = 0; i < buttons.Count; i++)
+            if (buttons[i] == cell) return i < buttonMounts.Count ? buttonMounts[i] : MountSide.Floor;
+        return MountSide.Floor;
+    }
 
     /// <summary>Клетка ВОЗДУХА, куда можно посадить вложенную кнопку следующего механизма: над
     /// пристройкой к платформе. (-1,-1) — полки нет, вложить в этот механизм нельзя.</summary>
