@@ -200,6 +200,19 @@ public class LevelModel
     private readonly Dictionary<Vector2Int, int> _cellIdx = new Dictionary<Vector2Int, int>();
     private readonly Dictionary<long, bool> _stepCache = new Dictionary<long, bool>();
     private int _minY;
+    /// <summary>
+    /// ⭐⭐ СОСЕДИ ПО ДОТЯЖКЕ, посчитанные ОДИН РАЗ. Для каждой клетки — индексы тех, что вообще
+    /// лежат в восьмиугольнике (вбок ≤RS, вверх ≤RU, сумма ≤7). От маски это не зависит: маска
+    /// решает, ТВЁРДАЯ ли клетка, а не далеко ли она.
+    ///
+    /// 🐞 Зачем. Поиск и разбор тупиков перебирали ВСЕ клетки уровня на каждое состояние — при 700
+    /// клетках и сотнях тысяч состояний это сотни миллионов проверок. Пока тупики считались редко,
+    /// цена была незаметна; когда я убрал пропуск и они стали считаться всегда — да ещё внутри
+    /// проверки «механизм несущий», то есть на каждую группу, — разбор одной схемы перестал
+    /// укладываться в минуту, а Unity подвисал. Окно вместо всего уровня — это ~80 кандидатов
+    /// вместо 700.
+    /// </summary>
+    private int[][] _reachNear;
     private Queue<int> _q;
     private int[] _timeLeft;            // сколько перехватов осталось до конца окна (−1 = не был)
 
@@ -430,6 +443,25 @@ public class LevelModel
         Cells = new List<Vector2Int>(ever);
         _cellIdx.Clear();
         for (int i = 0; i < Cells.Count; i++) _cellIdx[Cells[i]] = i;
+        // Соседи по геометрии — один раз на уровень.
+        _reachNear = new int[Cells.Count][];
+        {
+            var buf = new List<int>();
+            for (int i = 0; i < Cells.Count; i++)
+            {
+                buf.Clear();
+                var a = Cells[i];
+                for (int dy = -RU; dy <= RU; dy++)
+                for (int dx = -RS; dx <= RS; dx++)
+                {
+                    if (dx == 0 && dy == 0) continue;
+                    if (!InReach(dx, dy, RS, RU)) continue;
+                    int j;
+                    if (_cellIdx.TryGetValue(new Vector2Int(a.x + dx, a.y + dy), out j)) buf.Add(j);
+                }
+                _reachNear[i] = buf.ToArray();
+            }
+        }
         N = Cells.Count;
         if (N == 0) return;
         _minY = int.MaxValue;
@@ -507,7 +539,7 @@ public class LevelModel
             // и делает механику «успей добежать» проверяемой.
             if (m != 0 && t <= 0) continue;
             int nt = m != 0 ? t - 1 : full;
-            for (int j = 0; j < N; j++)                     // перейти на другой холд
+            foreach (int j in _reachNear[ci])               // перейти на другой холд
             {
                 if (!IsHold(m, Cells[j])) continue;
                 if (!CanStep(m, hc, Cells[j])) continue;
@@ -623,10 +655,15 @@ public class LevelModel
             while (stack.Count > 0)
             {
                 int cur = stack.Pop();
-                var hc = Cells[cur % N];
-                for (int j = 0; j < N; j++)
+                int ci0 = cur % N, combined = cur / N;
+                var hc = Cells[ci0];
+                // ⚠️⚠️ ИНДЕКС СОСЕДА СЧИТАЕТСЯ ОТ ПОЛНОГО СОСТОЯНИЯ, а не от одной маски групп.
+                // 🐞 Здесь стояло `m * N + j` — то есть биты СОБРАННЫХ КЛЮЧЕЙ отбрасывались, и обход
+                // из состояния «ключ в кармане» перепрыгивал в состояние «ключей нет». Компоненты
+                // связности выходили перемешанными, а на них держится весь вывод про тупики.
+                foreach (int j in _reachNear[ci0])
                 {
-                    int ns = m * N + j;
+                    int ns = combined * N + j;
                     if (!Seen[ns] || comp[ns] >= 0) continue;
                     if (!IsHold(m, Cells[j]) || !CanStep(m, hc, Cells[j])) continue;
                     comp[ns] = nComp; stack.Push(ns);

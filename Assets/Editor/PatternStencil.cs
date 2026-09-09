@@ -90,6 +90,9 @@ public enum PieceKind { Platform, Key, Checkpoint }
 /// <summary>Один объект паттерна: клетки заданы ОТНОСИТЕЛЬНО якоря трафарета.</summary>
 public class PatternPiece
 {
+    /// <summary>Имя куска — чтобы приёмку можно было спросить, КАКАЯ из групп паттерна холостая.
+    /// Без него все пять групп камеры зовутся одинаково, и разбирать поломку не по чему.</summary>
+    public string name = "";
     public PieceKind kind = PieceKind.Platform;
     public List<Vector2Int> cells = new List<Vector2Int>();   // (столбец, ряд) от якоря
     /// <summary>Платформа ТВЁРДАЯ в покое, кнопка её убирает. false — наоборот: платформы нет,
@@ -177,14 +180,14 @@ public static class StencilLibrary
         };
 
         // 0 — ПОЛ ТРАССЫ: обычная платформа, в покое её нет. Кнопка A стоит на камне слева от провала.
-        var road = new PatternPiece { inverted = false, window = 5f };
+        var road = new PatternPiece { name = "пол трассы", inverted = false, window = 5f };
         for (int c = 6; c <= 12; c++) road.cells.Add(new Vector2Int(c, 4));
         road.buttons.Add(new PatternButton { cell = new Vector2Int(4, 3) });
         p.pieces.Add(road);
 
         // 1 — ПОЛКА в камере: тоже обычная, а кнопка B — под потолком НАД трассой. Дотянуться до неё
         // можно, только стоя на платформе A: у игрока это ряд 1, три ряда над трассой (подъём = 3).
-        var shelf = new PatternPiece { inverted = false, window = 7f };
+        var shelf = new PatternPiece { name = "полка", inverted = false, window = 7f };
         for (int c = 5; c <= 12; c++) shelf.cells.Add(new Vector2Int(c, 10));
         // ⚠️ ВИСИТ ПОД ПОТОЛКОМ, а не стоит на полу — как группа B в оригинале. Это и есть причина,
         // по которой до неё дотягиваются только СТОЯ НА платформе трассы: с пола коридора три ряда
@@ -193,7 +196,7 @@ public static class StencilLibrary
         p.pieces.Add(shelf);
 
         // 2 — ВЕРХНЯЯ СТЕНКА ШАХТЫ: инверсная, кнопка стоит НА полке (индекс 1) — вложенность.
-        var wallUp = new PatternPiece { inverted = true, window = 5f };
+        var wallUp = new PatternPiece { name = "стенка шахты (верх)", inverted = true, window = 5f };
         wallUp.cells.Add(new Vector2Int(4, 8));
         wallUp.cells.Add(new Vector2Int(4, 9));
         wallUp.buttons.Add(new PatternButton { cell = new Vector2Int(8, 9), hostPiece = 1 });
@@ -201,13 +204,13 @@ public static class StencilLibrary
 
         // 3 — НИЖНЯЯ СТЕНКА ШАХТЫ: кнопка ВНУТРИ шахты, на её полу. Ею игрок выходит из кармана
         // обратно в камеру — не отменяя ничего, а двигаясь дальше. Ровно группа E оригинала.
-        var wallDown = new PatternPiece { inverted = true, window = 5f };
+        var wallDown = new PatternPiece { name = "стенка шахты (низ)", inverted = true, window = 5f };
         for (int r = 11; r <= 13; r++) wallDown.cells.Add(new Vector2Int(4, r));
         wallDown.buttons.Add(new PatternButton { cell = new Vector2Int(3, 13) });
         p.pieces.Add(wallDown);
 
         // 4 — СТЕНКА В КОЛОДЕЦ: кнопка на полу камеры. Ею открывается дорога к возврату (группа D).
-        var wallOut = new PatternPiece { inverted = true, window = 5f };
+        var wallOut = new PatternPiece { name = "стенка в колодец", inverted = true, window = 5f };
         for (int r = 11; r <= 13; r++) wallOut.cells.Add(new Vector2Int(13, r));
         wallOut.buttons.Add(new PatternButton { cell = new Vector2Int(11, 13) });
         p.pieces.Add(wallOut);
@@ -393,7 +396,8 @@ public static class StencilStamper
             { var g = Place(p, cell, row, col, mirror); c.Set(g.y, g.x, char.ToLower(id)); }
 
             var st = new ModuleStamp
-            { moduleName = p.name, groupId = id, inverted = piece.inverted, window = piece.window,
+            { moduleName = p.name + (piece.name.Length > 0 ? ": " + piece.name : ""),
+              groupId = id, inverted = piece.inverted, window = piece.window,
               gates = "паттерн " + p.name };
             foreach (var b in piece.buttons)
             {

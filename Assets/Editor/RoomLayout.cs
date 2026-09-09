@@ -45,6 +45,15 @@ public static class RoomLayout
         /// петель выходило 0.4 на уровень и процент ни на что не влиял — несвязанные комнаты почти
         /// всегда стоят дальше. Тоннель снимает это ограничение (и это ровно коридоры из статьи).</summary>
         public int wallEnd;
+        /// <summary>
+        /// ⭐ ФАКТИЧЕСКИ ПРОРЕЗАННЫЙ ЛЮК (столбцы), а не весь общий отрезок стены. Рендер режет
+        /// 2-3 клетки со случайным сдвигом внутри отрезка, и именно за их край игрок и цепляется.
+        /// 🐞 Пока «столбцами подъёма» считался весь отрезок, запрет ставить туда кнопку накрывал
+        /// комнату целиком, годного места не оставалось — и правило молча не работало (58% кнопок
+        /// по-прежнему стояли на подъёме).
+        /// −1 — люк ещё не резали.
+        /// </summary>
+        public int cutFrom = -1, cutTo = -1;
     }
 
     /// <summary>Насколько длинный ход можно прорезать сквозь камень ради петли.</summary>
@@ -52,7 +61,24 @@ public static class RoomLayout
 
     /// <summary>Счётчики поэтапной укладки — чтобы решать по замеру, а не по ощущению.</summary>
     public static int StatBuilds, StatRestarts, StatRelaxed, StatStageRetries;
-    public static void ResetStats() { StatBuilds = StatRestarts = StatRelaxed = StatStageRetries = 0; }
+    /// <summary>Отключить подгонку плана — только для замера «с ней и без неё».</summary>
+    public static bool SkipReattach;
+    /// <summary>Сколько раз ОТДЕЛЬНАЯ комната не смогла пристроиться к родителю, и сколько сторон
+    /// родителя было к тому моменту занято. Ровно вопрос «часто ли ветвь не знает, как состыковаться».</summary>
+    public static int StatPlaceFail;
+    public static readonly int[] StatParentSides = new int[8];
+    /// <summary>Отказы по видам требования на ребре: свободное / вверх / вниз / вбок.</summary>
+    public static readonly int[] StatFailByDir = new int[4];
+    /// <summary>Почему не встало КОЛЬЦО: 0 звали, 1 мало звеньев, 2 не размечено, 3 нет комнат,
+    /// 4 провал не выходит по высоте, 5 марш не влез, 6 задели чужое, 7 связь не сошлась, 8 УЛОЖИЛИ.</summary>
+    public static readonly int[] StatRing = new int[9];
+    public static void ResetStats()
+    {
+        StatBuilds = StatRestarts = StatRelaxed = StatStageRetries = StatPlaceFail = 0;
+        for (int i = 0; i < StatParentSides.Length; i++) StatParentSides[i] = 0;
+        for (int i = 0; i < StatFailByDir.Length; i++) StatFailByDir[i] = 0;
+        for (int i = 0; i < StatRing.Length; i++) StatRing[i] = 0;
+    }
 
 
     /// <summary>
@@ -202,6 +228,41 @@ public static class RoomLayout
         /// соседства при этом верное — не хватало именно наведения.
         /// </summary>
         public int pullTo = -1;
+        /// <summary>Первое звено ветки-КОЛЬЦА (провал под точкой отрыва).</summary>
+        public bool ringStart;
+        /// <summary>Последнее звено ветки-кольца: id комнаты маршрута, к которой оно обязано выйти.</summary>
+        public int ringTarget = -1;
+
+        /// <summary>
+        /// ⭐⭐ КУДА МОЖНО ПЕРЕВЕСИТЬ ВЕТКУ, если на назначенной комнате она не встала (идея игрока:
+        /// «возврат к основному маршруту и подгонка»). Список комнат-кандидатов; раскладка вправе
+        /// сменить родителя ПЕРВОГО звена и переиграть этап.
+        ///
+        /// Зачем. Точка отрыва выбирается в плане ВСЛЕПУЮ, до всякой геометрии. Когда она не
+        /// подходит, раньше переигрывалась вся раскладка целиком — а исправить надо было одно ребро.
+        /// </summary>
+        public List<int> reattach;
+
+        /// <summary>
+        /// ⭐⭐ КОМНАТУ МОЖНО СВЯЗАТЬ С РОДИТЕЛЕМ ТОННЕЛЕМ, а не только общей стеной (предложение
+        /// игрока): пара «родитель-ребёнок» остаётся связанной, а проход между ними ПРОРЕЗАЕТСЯ.
+        ///
+        /// 🐞 Зачем. Замер: комната не может пристроиться к родителю 1538 раз на 40 уровней — по 38
+        /// на уровень. Причём родитель почти никогда не обстроен: в 74% случаев у него занято лишь
+        /// ДВЕ стороны, в 25% — одна, и ни разу три или четыре. Мешает не родитель, а теснота вокруг
+        /// него: соседние, с ним не связанные комнаты занимают ровно то место, куда надо встать.
+        /// Три четверти отказов — у комнат, которым вообще ничего не предписано.
+        ///
+        /// ⚠️ Только для рёбер БЕЗ МЕХАНИЗМА: ворота, дверь и мост считают геометрию от общей стены.
+        /// </summary>
+        public bool allowTunnel;
+
+        /// <summary>
+        /// ⭐ КОМНАТА САМА ОТВЕЧАЕТ ЗА ПОДЪЁМ В СЕБЕ (уступы нарисует трафарет) — значит правило
+        /// «под люком не выше дотяжки» к ней не относится. Нужна подвалу камеры: он девять рядов
+        /// глубиной, и лестница внутри него нарисована картинкой.
+        /// </summary>
+        public bool ownClimb;
     }
 
     /// <summary>Куда обязан встать ребёнок относительно родителя (диктуется ролью на ребре).</summary>
@@ -333,6 +394,17 @@ public static class RoomLayout
         foreach (var stageNodes in stages)
         {
             bool ok = false;
+            // ⭐ Кольцо пробуем ПЕРВЫМ: его форма считается, а не подбирается.
+            for (int attempt = 0; attempt < 8 && !ok; attempt++)
+            {
+                int linksBefore = res.links.Count;
+                ok = PlaceRing(n, parent, req, rng, boxes, res, stageNodes);
+                if (!ok)
+                {
+                    foreach (int id in stageNodes) boxes[id] = null;
+                    res.links.RemoveRange(linksBefore, res.links.Count - linksBefore);
+                }
+            }
             for (int attempt = 0; attempt < triesPerStage && !ok; attempt++)
             {
                 int linksBefore = res.links.Count;
@@ -345,6 +417,34 @@ public static class RoomLayout
                     res.links.RemoveRange(linksBefore, res.links.Count - linksBefore);
                 }
             }
+            // ⭐⭐ ПОДГОНКА ПЛАНА: не встала ветка — перевешиваем её на другую комнату маршрута.
+            // Правим ПЛАН (одно ребро), а не геометрию всего уровня.
+            if (!ok && !SkipReattach && stageNodes.Count > 0 && req[stageNodes[0]].reattach != null)
+            {
+                int firstNode = stageNodes[0];
+                int oldParent = parent[firstNode];
+                var opts = new List<int>(req[firstNode].reattach);
+                for (int i = opts.Count - 1; i > 0; i--)
+                { int j = rng.Next(i + 1); var t = opts[i]; opts[i] = opts[j]; opts[j] = t; }
+                foreach (int cand in opts)
+                {
+                    if (ok) break;
+                    if (cand == oldParent || cand < 0 || cand >= n || boxes[cand] == null) continue;
+                    parent[firstNode] = cand;
+                    for (int attempt = 0; attempt < 12 && !ok; attempt++)
+                    {
+                        int linksBefore = res.links.Count;
+                        ok = PlaceStage(n, parent, req, dir, rng, boxes, res, stageNodes);
+                        if (!ok)
+                        {
+                            foreach (int id in stageNodes) boxes[id] = null;
+                            res.links.RemoveRange(linksBefore, res.links.Count - linksBefore);
+                        }
+                    }
+                }
+                if (!ok) parent[firstNode] = oldParent;      // не помогло — возвращаем как было
+            }
+
             // ⚠️ ПОСЛЕДНЯЯ СТУПЕНЬ: уровень не должен умирать из-за УКРАШЕНИЯ. Замыкание петли и
             // притяжение к трассе — пожелания; если этап из-за них не встаёт, снимаем их и кладём
             // ветку как обычную. 🐞 Без этой ступени этапы дали скачок замыкания (9% → 38%), но
@@ -354,10 +454,15 @@ public static class RoomLayout
                 StatRelaxed++;
                 var savedNext = new List<int>[stageNodes.Count];
                 var savedPull = new int[stageNodes.Count];
+                var savedDir  = new LinkDir[stageNodes.Count];
                 for (int i = 0; i < stageNodes.Count; i++)
                 {
                     savedNext[i] = req[stageNodes[i]].nextToAny; savedPull[i] = req[stageNodes[i]].pullTo;
+                    savedDir[i]  = dir[stageNodes[i]];
                     req[stageNodes[i]].nextToAny = null; req[stageNodes[i]].pullTo = -1;
+                    // ⚠️ Снимаем и НАПРАВЛЕНИЕ: вход в ветку просит провала вниз, и если его негде
+                    // сделать, ветка должна лечь хоть как-то, а не уронить весь уровень.
+                    dir[stageNodes[i]] = LinkDir.Any;
                 }
                 for (int attempt = 0; attempt < triesPerStage && !ok; attempt++)
                 {
@@ -370,7 +475,8 @@ public static class RoomLayout
                     }
                 }
                 for (int i = 0; i < stageNodes.Count; i++)
-                { req[stageNodes[i]].nextToAny = savedNext[i]; req[stageNodes[i]].pullTo = savedPull[i]; }
+                { req[stageNodes[i]].nextToAny = savedNext[i]; req[stageNodes[i]].pullTo = savedPull[i];
+                  dir[stageNodes[i]] = savedDir[i]; }
             }
             if (!ok) { allOk = false; break; }
         }
@@ -398,12 +504,187 @@ public static class RoomLayout
         return res;
     }
 
+    /// <summary>
+    /// ⭐⭐ ВЫСОТА ОБЫЧНОЙ КОМНАТЫ — РОВНО ДОТЯЖКА, И ЭТО НЕ ВКУСОВЩИНА.
+    ///
+    /// От пола комнаты до края люка в её потолке ровно её высота. Подъём у игрока 3, значит из
+    /// комнаты высотой 4-5 сквозь люк НЕ ВЫЛЕЗТИ: провалился — остался.
+    /// 🐞 Замер: из 389 вертикальных связей без механизма 203 вели в комнату выше дотяжки, и по
+    /// разбору недостижимых ключей ровно этот случай давал пять поломок из девяти. Чинить подъём
+    /// уступами постфактум пробовал дважды, оба раза замер становился ХУЖЕ (247 → 266 безвыходных
+    /// клеток; 9 → 12 недостижимых ключей). Запрещать высокие комнаты на укладке — тоже мимо:
+    /// раскладка перестаёт сходиться совсем (0 уровней из 18), потому что половина комнат как раз
+    /// h=4. Осталось единственное честное место — не выдавать такую высоту вовсе.
+    ///
+    /// ⚠️ Разброс масштабов при этом НЕ теряется: ширина по-прежнему гуляет, а высоту сверх дотяжки
+    /// просят те, кто сам отвечает за подъём в себе — залы с уступами и подвал камеры (ownClimb).
+    /// </summary>
+    /// <summary>
+    /// ⭐⭐ КОЛЬЦО ВЕТКИ — ВЫЧИСЛЯЕТСЯ, А НЕ ПОДБИРАЕТСЯ (решение игрока).
+    ///
+    /// 🐞 Подбором это не получалось: свободная укладка разносит комнаты, и конец ветки в 60 случаях
+    /// из 86 не касался вообще ничего. Наведение и мягкие требования подняли замыкание с 9% до 22%,
+    /// а вместе с односторонним входом целиком складывались лишь 2 ветки из 27. Форма известна с
+    /// рисунка игрока — значит её надо ПОСЧИТАТЬ.
+    ///
+    /// Форма: провал под точкой отрыва (комната выше дотяжки — назад не влезть) → марш вбок по
+    /// нижнему ярусу → подъём к уровню трассы → дверь вбок в комнату маршрута.
+    /// ⚠️ Геометрия сходится ровно тогда, когда комната-цель НЕ ВЫШЕ точки отрыва: пол нижнего яруса
+    /// считается от точки отрыва, а подъём в конце обязан попасть на уровень цели.
+    /// </summary>
+    private static bool PlaceRing(int n, int[] parent, RoomReq[] req, System.Random rng,
+                                  RoomBox[] boxes, Result res, List<int> stage)
+    {
+        StatRing[0]++;
+        if (stage.Count < 3) { StatRing[1]++; return false; }
+        int first = stage[0], last = stage[stage.Count - 1];
+        if (!req[first].ringStart || req[last].ringTarget < 0 || req[last].ringTarget >= n) { StatRing[2]++; return false; }
+        // ⭐⭐ КОЛЬЦО ВЫБИРАЕТ ОБА КОНЦА — и точку отрыва, и цель.
+        // 🐞 Замер: кандидатов в цель отвергалось 960 по высоте против 512 по пролёту. Условие
+        // жёсткое — цель обязана быть НЕ ВЫШЕ точки отрыва (иначе провал перестаёт быть провалом),
+        // а маршрут в целом лезет вверх, поэтому почти вся трасса оказывается выше. Точка отрыва
+        // назначена планом вслепую; разрешаем кольцу сменить и её — тогда пара «повыше → пониже»
+        // находится куда чаще.
+        var attachOpts = new List<int> { parent[first] };
+        if (req[first].reattach != null) attachOpts.AddRange(req[first].reattach);
+
+        // ⭐⭐ ЦЕЛЬ КОЛЬЦО ВЫБИРАЕТ САМО. 🐞 Пока её назначал план — вслепую, до всякой геометрии, —
+        // кольцо не встало НИ РАЗУ: замер по причинам дал 136 отказов «провал не выходит по высоте»
+        // (цель оказывалась выше точки отрыва) и 88 «марш не влез» (цель слишком близко).
+        // Здесь же комнаты уже стоят, и годную цель видно сразу.
+        const int H = MazeCanvas.Climb + 1;                    // высота комнат нижнего яруса
+        int nMid0 = stage.Count - 2;
+        var cands = req[last].nextToAny;
+        if (cands == null || cands.Count == 0)
+        { if (req[last].ringTarget >= 0) cands = new List<int> { req[last].ringTarget }; else { StatRing[2]++; return false; } }
+
+        // Перебираем пары «точка отрыва → цель»: сперва ту, что назначил план.
+        RoomBox attach = null; int chosenAttach = -1;
+        var fitAll = new List<int>();
+        foreach (int ap in attachOpts)
+        {
+            if (ap < 0 || ap >= n || boxes[ap] == null) continue;
+            var ab = boxes[ap];
+            var fitHere = new List<int>();
+            foreach (int cand in cands)
+            {
+                if (cand < 0 || cand >= n || cand == ap) continue;
+                var t0 = boxes[cand];
+                if (t0 == null) continue;
+                int b0 = t0.y0 - 1 - H, h0 = ab.y0 - b0 - 1;
+                if (h0 <= MazeCanvas.Climb || h0 > MaxHallHeight) { StatRing[1]++; continue; }
+                int dx0 = t0.x0 >= ab.x0 ? 1 : -1;
+                int sp0 = Mathf.Abs((dx0 > 0 ? t0.x0 : t0.X1) - ab.x0);
+                if (sp0 < (nMid0 + 1) * 4) { StatRing[3]++; continue; }
+                fitHere.Add(cand);
+            }
+            if (fitHere.Count > 0) { attach = ab; chosenAttach = ap; fitAll = fitHere; break; }
+        }
+        if (attach == null) { StatRing[4]++; return false; }
+        parent[first] = chosenAttach;                 // кольцо могло сменить точку отрыва
+
+        // Годные цели собираем ВСЕ и сортируем по пролёту: чем длиннее, тем свободнее марш.
+        // ⚠️ Порядок перебора сдвигаем случайно — иначе восемь попыток подряд дают один и тот же
+        // расчёт (в кольце случайны только размеры комнат), и столкновение не обойти.
+        var fit = fitAll;
+        fit.Sort((p1, p2) => Mathf.Abs(boxes[p2].x0 - attach.x0).CompareTo(Mathf.Abs(boxes[p1].x0 - attach.x0)));
+        int pick = rng.Next(Mathf.Min(fit.Count, 4));
+        var target = boxes[fit[pick]];
+        int band = target.y0 - 1 - H;
+        int hDrop = attach.y0 - band - 1;
+        int dirX = target.x0 >= attach.x0 ? 1 : -1;
+
+        // Последнее звено — у самой цели, на её уровне; предпоследнее ровно под ним.
+        var szLast = Size(req[last], rng);
+        int wLast = Mathf.Max(szLast[0], MinOverlap + 1);
+        int xLast = dirX > 0 ? target.x0 - wLast - 1 : target.X1 + 2;
+        var boxLast = new RoomBox { id = last, x0 = xLast, y0 = target.y0, w = wLast, h = szLast[1] };
+
+        var made = new List<RoomBox>();
+        int wDrop = Size(req[first], rng)[0];
+        var drop = new RoomBox { id = first, x0 = dirX > 0 ? attach.x0 : attach.X1 - wDrop + 1,
+                                 y0 = band, w = wDrop, h = hDrop };
+        made.Add(drop);
+
+        // ⚠️ ШИРИНЫ МАРША СЧИТАЕМ, А НЕ БЕРЁМ СЛУЧАЙНЫЕ. 🐞 Со случайными последняя комната яруса
+        // почти никогда не попадала точно под подъём: 55 отказов «марш не влез» из 168 попыток.
+        // Пролёт известен, число звеньев известно — делим поровну.
+        int nMid = stage.Count - 2;                            // звеньев в марше, включая провал
+        int xStart = dirX > 0 ? drop.X1 + 2 : drop.x0 - 2;
+        int xStop  = dirX > 0 ? xLast - 2 : xLast + wLast + 1; // до комнаты, что встанет под подъёмом
+        int room = nMid - 1;                                   // сколько ещё комнат на ярусе, кроме провала
+        if (room > 0)
+        {
+            int avail = Mathf.Abs(xStop - xStart) + 1;
+            int each = avail / room - 1;                       // минус стена между комнатами
+            if (each < 3) { StatRing[5]++; return false; }
+            int x = xStart;
+            for (int i2 = 1; i2 <= room; i2++)
+            {
+                int id = stage[i2];
+                int w = (i2 == room) ? wLast : each;
+                int x0 = (i2 == room) ? xLast : (dirX > 0 ? x : x - w + 1);
+                made.Add(new RoomBox { id = id, x0 = x0, y0 = band, w = w, h = H });
+                x = dirX > 0 ? x0 + w + 1 : x0 - 1;
+            }
+        }
+        made.Add(boxLast);
+
+        // Ничего не задеваем (кроме собственных комнат и точки отрыва).
+        foreach (var bb in made)
+        for (int i3 = 0; i3 < n; i3++)
+        {
+            var o = boxes[i3];
+            if (o == null || o.id == attach.id) continue;
+            bool self = false;
+            foreach (var m2 in made) if (m2.id == o.id) self = true;
+            if (self) continue;
+            if (bb.x0 - Margin <= o.X1 && o.x0 - Margin <= bb.X1 &&
+                bb.y0 - Margin <= o.Y1 && o.y0 - Margin <= bb.Y1) { StatRing[6]++; return false; }
+        }
+        foreach (var bb in made) boxes[bb.id] = bb;
+
+        // Связи: провал вниз, марш вбок, подъём вверх.
+        for (int i4 = 0; i4 < stage.Count; i4++)
+        {
+            int id = stage[i4], par = parent[id];
+            var a = boxes[id]; var pb = boxes[par];
+            if (a == null || pb == null) { StatRing[7]++; return false; }
+            bool vertical = (i4 == 0) || (i4 == stage.Count - 1);
+            if (vertical)
+            {
+                var lower = a.y0 < pb.y0 ? a : pb;
+                int lo = Mathf.Max(a.x0, pb.x0), hi = Mathf.Min(a.X1, pb.X1);
+                if (hi - lo + 1 < MinOverlap) { StatRing[7]++; return false; }
+                res.links.Add(new RoomLink { a = lower.id, b = (lower == a ? pb.id : a.id),
+                    vertical = true, from = lo, to = hi, wall = lower.Y1 + 1, wallEnd = lower.Y1 + 1 });
+            }
+            else
+            {
+                var left = a.X1 < pb.x0 ? a : pb; var right = a.X1 < pb.x0 ? pb : a;
+                if (right.x0 - left.X1 - 1 < 1) { StatRing[7]++; return false; }
+                int lo = Mathf.Max(a.y0, pb.y0), hi = Mathf.Min(a.Y1, pb.Y1);
+                if (hi - lo + 1 < MinOverlap) { StatRing[7]++; return false; }
+                res.links.Add(new RoomLink { a = par, b = id, vertical = false,
+                    from = lo, to = lo + MinOverlap - 1,
+                    wall = left.X1 + 1, wallEnd = right.x0 - 1 });
+            }
+        }
+        StatRing[8]++;
+        return true;
+    }
+
     private static int[] Size(RoomReq r, System.Random rng) => new[]
     {
         Mathf.Clamp(r.minW + rng.Next(3), r.minW, r.maxW),
-        // ⚠️ Потолок берём из САМОГО требования: зал просит больше, обычная комната — как раньше.
-        Mathf.Clamp(r.minH + rng.Next(r.maxH > MaxRoomHeight ? 6 : 2), r.minH,
-                    Mathf.Min(r.maxH, MaxHallHeight))
+        // ⚠️⚠️ ТРЕБОВАНИЕ ЭЛЕМЕНТА ВЫШЕ ЭТОГО ПРАВИЛА. 🐞 Сперва я зажал высоту в дотяжку ВСЕМ — и
+        // тем убил ворота: словарь просит им H≥4 ровно потому, что при H=3 ступеньку просто
+        // перелезают, и подъём не надо открывать. Замер поймал это сразу: обходимых по комнатам
+        // ворот всего 3 из 39, а холостых 7 — остальные обходились не проходом, а собственной
+        // ненужностью. Комната с воротами обязана быть выше дотяжки: в этом и есть их работа.
+        r.maxH > MaxRoomHeight
+            ? Mathf.Clamp(r.minH + rng.Next(6), r.minH, Mathf.Min(r.maxH, MaxHallHeight))
+            : Mathf.Max(r.minH, Mathf.Min(r.maxH, MazeCanvas.Climb))
     };
 
     /// <summary>
@@ -491,7 +772,10 @@ public static class RoomLayout
                             // ставился не в его конец (см. Node.isFinish в FreeMazeBuilder).
                             bool toRight = rng.Next(2) == 0;
                             lastRight = toRight;
-                            int x = toRight ? pb.X1 + 2 : pb.x0 - 1 - cw;
+                            // Зазор до родителя: 1 — общая стена (как было), больше — ТОННЕЛЬ,
+                            // который прорежет рендер. Пробуем разные, начиная с тесного.
+                            int gap = req[k].allowTunnel ? 1 + rng.Next(MaxTunnel) : 1;
+                            int x = toRight ? pb.X1 + 1 + gap : pb.x0 - gap - cw;
                             // ⭐ ПЕРЕПАД ПОЛОВ НЕ ОГРАНИЧЕН ДОТЯЖКОЙ (идея игрока): не хватает вылета —
                             // в проёме достраиваются СТУПЕНИ. Это тот же зигзаг, только применённый к
                             // связи. Благодаря этому у горизонтального ребра появляется свобода по Y,
@@ -508,9 +792,27 @@ public static class RoomLayout
                             int lowFloor = Mathf.Min(cand.y0, pb.y0);
                             int topNeed = Mathf.Max(cand.y0, pb.y0) + MinOverlap - 1;
                             if (topNeed > hi) continue;
-                            int wcol = toRight ? pb.X1 + 1 : pb.x0 - 1;
+                            int wcol = toRight ? pb.X1 + 1 : cand.X1 + 1;
+                            int wend = toRight ? cand.x0 - 1 : pb.x0 - 1;
+                            // ⚠️⚠️ ТОННЕЛЬ НЕ ДОЛЖЕН ВСПОРОТЬ ТРЕТЬЮ КОМНАТУ. 🐞 Без этой проверки
+                            // ход прорезался напрямую и по дороге вскрывал чужую комнату — уровень
+                            // получал связь, которой в плане нет, механизм рядом становился обходимым.
+                            // Замер: чистых схем 5 из 8 → 3 из 8, холостых групп стало больше.
+                            // У лишних рёбер такая проверка была с самого начала (FindAdjacent).
+                            if (wend >= wcol)
+                            {
+                                bool cut = false;
+                                for (int q = 0; q < n && !cut; q++)
+                                {
+                                    var o = boxes[q];
+                                    if (o == null || o.id == v || o.id == k) continue;
+                                    if (o.x0 <= wend && wcol <= o.X1 && o.y0 <= topNeed + 1 && lowFloor - 1 <= o.Y1)
+                                        cut = true;
+                                }
+                                if (cut) continue;
+                            }
                             lk = new RoomLink { a = v, b = k, vertical = false,
-                                                from = lowFloor, to = topNeed, wall = wcol, wallEnd = wcol };
+                                                from = lowFloor, to = topNeed, wall = wcol, wallEnd = wend };
                         }
                         else
                         {
@@ -556,7 +858,17 @@ public static class RoomLayout
                     }
                 }
                 }
-                if (placed == null) return false;              // этот этап не встал — переиграем его
+                if (placed == null)
+                {
+                    // Считаем, СКОЛЬКО сторон родителя уже занято: связь = одна сторона.
+                    StatPlaceFail++;
+                    int used = 0;
+                    foreach (var l2 in res.links) if (l2.a == v || l2.b == v) used++;
+                    if (parent[v] >= 0) { }        // связь с дедом уже посчитана в res.links
+                    StatParentSides[Mathf.Clamp(used, 0, StatParentSides.Length - 1)]++;
+                    StatFailByDir[(int)dir[k]]++;
+                    return false;                                 // этот этап не встал — переиграем его
+                }
                 boxes[k] = placed; res.links.Add(link);
             }
         }

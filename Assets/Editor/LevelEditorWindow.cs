@@ -73,6 +73,20 @@ public class LevelEditorWindow : EditorWindow
     private float   _platW    = 3f;
     private string  _levelName;
     private Vector2 _scroll;
+    /// <summary>Прокрутка ВСЕГО окна. Нужна на маленьком экране: без неё нижние кнопки (в том числе
+    /// Import) просто не достать — до них не домотать (поймано игроком).</summary>
+    private Vector2 _windowScroll;
+
+    /// <summary>
+    /// ⭐ ШИРИНА СОДЕРЖИМОГО ПАНЕЛИ — по окну минус место под вертикальную полосу.
+    /// ⚠️ Её надо задавать ЯВНО каждому блоку, у которого своя внутренняя прокрутка. 🐞 Иначе
+    /// работает так: у поля схемы минимальная ширина считается по самой длинной строке (а строка
+    /// уровня — под 70 символов), эта ширина становится шириной ВСЕГО содержимого, и остальные
+    /// элементы уезжают за правый край. Игрок поймал это, разворачивая IMPORT FROM SCHEME:
+    /// «все элементы растягиваются и прячутся».
+    /// </summary>
+    private float PanelWidth => Mathf.Max(200f, position.width - 22f);
+
 
     // Для загрузки существующих уровней
     private string[] _existingLevels = {};
@@ -301,6 +315,25 @@ public class LevelEditorWindow : EditorWindow
 
     private void OnGUI()
     {
+        // ⚠️ ВСЁ ОКНО — В ПРОКРУТКЕ. Панель длинная, и на небольшом мониторе её низ (в том числе
+        // кнопка Import) оказывается за краем без всякой возможности домотать.
+        // ⚠️ Вложенные прокрутки внутри обязаны иметь ФИКСИРОВАННУЮ высоту: список объектов раньше
+        // тянулся на всю оставшуюся (ExpandHeight), а внутри внешней прокрутки «оставшейся» высоты
+        // не существует — список растянулся бы бесконечно.
+        // ⚠️ ГОРИЗОНТАЛЬНАЯ ПРОКРУТКА ОТКЛЮЧЕНА СТИЛЕМ `GUIStyle.none`, и это не косметика.
+        // 🐞 С обычной прокруткой ширина содержимого считается ПО СОДЕРЖИМОМУ, а не по окну — и все
+        // элементы схлопываются в минимальный размер, теряя растягивание (поймано игроком). Пустой
+        // стиль горизонтальной полосы заставляет содержимое уложиться в ширину окна, и ExpandWidth
+        // снова работает. По ширине всё должно быть видно всегда, мотать можно только вниз.
+        _windowScroll = EditorGUILayout.BeginScrollView(_windowScroll, false, false,
+                            GUIStyle.none, GUI.skin.verticalScrollbar, GUI.skin.scrollView);
+        // ⚠️⚠️ СОДЕРЖИМОМУ ЗАДАЁМ ШИРИНУ ЯВНО, по окну минус вертикальная полоса.
+        // 🐞 Одного отключения горизонтальной прокрутки мало: если хоть один блок внутри шире окна
+        // (палитра тайлов, поле схемы), ширина содержимого растёт по нему, и всё остальное уезжает
+        // за правый край — обрезается ровно половина панели (поймано игроком). С явной шириной
+        // блоки обязаны ужаться, а не вылезти.
+        float viewW = PanelWidth;
+        GUILayout.BeginVertical(GUILayout.Width(viewW), GUILayout.MaxWidth(viewW));
         DrawHeader();
         GUILayout.Space(4);
         DrawToolPalette();
@@ -314,6 +347,8 @@ public class LevelEditorWindow : EditorWindow
         DrawLevelConfig();
         GUILayout.Space(4);
         DrawObjectList();
+        GUILayout.EndVertical();
+        EditorGUILayout.EndScrollView();
     }
 
     // ─── LevelConfig (задачи под звёзды, data-driven) ──────────────────────────
@@ -441,7 +476,8 @@ public class LevelEditorWindow : EditorWindow
             _routeExclude);
         if (prevExc != _routeExclude && _root != null) ComputeRoute();
         if (!string.IsNullOrEmpty(_routeInfo))
-            GUILayout.Label(_routeInfo + "   (синие точки — модель достаёт, серые — нет)", EditorStyles.miniLabel);
+            GUILayout.Label(_routeInfo + "   (синие точки — модель достаёт, серые — нет)",
+                EditorStyles.wordWrappedMiniLabel);
 
         // Ключ группы: связывает Trigger-кнопку с её группой исчезающих тайлов (одинаковый groupId).
         if (_tool == Tool.TriggerButton || _tool == Tool.DisappearTile)
@@ -505,7 +541,7 @@ public class LevelEditorWindow : EditorWindow
             }
             if (dpCur == null)
                 GUILayout.Label($"Группы '{_groupId}' в уровне ещё нет — настройки применятся при создании.",
-                    EditorStyles.miniLabel);
+                    EditorStyles.wordWrappedMiniLabel);
 
             GUILayout.Label(_tool == Tool.TriggerButton
                     ? "🔘 Кнопка " + (invShown ? "УБИРАЕТ" : "активирует") + " тайлы с этим Group ID"
@@ -559,7 +595,8 @@ public class LevelEditorWindow : EditorWindow
 
         const int   cols = 4;
         const float sz   = 58f;
-        _tileScroll = GUILayout.BeginScrollView(_tileScroll, GUILayout.Height(190));
+        _tileScroll = GUILayout.BeginScrollView(_tileScroll,
+            GUILayout.Height(190), GUILayout.Width(PanelWidth - 6f));
         for (int i = 0; i < _tileSprites.Length; i++)
         {
             if (i % cols == 0) GUILayout.BeginHorizontal();
@@ -638,7 +675,9 @@ public class LevelEditorWindow : EditorWindow
         if (_root == null) return;
 
         GUILayout.Label("OBJECTS", EditorStyles.boldLabel);
-        _scroll = GUILayout.BeginScrollView(_scroll, GUILayout.ExpandHeight(true));
+        // Фиксированная высота — обязательна: снаружи теперь своя прокрутка (см. OnGUI).
+        _scroll = GUILayout.BeginScrollView(_scroll,
+            GUILayout.Height(220), GUILayout.Width(PanelWidth - 6f));
 
         DrawGroupFoldout("Tiles",       _root.transform.Find("Tiles"));
         DrawGroupFoldout("Disappearing",_root.transform.Find("Disappearing"));
@@ -1548,8 +1587,15 @@ public class LevelEditorWindow : EditorWindow
             new GUIContent("Decorate/vary", "off = максимально ровно (одна трава + один камень). on = изредка цветы/кусты + чередование камня."),
             _schemeDecorate);
 
-        _schemeScroll = GUILayout.BeginScrollView(_schemeScroll, GUILayout.Height(160));
-        _schemeText = EditorGUILayout.TextArea(_schemeText, GUILayout.ExpandHeight(true));
+        // Коробка ровно по панели; длинные строки схемы мотаются ВНУТРИ неё, а не распирают окно.
+        _schemeScroll = GUILayout.BeginScrollView(_schemeScroll,
+            GUILayout.Height(160), GUILayout.Width(PanelWidth - 6f));
+        // ⚠️ МИНИМАЛЬНАЯ ширина — по коробке, а не по содержимому. 🐞 Пустое поле схлопывалось в
+        // тонкую полоску у левого края (поймано игроком на скриншоте): у текстового поля ширина
+        // считается по тексту, а текста нет. Именно MinWidth, а не Width: с длинными строками схемы
+        // поле обязано быть шире коробки, иначе не заработает горизонтальная прокрутка внутри неё.
+        _schemeText = EditorGUILayout.TextArea(_schemeText,
+            GUILayout.ExpandHeight(true), GUILayout.MinWidth(PanelWidth - 28f));
         GUILayout.EndScrollView();
 
         using (new GUILayout.HorizontalScope())
@@ -1577,11 +1623,25 @@ public class LevelEditorWindow : EditorWindow
         // ── Генератор лабиринта ──────────────────────────────────────────────
         GUILayout.Space(4);
         GUILayout.Label("🌀 MAZE GENERATOR (ветвления + тупики)", EditorStyles.boldLabel);
+        // ⚠️⚠️ СЛАЙДЕРЫ — ПО ОДНОМУ В СТРОКУ, И ЭТО НЕ ВКУСОВЩИНА.
+        // 🐞 Здесь в ОДНОЙ горизонтальной строке стояли девять контролов: два поля и шесть слайдеров
+        // с длинными подписями. У такой строки минимальная ширина складывается из всех девяти, и
+        // она распирала ВСЮ панель: замер показал ширину содержимого 1875 при окне 513, из-за чего
+        // правая половина инструмента уезжала за край (поймано игроком: «разворачиваю IMPORT FROM
+        // SCHEME — все элементы растягиваются и прячутся»). Остальные блоки давали ровно 491.
+        // Тот же урок уже был записан парой строк ниже — про поля монет и флагов.
+        // ⚠️ Подписи в этой строке ужимаем: три поля со стандартной шириной подписи (~150 каждая)
+        // дают минимум под 600 и снова распирают панель.
+        float lwPrev = EditorGUIUtility.labelWidth;
+        EditorGUIUtility.labelWidth = 62f;
         using (new GUILayout.HorizontalScope())
         {
             _mazeW    = EditorGUILayout.IntField(new GUIContent("Комнат ↔", "Ширина сетки комнат"), _mazeW);
             _mazeH    = EditorGUILayout.IntField(new GUIContent("Комнат ↕", "Высота сетки комнат"), _mazeH);
             _mazeSeed = EditorGUILayout.IntField(new GUIContent("Seed", "0 = случайный каждый раз"), _mazeSeed);
+        }
+        EditorGUIUtility.labelWidth = lwPrev;
+        {
             // ⭐ ГЛАВНАЯ РУЧКА: состав уровня подбирается под неё сам. Ворота стоят 2 балла, дверь 3,
             // мост 4, вложенная кнопка 5, вылазка 9, плюс +2 за каждый ярус цепочки сверх первого.
             _mazeDifficulty = EditorGUILayout.IntSlider(new GUIContent("Сложность, баллы",
@@ -1621,6 +1681,7 @@ public class LevelEditorWindow : EditorWindow
             "Сколько монет класть в уровень (±15%, ограничено свободным местом)"), _coinBudget);
         _cpMinGap   = EditorGUILayout.FloatField(new GUIContent("Флаги ≥ клеток",
             "Минимальная дистанция между чекпоинтами (и до спавна). До финиша — в 1.5 раза больше"), _cpMinGap);
+        EditorGUIUtility.labelWidth = 90f;
         using (new GUILayout.HorizontalScope())
         {
             _platSpeed  = EditorGUILayout.FloatField(new GUIContent("Климб кл/с",
@@ -1628,6 +1689,7 @@ public class LevelEditorWindow : EditorWindow
             _platBuffer = EditorGUILayout.FloatField(new GUIContent("Запас, с",
                 "Добавка к окну активности сверх расчётного времени пути"), _platBuffer);
         }
+        EditorGUIUtility.labelWidth = lwPrev;
         var mprev = GUI.backgroundColor;
         GUI.backgroundColor = new Color(0.7f, 0.5f, 0.9f);
         if (GUILayout.Button("🌀 Generate maze → в поле", GUILayout.Height(24)))

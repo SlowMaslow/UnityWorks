@@ -22,6 +22,8 @@ public static class FreeMazeBuilder
     /// Диагностический тумблер: строить голую геометрию без декора и монет.
     /// Нужен, чтобы отличать брак геометрии от брака отделки при замерах.
     public static bool SkipDressing;
+    /// <summary>Отключить обход столбцов подъёма при постановке кнопок — только для замера.</summary>
+    public static bool SkipButtonAvoid;
     /// Битовая маска разрешённых узоров декора (тумба, пилон, балкон, зубцы, сталактит, лесенка).
     public static int DecorMask = 63;
 
@@ -59,6 +61,17 @@ public static class FreeMazeBuilder
         /// <summary>⭐ Комната маршрута, К КОТОРОЙ ветка-петля обязана вернуться. −1 — не петля.
         /// На этом ребре и встанет «кнопка+дверь на основной маршрут» из схемы игрока.</summary>
         public int returnTo = -1;
+        /// <summary>
+        /// ⭐⭐ ВХОД В ВЕТКУ — ПРОВАЛ В ОДИН КОНЕЦ. Комната этого узла лежит ПОД точкой отрыва и выше
+        /// дотяжки: игрок сваливается в неё и обратно наверх уже не поднимется.
+        ///
+        /// Без этого вся затея с петлёй рассыпается: игрок сходит с трассы, берёт ключ и возвращается
+        /// ТЕМ ЖЕ путём, а дверь возврата оказывается украшением (поймано игроком: «игрок может
+        /// вернуться всегда тем же маршрутом, что и пришёл, задумка ломается»).
+        /// ⚠️ Это ОСОЗНАННОЕ исключение из правила «под люком не выше дотяжки»: там правило спасает
+        /// от случайной ловушки, здесь ловушка — замысел, и выход из неё нарисован дверью.
+        /// </summary>
+        public bool oneWayDrop;
         /// <summary>⭐ Этап укладки: 0 — хребет старт→финиш, 1..k — ветки (каждая своя), 99 — добор.
         /// Не встал этап — переигрывается ТОЛЬКО он, остальное остаётся стоять.</summary>
         public int stage;
@@ -154,7 +167,8 @@ public static class FreeMazeBuilder
         // финиш буквально в двух шагах друг от друга» (замер: 29 клеток при габарите 97).
         if (spine.Count > 1) nodes[spine[spine.Count - 1]].isFinish = true;
 
-        int stageCounter = 0;
+        // Ветки рецепта уходят в конец очереди (50+), ветки-ключи — в начало (1..).
+        int stageCounter = 50, keyCounter = 0;
         foreach (var route in recipe.routes)
         {
             if (route.isMain) continue;
@@ -261,7 +275,11 @@ public static class FreeMazeBuilder
                     nodes[cur2].branchStep = k; nodes[cur2].branchLen = len;
                 }
                 nodes[cur2].holdsKey = true;
-                int keyStage = ++stageCounter;
+                // ⭐⭐ ВЕТКИ-КОЛЬЦА КЛАДЁМ СРАЗУ ПОСЛЕ ХРЕБТА, номерами 1.. — до всех прочих веток и
+                // добора. 🐞 Замер объяснил, почему вычисляемое кольцо не встало ни разу: ему нужен
+                // свободный прямоугольник на ярус ниже трассы, а укладывалось оно последним, когда
+                // место уже разобрано (120 отказов «цель не подошла», 64 «задели чужое»).
+                int keyStage = ++keyCounter;
                 { int c3 = cur2; while (c3 >= 0 && c3 != attach) { nodes[c3].stage = keyStage; c3 = nodes[c3].parent; } }
                 // ⭐⭐ ЗАМЫКАЕМ ПЕТЛЮ: последнее звено должно вернуться к маршруту — к комнате
                 // СЛЕДУЮЩЕЙ за точкой отрыва. Так игрок выходит на трассу дальше по ходу, как на
@@ -403,6 +421,7 @@ public static class FreeMazeBuilder
                     req[kid.id].minW = req[kid.id].maxW = vneed.maxWidth;
                     req[kid.id].minH = req[kid.id].maxH = vneed.cellarHeight;
                     req[kid.id].alignX = true;
+                    req[kid.id].ownClimb = true;   // лестница внутри подвала нарисована трафаретом
                 }
                 else { dir[kid.id] = RoomLayout.LinkDir.Horizontal; locked[kid.id] = true; }
             }
@@ -417,8 +436,35 @@ public static class FreeMazeBuilder
         {
             if (nd.branchStep < 0) continue;
             req[nd.id].freeRegion = true;
+            // ⭐ Первому звену ветки разрешаем ПЕРЕЕХАТЬ на другую комнату маршрута, если на
+            // назначенной она не встала: точка отрыва выбиралась в плане вслепую, до геометрии.
+            if (nd.branchStep == 0)
+            {
+                var opts = new List<int>();
+                foreach (var m in nodes) if (m.onMainPath && !m.sealed2 && m.id != nd.parent) opts.Add(m.id);
+                req[nd.id].reattach = opts;
+                // ⭐⭐ ЗДЕСЬ НАЧИНАЕТСЯ КОЛЬЦО. Метка включает ТОЛЬКО вычисляемую укладку (PlaceRing):
+                // она сама сделает провал, марш и подъём. Общих требований (направление, высота) не
+                // ставим — прошлая попытка так и провалилась: провал требовали от обычной укладки,
+                // и он воевал с петлёй (14 провалов, но лишь 2 ветки целиком).
+                // ⚠️ Не вышло кольцо — ветка ложится как обычная, без провала. Это осознанный
+                // размен: замысел целиком или ничего, но уровень не страдает.
+                req[nd.id].ringStart = true;
+            }
+            // ⚠️⚠️ ОДНОСТОРОННЕГО ВХОДА В ВЕТКУ ЗДЕСЬ НЕТ — ОТКАЧЕНО ПО ЗАМЕРУ (решение игрока).
+            // Замысел верный: игрок должен сваливаться в ветку и возвращаться дверью, иначе дверь
+            // возврата — украшение. Но провал и петля тянут раскладку в разные стороны: с провалом
+            // из 27 веток односторонними стали 14, а дверь замкнулась лишь на 3, вместе — на 2.
+            // Без провала дверь ставится втрое чаще. Оставлять генератор в худшем состоянии ради
+            // недоделанного замысла нельзя, поэтому вход снова обычный.
+            // ⚠️ Продолжение — ВЫЧИСЛЯЕМОЕ КОЛЬЦО (RoomLayout.PlaceRing, уже написано и замерено):
+            // оно считает форму «провал → марш вбок → подъём → дверь», но не встаёт ни разу, потому
+            // что укладывается ПОСЛЕДНИМ, когда свободного места на ярус ниже трассы уже нет
+            // (120 отказов «цель не подошла», 64 «задели чужое»). Следующий заход — резервировать
+            // полосу под кольцо ВМЕСТЕ с хребтом, как сделано для подвала камеры.
             if (nd.returnTo >= 0)
             {
+                req[nd.id].ringTarget = nd.returnTo;
                 // Выходим на трассу где угодно: назначать одну конкретную комнату оказалось строго —
                 // к моменту укладки последнего звена она бывает обстроена со всех сторон.
                 var any = new List<int>();
@@ -441,6 +487,13 @@ public static class FreeMazeBuilder
         // чтобы они не наезжали друг на друга, — и вернуться к трассе ветка не может в принципе.
         // Значит петля упирается не в выбор направления, а в саму область роста. Это следующая
         // работа по графу, и делать её надо в RoomLayout, а не подбором направлений здесь.
+
+        // ⭐ ТОННЕЛЬ ВМЕСТО ОБЩЕЙ СТЕНЫ — только там, где на ребре нет механизма. Ворота, дверь и мост
+        // считают свою геометрию от общей стены, им зазор ломает всё; обычной комнате он лишь даёт
+        // место встать. Замер до этого: 38 отказов стыковки на уровень, и три четверти из них —
+        // у комнат без всяких требований.
+        foreach (var nd in nodes)
+            if (nd.element == null && !nd.isCellar) req[nd.id].allowTunnel = true;
 
         var dirL = dir;                                // out-параметр в лямбду не пускают, ссылка та же
         System.Action<int, RoomLayout.LinkDir> claim = (id, d) =>
@@ -562,8 +615,15 @@ public static class FreeMazeBuilder
                 if (hw < 1) continue;                            // пол верхней комнаты кончился
                 int off = span > hw ? rng.Next(span - hw + 1) : 0;
                 for (int x = l.from + off; x < l.from + off + hw; x++) g[toRow(l.wall), x] = '.';
+                l.cutFrom = l.from + off; l.cutTo = l.from + off + hw - 1;   // где люк на самом деле
 
-                // ⚠️⚠️ УСТУПА ПОД ЛЮКОМ ЗДЕСЬ НЕТ, И ЭТО РЕЗУЛЬТАТ ЗАМЕРА, А НЕ НЕДОДЕЛКА.
+                // ⚠️⚠️ УСТУПОВ ПОД ЛЮКОМ ЗДЕСЬ НЕТ — ДВЕ ПОПЫТКИ, ОБЕ ПРОВАЛИЛИСЬ ПО ЗАМЕРУ.
+                // Вторая ставила уступ в СЕРЕДИНЕ комнаты (первая — поперёк люка, у стены, и садилась
+                // в дверной проём). Недостижимых ключей стало 9 → 12. Значит чинить надо не подъём
+                // постфактум, а не создавать непроходимый люк вовсе — см. проверку высоты в
+                // RoomLayout: комната ПОД люком обязана быть не выше дотяжки.
+
+                // ⚠️⚠️ О ПРЕЖНЕЙ ПОПЫТКЕ УСТУПА ПОПЕРЁК ЛЮКА — РЕЗУЛЬТАТ ЗАМЕРА, А НЕ НЕДОДЕЛКА.
                 // Гипотеза была стройной: из 389 вертикальных связей без механизма 203 ведут в
                 // комнату ВЫШЕ ДОТЯЖКИ (высота 4-5 при подъёме 3), значит половина провалов —
                 // ловушка, и уступ на середине комнаты вернул бы игрока наверх.
@@ -833,19 +893,54 @@ public static class FreeMazeBuilder
     }
 
     /// <summary>Клетка воздуха над полом комнаты, куда можно поставить объект (кнопку, ключ, флаг).</summary>
-    private static int FloorSpot(char[,] g, MazeCanvas.RoomRect r, int rows, int cols)
+    /// <param name="preferCol">К какому столбцу тянуться (−1 — к середине комнаты). Нужно кнопке
+    /// двери: она обязана стоять У СВОЕЙ двери, иначе игрок ищет её по всей комнате (поймано игроком
+    /// на скриншоте: «кнопка от двери далековато от самой двери»).</param>
+    /// <param name="avoidCols">Столбцы, где игрок КАРАБКАЕТСЯ (люки и подходы к ним). Кнопку туда
+    /// ставить нельзя: она занимает ровно ту клетку, за которую он тянется.
+    /// 🐞 Поймано игроком на скриншоте: «вот тут игрок не сможет залезть, помешает кнопка».
+    /// ⚠️ Модель этого НЕ ловит: для неё клетка кнопки — воздух, и проходимость не меняется. Значит
+    /// правило должно жить здесь, в размещении, а не в приёмке.</param>
+    private static int FloorSpot(char[,] g, MazeCanvas.RoomRect r, int rows, int cols,
+                                 int preferCol = -1, HashSet<int> avoidCols = null)
     {
         int air = r.row0 + r.h - 1, floor = r.row0 + r.h;
+        int anchor = preferCol >= 0 ? Mathf.Clamp(preferCol - r.col0, 0, r.w - 1) : r.w / 2;
+        // Два прохода: сперва в обход столбцов подъёма, потом — как получится (лучше кнопка
+        // в неудобном месте, чем механизм без кнопки вовсе).
+        for (int pass = 0; pass < 2; pass++)
         for (int d = 0; d < r.w; d++)
         {
-            int mid = r.w / 2;
-            int off = mid + (d % 2 == 0 ? d / 2 : -(d / 2 + 1));
+            int off = anchor + (d % 2 == 0 ? d / 2 : -(d / 2 + 1));
             if (off < 0 || off >= r.w) continue;
             int c = r.col0 + off;
             if (air < 0 || air >= rows || floor >= rows || c < 0 || c >= cols) continue;
+            if (pass == 0 && !SkipButtonAvoid && avoidCols != null && avoidCols.Contains(c)) continue;
             if (g[air, c] == '.' && g[floor, c] == '#') return c;
         }
         return -1;
+    }
+
+    /// <summary>Столбцы, в которых игрок лезет через люк, — по одному набору на комнату.
+    /// Берём проём люка с запасом в клетку: за его край и цепляются.</summary>
+    private static Dictionary<int, HashSet<int>> ClimbCols(List<RoomLayout.RoomLink> links, int roomCount)
+    {
+        var map = new Dictionary<int, HashSet<int>>();
+        System.Action<int, int> add = (room, col) =>
+        {
+            HashSet<int> set;
+            if (!map.TryGetValue(room, out set)) { set = new HashSet<int>(); map[room] = set; }
+            set.Add(col);
+        };
+        foreach (var l in links)
+        {
+            if (!l.vertical) continue;
+            // Берём ФАКТИЧЕСКИЙ люк (2-3 клетки), а не весь общий отрезок стены.
+            int from = l.cutFrom >= 0 ? l.cutFrom : l.from;
+            int to   = l.cutTo   >= 0 ? l.cutTo   : l.to;
+            for (int x = from - 1; x <= to + 1; x++) { add(l.a, x); add(l.b, x); }
+        }
+        return map;
     }
 
     /// <summary>
@@ -1067,6 +1162,7 @@ public static class FreeMazeBuilder
             hostOf[nd.id] = a; needsShelf.Add(a);
         }
         var stampOf = new Dictionary<int, ModuleStamp>();
+        var climbCols = ClimbCols(links, nodes.Count);
 
         foreach (var nd in nodes)
         {
@@ -1083,8 +1179,11 @@ public static class FreeMazeBuilder
                 buttonBelow = new Vector2Int(-1, -1), buttonAbove = new Vector2Int(-1, -1)
             };
             // Кнопки: по одной на каждой стороне ребра, на полу своей комнаты.
-            int cb = FloorSpot(g, rects[nd.parent], rows, cols);
-            int ca = FloorSpot(g, rects[nd.id], rows, cols);
+            HashSet<int> avoidP, avoidC;
+            climbCols.TryGetValue(nd.parent, out avoidP);
+            climbCols.TryGetValue(nd.id, out avoidC);
+            int cb = FloorSpot(g, rects[nd.parent], rows, cols, -1, avoidP);
+            int ca = FloorSpot(g, rects[nd.id], rows, cols, -1, avoidC);
             if (cb < 0 || ca < 0) { story.Append("нет места под кнопки у ").Append(nd.id).Append("; "); continue; }
             site.buttonBelow = new Vector2Int(cb, rects[nd.parent].row0 + rects[nd.parent].h - 1);
             site.buttonAbove = new Vector2Int(ca, rects[nd.id].row0 + rects[nd.id].h - 1);
@@ -1210,8 +1309,12 @@ public static class FreeMazeBuilder
             int inside = nodes[ll.a].onMainPath ? ll.b : ll.a;
             int outside = inside == ll.a ? ll.b : ll.a;
             canvas.SetNextGroupIndex(stamps.Count);
-            int cIn = FloorSpot(g, rects[inside], rows, cols);
-            int cOut = FloorSpot(g, rects[outside], rows, cols);
+            // Кнопку ставим У САМОЙ ДВЕРИ: тянемся к столбцу проёма, а не к середине комнаты.
+            HashSet<int> avoidIn, avoidOut;
+            climbCols.TryGetValue(inside, out avoidIn);
+            climbCols.TryGetValue(outside, out avoidOut);
+            int cIn = FloorSpot(g, rects[inside], rows, cols, ll.wall, avoidIn);
+            int cOut = FloorSpot(g, rects[outside], rows, cols, ll.wallEnd, avoidOut);
             if (cIn < 0 || cOut < 0) { story.Append("возврат: негде кнопка; "); continue; }
             var site = new MazeSite
             {
@@ -1253,6 +1356,10 @@ public static class FreeMazeBuilder
         var stageOf = new int[nodes.Count];
         for (int i = 0; i < nodes.Count; i++) stageOf[i] = nodes[i].stage;
         var lay = RoomLayout.BuildStaged(nodes.Count, parent, req, dir, rng, stageOf);
+        // ⚠️ Раскладка могла ПЕРЕВЕСИТЬ ветку на другую комнату — синхронизируем дерево с ней,
+        // иначе связи, ключи и роли будут считаться по устаревшему родителю.
+        if (lay != null)
+            for (int i = 0; i < nodes.Count; i++) nodes[i].parent = parent[i];
         if (lay == null) return null;
 
         // ── ЛИШНИЕ РЁБРА: петли сверх дерева ────────────────────────────────────────────────────
@@ -1344,6 +1451,17 @@ public static class FreeMazeBuilder
                 for (int x = l.wall; x <= Mathf.Max(l.wall, l.wallEnd); x++)
                 { int rr = rows - 1 - y; guard(rr, x); guard(rr, x - 1); guard(rr, x + 1); }
             }
+        }
+        // ⭐⭐ ПОЛ КОМНАТЫ — ДОРОГА, А НЕ ХОЛСТ. По нижнему ряду воздуха игрок и ходит; бугор,
+        // выросший там, режет проход надвое.
+        // 🐞 Замер, из-за которого это появилось: с отделкой недостижимых комнат 57 из 618, без
+        // отделки 28 — декор УДВАИВАЛ отсечённые куски уровня. Разбор одного случая (сид 504): треть
+        // уровня отрезана, 11 комнат подряд, и всё из-за одного бугра у входа в тоннель. Коридоры
+        // защита уже прикрывала, а пол комнаты, ведущий к ним, — нет.
+        foreach (var rm in lay.rooms)
+        {
+            int floorAir = rows - 1 - rm.y0;                  // нижний ряд ВОЗДУХА комнаты
+            for (int x = rm.x0; x <= rm.X1; x++) guard(floorAir, x);
         }
         foreach (var st in stamps) foreach (var bcell in st.buttons)
         { guard(bcell.y, bcell.x); guard(bcell.y - 1, bcell.x); }
