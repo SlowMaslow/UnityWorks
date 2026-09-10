@@ -368,16 +368,21 @@ public class TimedBridgeModule : IMazeModule
 public class VerticalGateModule : IMazeModule
 {
     public static int StampedCount, RolledBackCount;
+    /// <summary>Почему ворота не встали: 0 нет шахты, 1 низкая комната, 2 некуда кнопки,
+    /// 3 ступенька упрётся в потолок, 4 не нашлось рядов под уступы, 5 уступ вышел огрызком.
+    /// Без разбивки «не встал ворота» — один счётчик на пять разных болезней.</summary>
+    public static readonly int[] FailWhy = new int[6];
 
     public string Name => "вертикальные ворота";
 
     public bool Fits(MazeCanvas c, MazeSite s)
     {
-        if (s.shaftWidth <= 0 || s.shaftCol0 < 0) return false;
-        if (c.H(s.roomId) < 4) return false;                       // при H=3 долезут и без ступеньки
-        if (s.buttonBelow.x < 0 || s.buttonAbove.x < 0) return false;   // некуда поставить пару кнопок
+        if (s.shaftWidth <= 0 || s.shaftCol0 < 0) { FailWhy[0]++; return false; }
+        if (c.H(s.roomId) < 4) { FailWhy[1]++; return false; }      // при H=3 долезут и без ступеньки
+        if (s.buttonBelow.x < 0 || s.buttonAbove.x < 0) { FailWhy[2]++; return false; }   // некуда кнопки
         int stepRow = c.FloorRow(s.roomId) - MazeCanvas.Climb;
-        return stepRow > c.R0(s.roomId);                           // иначе упрётся в потолок
+        if (stepRow <= c.R0(s.roomId)) { FailWhy[3]++; return false; }   // иначе упрётся в потолок
+        return true;
     }
 
     /// <summary>
@@ -418,7 +423,7 @@ public class VerticalGateModule : IMazeModule
         // землёй»), и при переходе на зигзаг это правило чуть не потерялось.
         var rowsOfLedges = new List<int>();
         for (int r = ceilRow + step; r <= floorRow - 2; r += step) rowsOfLedges.Add(r);
-        if (rowsOfLedges.Count == 0) { RolledBackCount++; return null; }
+        if (rowsOfLedges.Count == 0) { RolledBackCount++; FailWhy[4]++; return null; }
 
         // Верхний уступ ставим у той стороны, к которой ближе люк, — с него игрок и вылезает наверх.
         bool topLeft = (s.shaftCol0 - col0) <= (col0 + w - 1 - (s.shaftCol0 + s.shaftWidth - 1));
@@ -451,7 +456,7 @@ public class VerticalGateModule : IMazeModule
             placedLedges++;
             if (placedLedges == 1) { topRow = rowsOfLedges[i]; topStart = start; }
         }
-        if (placedLedges == 0) { c.Rollback(); RolledBackCount++; return null; }
+        if (placedLedges == 0) { c.Rollback(); RolledBackCount++; FailWhy[5]++; return null; }
 
         c.Set(s.buttonBelow.y, s.buttonBelow.x, grp);             // «открыть»
         c.Set(s.buttonAbove.y, s.buttonAbove.x, grp);             // «вернуться»

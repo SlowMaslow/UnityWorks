@@ -366,8 +366,22 @@ public class LevelRecipe
     /// — 283 мс на схему, 6 — 752 мс, 8 — больше двадцати секунд. Поэтому сложность может ЗАПРОСИТЬ
     /// больше, чем мы способны проверить, и тогда честнее недобрать баллов, чем выдать непроверенное.
     /// </summary>
+    /// <param name="minElements">
+    /// ⭐⭐ НИЖНЯЯ ГРАНИЦА ПО ЧИСЛУ МЕХАНИЗМОВ. Баллы и счёт — РАЗНЫЕ вещи, и их путали: одна вылазка
+    /// стоит 9 баллов, то есть почти половину бюджета в двадцать, и уровень выходит богатый по
+    /// сложности, но с одним видимым механизмом.
+    ///
+    /// 🐞 Замер (сложность 20, потолок 8, 25 принятых уровней): механизмов в среднем 3.76, но
+    /// распределение 1→1, 2→3, 3→5, 4→10, 5→4, 6→2 — то есть каждый четвёртый уровень выходил с
+    /// одним-двумя. Игрок это и увидел: «механизмов до сих пор практически никогда особо не
+    /// ставится». Средним такое не лечится — нужна именно граница снизу.
+    ///
+    /// Добор идёт САМЫМИ ДЕШЁВЫМИ элементами (ворота), потому что задача добора — счёт, а не баллы;
+    /// перелёт по сложности здесь осознан и лучше пустого уровня. Ограничение сверху прежнее —
+    /// потолок групп, то есть цена проверки.
+    /// </param>
     public static LevelRecipe RollForDifficulty(System.Random rng, int targetPoints,
-                                                int maxGroups, bool allowExcursion)
+                                                int maxGroups, bool allowExcursion, int minElements = 0)
     {
         var rec = new LevelRecipe();
         var main = new RouteSpec { name = "основной маршрут", isMain = true };
@@ -443,6 +457,36 @@ public class LevelRecipe
             }
             else main.elements.Add(e);
             groups++;
+        }
+
+        // ── ДОБОР ДО МИНИМУМА ПО СЧЁТУ (см. minElements) ──────────────────────────────────────
+        // Баллы уже набраны, но механизмов могло выйти мало — добираем самыми дешёвыми воротами,
+        // пока хватает потолка групп. Сложность при этом перелетает заказ, и это осознанно: пустой
+        // уровень хуже слегка переусложнённого.
+        {
+            int guard2 = 0;
+            while (guard2++ < 40 && groups < maxGroups)
+            {
+                int have = 0;
+                foreach (var r in rec.routes) have += r.elements.Count;
+                if (have >= minElements) break;
+                // Кладём по очереди в маршрут и в ветку, чтобы добор не вытягивался в одну кишку.
+                RouteSpec target = main;
+                if (have % 2 == 1)
+                {
+                    foreach (var r in rec.routes)
+                        if (!r.isMain && r.elements.Count < 2
+                            && r.elements.Count > 0 && r.elements[0] != PuzzleElement.Excursion)
+                        { target = r; break; }
+                    if (target == main)
+                    {
+                        target = new RouteSpec { name = "ветка к ключу " + rec.routes.Count };
+                        rec.routes.Add(target);
+                    }
+                }
+                target.elements.Add(PuzzleElement.Gate);
+                groups++;
+            }
         }
         return rec;
     }

@@ -1366,7 +1366,19 @@ public static class FreeMazeBuilder
             site.buttonAbove = new Vector2Int(ca, rects[nd.id].row0 + rects[nd.id].h - 1);
 
             ModuleStamp st = null;
-            switch (nd.element.Value)
+            // ⭐⭐ РЕБРО ВЫШЛО НЕ ТОГО НАПРАВЛЕНИЯ — МЕНЯЕМ МЕХАНИЗМ, А НЕ ТЕРЯЕМ ЕГО.
+            // Направление заказывается раскладке заранее, но заказы конфликтуют: мост требует
+            // горизонтали ОБОИМ своим рёбрам, и если на одном из них уже стоят ворота, чей-то заказ
+            // обязан уступить. Раньше уступивший механизм просто не строился.
+            // 🐞 Замер на 25 уровнях: так терялись трое — одни ворота на горизонтальном ребре и две
+            // двери на вертикальном. Замена бесплатна: ворота на боковом ребре бессмысленны, а дверь
+            // там ровно к месту, и наоборот.
+            var element = nd.element.Value;
+            if (link.vertical && element == PuzzleElement.Door)
+            { element = PuzzleElement.Gate; story.Append("дверь ").Append(nd.id).Append(" → ворота (ребро вертикальное); "); }
+            else if (!link.vertical && (element == PuzzleElement.Gate || element == PuzzleElement.NestedGate))
+            { element = PuzzleElement.Door; story.Append("ворота ").Append(nd.id).Append(" → дверь (ребро боковое); "); }
+            switch (element)
             {
                 case PuzzleElement.Gate:
                 case PuzzleElement.NestedGate:
@@ -1387,8 +1399,10 @@ public static class FreeMazeBuilder
                     // (сиды 3009 и 4014 из чистых становились браком).
                     if (parentBelow && GateBypassed(g, rows, cols, nodes, rects, stamps, nd.id,
                                                     site.shaftStepRow, site.shaftCol0, site.shaftWidth))
+                    // ⚠️ continue, а не break: после break сработало бы ещё и «не встал», и один
+                    // отказ печатался ДВАЖДЫ — на этом я сам сбился, разбирая потери.
                     { story.Append("ворота ").Append(nd.parent).Append("->").Append(nd.id)
-                           .Append(" обходятся по геометрии — не ставлю; "); StatGateBypass++; break; }
+                           .Append(" обходятся по геометрии — не ставлю; "); StatGateBypass++; continue; }
                     // 🐞 ОБМЕН БЕЗ ВРЕМЕННОЙ: было две строки подряд, и вторая брала УЖЕ ПЕРЕЗАПИСАННОЕ
                     // значение — при родителе сверху обе кнопки схлопывались в одну и ту же клетку,
                     // то есть ворота оставались без кнопки «открыть» внизу.
@@ -1436,7 +1450,7 @@ public static class FreeMazeBuilder
                     if (!nd.isExit && GateBypassed(g, rows, cols, nodes, rects, stamps, nd.id,
                                                    -1, 0, 0, site.doorCol, site.doorRowTop, site.doorHeight))
                     { story.Append("дверь ").Append(nd.parent).Append("->").Append(nd.id)
-                           .Append(" обходится по геометрии — не ставлю; "); StatGateBypass++; break; }
+                           .Append(" обходится по геометрии — не ставлю; "); StatGateBypass++; continue; }
                     site.exitOnly = nd.isExit;
                     site.insideIsBelow = true;                     // buttonBelow = комната родителя
                     st = new InvertedDoorModule().Stamp(canvas, site);
@@ -1504,7 +1518,7 @@ public static class FreeMazeBuilder
                     continue;                                  // штампы уже добавлены
                 }
             }
-            if (st == null) { story.Append("не встал ").Append(PuzzleVocabulary.Name(nd.element.Value))
+            if (st == null) { story.Append("не встал ").Append(PuzzleVocabulary.Name(element))
                                    .Append(" на ").Append(nd.parent).Append("→").Append(nd.id).Append("; "); continue; }
             stampOf[nd.id] = st;
             st.edgeRooms = new Vector2Int(nd.parent, nd.id);
@@ -1684,6 +1698,14 @@ public static class FreeMazeBuilder
         foreach (var c in cands)
         {
             if (wantExtra <= 0) break;
+            // ⭐ СКВОЗНОЙ КОРИДОР ОБЯЗАН ОСТАТЬСЯ СКВОЗНЫМ. Комната моста и комната камеры объявлены
+            // проходными ровно насквозь вбок (sealed2): два боковых прохода и ни одного лишнего.
+            // 🐞 Лишние рёбра добавляются ПОСЛЕ дерева и про это не знали — третий проём в такой
+            // комнате превращал её в развилку, и мост отказывался вставать. Замер на 21 уровне: из
+            // 18 потерянных механизмов девять были мостом, и четыре из них — ровно с этой жалобой
+            // («мост: комната N не сквозной коридор»).
+            if (c.a >= 0 && c.a < nodes.Count && nodes[c.a].sealed2) continue;
+            if (c.b >= 0 && c.b < nodes.Count && nodes[c.b].sealed2) continue;
             if (pathHasElement(c.a, c.b)) continue;         // дешёвый отсев до полной проверки
             if (tryOpen(c)) wantExtra--;
         }
