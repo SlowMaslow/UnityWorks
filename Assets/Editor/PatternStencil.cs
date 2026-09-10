@@ -81,6 +81,17 @@ public class Pattern
         int cc = mirror ? Width - 1 - c : c;
         return cc >= 0 && cc < shape[r].Length ? shape[r][cc] : '?';
     }
+
+    /// <summary>Столбец устья ВХОДА ('+') в форме; −1 — входа нет. Нужен, чтобы посадить форму
+    /// входом к той комнате, ОТКУДА игрок приходит: у формы с односторонним прологом стороны не
+    /// равноправны, и зеркало их меняет местами.</summary>
+    public int EntryCol()
+    {
+        for (int r = 0; r < shape.Length; r++)
+        for (int c = 0; c < shape[r].Length; c++)
+            if (shape[r][c] == '+') return c;
+        return -1;
+    }
 }
 
 /// <summary>Что паттерн ставит. ⚠️ Новый вид (движущаяся платформа, противник) добавляется СЮДА
@@ -256,6 +267,8 @@ public static class StencilStamper
     /// разные болезни — комната не той высоты (кандидатов нет вовсе), устье замуровано, чужой механизм
     /// на клетке. Пока их не разделили, было видно только «3 постройки из 12 заказов».</summary>
     public static int NoCandidates, SpotsTried, BlockMouth, BlockExit, BlockRock, BlockMech;
+    /// <summary>Сколько посадок отсеяно из-за того, что устье входа смотрело не к родителю.</summary>
+    public static int SideSkipped;
     /// <summary>Габариты комнат, куда камеру звали: чтобы не гадать, попадает ли она по размеру.</summary>
     public static readonly List<string> Rooms = new List<string>();
     /// <summary>Где именно сработал зажим, в координатах формы: без этого его чинят наугад.</summary>
@@ -264,12 +277,24 @@ public static class StencilStamper
     public static void ResetStats()
     {
         StampedCount = RolledBackCount = FailNoSpot = FailPinch = FailButton = 0;
-        NoCandidates = SpotsTried = BlockMouth = BlockExit = BlockRock = BlockMech = 0;
+        NoCandidates = SpotsTried = BlockMouth = BlockExit = BlockRock = BlockMech = SideSkipped = 0;
         Rooms.Clear(); PinchAt.Clear();
     }
 
+    /// <param name="parentSide">С какой стороны игрок ПРИХОДИТ: 0 — родительская комната слева,
+    /// 1 — справа, −1 — неизвестно (тогда сторона не проверяется).
+    ///
+    /// 🐞🐞 ЗЕРКАЛО ВЫБИРАЛОСЬ ЖРЕБИЕМ, И ЭТО ЛОМАЛО КАМЕРУ ЦЕЛИКОМ. У её формы стороны не
+    /// равноправны: слева пролог с кнопкой на твёрдом полу, за ним провал в семь клеток при боковой
+    /// дотяжке шесть — обойти нельзя намеренно. Зеркало меняет вход и выход местами, и в половине
+    /// случаев игрок приходил со стороны ВЫХОДА: провал перед ним, а кнопка провала — за провалом.
+    /// Дальше по трассе не пройти, и всё, что за камерой, включая финиш, отрезано.
+    /// Замер: из семи уровней с камерой браком были ШЕСТЬ (без камеры — 3 из 29).
+    /// Поэтому сторона теперь не пожелание, а фильтр: посадка с устьем не к родителю не предлагается
+    /// вовсе. Не нашлось подходящей — камеры не будет, и это честнее сломанного уровня.</param>
     public static List<ModuleStamp> Stamp(MazeCanvas c, int roomId, Pattern p,
-                                          System.Random rng, out Vector2Int keyCell)
+                                          System.Random rng, out Vector2Int keyCell,
+                                          int parentSide = -1)
     {
         keyCell = new Vector2Int(-1, -1);
         int w = p.Width, h = p.Height;
@@ -287,6 +312,7 @@ public static class StencilStamper
         if (p.roomAligned) cols.Add(c.C0(roomId) - 1);
         else for (int cc = c0; cc + w <= c1 + 1; cc++) cols.Add(cc);
 
+        int entryCol = p.EntryCol();
         var spots = new List<Vector3Int>();
         foreach (int r in rows)
         {
@@ -294,8 +320,18 @@ public static class StencilStamper
             foreach (int cc in cols)
             {
                 if (cc < 0 || cc + w > c.Cols) continue;
-                spots.Add(new Vector3Int(r, cc, 0));
-                if (p.mirrorable) spots.Add(new Vector3Int(r, cc, 1));
+                for (int mir = 0; mir <= 1; mir++)
+                {
+                    if (mir == 1 && !p.mirrorable) continue;
+                    // Устье входа обязано смотреть туда, откуда игрок приходит (см. parentSide).
+                    if (parentSide >= 0 && entryCol >= 0)
+                    {
+                        int ex = mir == 1 ? w - 1 - entryCol : entryCol;
+                        bool entryLeft = ex * 2 < w;
+                        if ((parentSide == 0) != entryLeft) { SideSkipped++; continue; }
+                    }
+                    spots.Add(new Vector3Int(r, cc, mir));
+                }
             }
         }
         if (Rooms.Count < 200)

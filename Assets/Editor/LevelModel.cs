@@ -261,25 +261,45 @@ public class LevelModel
     /// при этом резал законный обход угла на Level_03 с запасом в 0.12 клетки. Оба случая сверены
     /// со скринами игрока.
     /// </summary>
+    // ⚠️ Обход укладывается в бюджет ReachSumCells, значит и вся его область — квадрат 15×15 вокруг
+    // старта. Держим три готовых массива на неё и метим поколением вместо очистки: раньше на КАЖДЫЙ
+    // вызов заводились Dictionary и Queue, а вызывается это по сотне раз на состояние.
+    private const int PathSpan = ReachSumCells * 2 + 1;
+    private static readonly int[] _ppStamp = new int[PathSpan * PathSpan];
+    private static readonly int[] _ppDist  = new int[PathSpan * PathSpan];
+    private static readonly int[] _ppQueue = new int[PathSpan * PathSpan];
+    private static int _ppGen;
+
     public static bool PathPossible(System.Func<Vector2Int, bool> solid, Vector2Int from, Vector2Int to)
     {
         if (solid(from) || solid(to)) return false;
         if (from == to) return true;
-        var seen = new Dictionary<Vector2Int, int> { { from, 0 } };
-        var q = new Queue<Vector2Int>();
-        q.Enqueue(from);
-        while (q.Count > 0)
+        // Дальше бюджета пути не дойти при любой форме обхода — считать нечего.
+        int mdx = to.x - from.x, mdy = to.y - from.y;
+        if (Mathf.Abs(mdx) + Mathf.Abs(mdy) > ReachSumCells) return false;
+
+        int gen = ++_ppGen;
+        int head = 0, tail = 0;
+        int start = ReachSumCells * PathSpan + ReachSumCells;   // (0,0) в локальных координатах
+        _ppStamp[start] = gen; _ppDist[start] = 0; _ppQueue[tail++] = start;
+        while (head < tail)
         {
-            var c0 = q.Dequeue();
-            int d0 = seen[c0];
+            int cur = _ppQueue[head++];
+            int d0 = _ppDist[cur];
             if (d0 >= ReachSumCells) continue;
+            int cx = cur % PathSpan - ReachSumCells, cy = cur / PathSpan - ReachSumCells;
             for (int k = 0; k < 4; k++)
             {
-                var nb = new Vector2Int(c0.x + (k == 2 ? -1 : k == 3 ? 1 : 0),
-                                        c0.y + (k == 0 ? -1 : k == 1 ? 1 : 0));
-                if (seen.ContainsKey(nb) || solid(nb)) continue;
+                int nx = cx + (k == 2 ? -1 : k == 3 ? 1 : 0);
+                int ny = cy + (k == 0 ? -1 : k == 1 ? 1 : 0);
+                if (nx < -ReachSumCells || nx > ReachSumCells || ny < -ReachSumCells || ny > ReachSumCells) continue;
+                int ni = (ny + ReachSumCells) * PathSpan + (nx + ReachSumCells);
+                if (_ppStamp[ni] == gen) continue;
+                _ppStamp[ni] = gen; _ppDist[ni] = d0 + 1;
+                var nb = new Vector2Int(from.x + nx, from.y + ny);
+                if (solid(nb)) continue;                        // камень: помечен, но не разворачивается
                 if (nb == to) return true;
-                seen[nb] = d0 + 1; q.Enqueue(nb);
+                _ppQueue[tail++] = ni;
             }
         }
         return false;
@@ -343,6 +363,129 @@ public class LevelModel
         _solidCache[mask] = s; return s;
     }
 
+    // ─── ⭐⭐ БИТОВАЯ СЕТКА: «ТВЁРДАЯ ЛИ КЛЕТКА» ЧЕРЕЗ ИНДЕКС, А НЕ ЧЕРЕЗ ХЕШ ────────────────────
+    // Самая горячая операция всей модели — спросить у клетки, камень ли она. Она стояла на
+    // HashSet<Vector2Int>, то есть на хешировании структуры, и вызывалась сотни раз на каждое
+    // состояние. Замер на 2 млн проверок: HashSet 76 мс против 9 мс у обычного массива — в 8.4 раза.
+    // Уровень это сетка ~90×45, клетку можно адресовать как y*W+x, и хеш не нужен вовсе.
+    //
+    // ⚠️ ПРАВИЛА НЕ МЕНЯЮТСЯ. Меняется ТОЛЬКО способ хранить «камень/не камень»: за границей сетки
+    // ответ «не камень», ровно как у HashSet.Contains. SolidFor остаётся как был — им пользуются
+    // снаружи (окно редактора), и после этой правки он с горячего пути ушёл.
+    private int _bx0, _by0, _bw, _bh;
+    private readonly Dictionary<int, bool[]> _solidBits = new Dictionary<int, bool[]>();
+    private readonly Dictionary<int, System.Func<Vector2Int, bool>> _solidFn
+        = new Dictionary<int, System.Func<Vector2Int, bool>>();
+    private bool[] _buttonBits;
+
+    /// <summary>
+    /// ⭐⭐ ГРУППЫ, КОТОРЫХ В ЭТОМ ПРОГОНЕ НЕТ (битовая маска). Ровно то же, что
+    /// <see cref="LevelSpec.WithoutGroup"/>, но БЕЗ пересборки модели: кнопку такой группы нажать
+    /// нельзя, её плиты ведут себя как при ненажатой кнопке (обычная — пусто, инверсная — вечный
+    /// камень), её кнопки не мешают пэду, а вложенные в неё кнопки заперты навсегда.
+    ///
+    /// Зачем: приёмка проверяет «каждый механизм несущий», убирая группы по одной, и раньше на
+    /// каждую строила НОВУЮ модель. А тяжёлое в модели — не сам обход, а подготовка: список клеток,
+    /// соседи в дотяжке на каждую клетку, битовые сетки на маску, кэш шагов. При девяти группах это
+    /// десять полных пересборок подряд. С этой маской подготовка делается ОДИН раз и переиспользуется
+    /// всеми прогонами: меняется только то, какие кнопки разрешено нажимать.
+    ///
+    /// ⚠️ Нумерация групп при этом НЕ сдвигается — в отличие от WithoutGroup, где индексы съезжали и
+    /// ссылки вложенных кнопок приходилось перенумеровывать. Здесь ссылаться не на кого: маска
+    /// говорит про те же самые индексы.
+    /// </summary>
+    public int IgnoreGroups;
+
+    private int BitIndex(int x, int y)
+    {
+        int px = x - _bx0, py = y - _by0;
+        return (px < 0 || py < 0 || px >= _bw || py >= _bh) ? -1 : py * _bw + px;
+    }
+    private static bool At(bool[] bits, int i) => i >= 0 && bits[i];
+
+    // Одноместный кэш последней маски: во внутреннем цикле маска меняется редко, а поиск в словаре
+    // на каждого соседа — это хеш там, где хватает сравнения целых.
+    private int _lastMask = -1; private bool[] _lastBits;
+    private int _lastFnMask = -1; private System.Func<Vector2Int, bool> _lastFnValue;
+
+    private bool[] SolidBits(int mask)
+    {
+        if (mask == _lastMask) return _lastBits;
+        bool[] got;
+        if (_solidBits.TryGetValue(mask, out got)) { _lastMask = mask; _lastBits = got; return got; }
+        var bits = new bool[_bw * _bh];
+        foreach (var k in Spec.rock) { int i = BitIndex(k.x, k.y); if (i >= 0) bits[i] = true; }
+        for (int g = 0; g < G; g++)
+            if (TilesSolid(mask, g))
+                foreach (var k in Spec.groups[g].tiles) { int i = BitIndex(k.x, k.y); if (i >= 0) bits[i] = true; }
+        _solidBits[mask] = bits; _lastMask = mask; _lastBits = bits; return bits;
+    }
+
+    /// <summary>Предикат «камень» для правил перехода. Замыкание строится ОДИН РАЗ на маску:
+    /// раньше `k => solid.Contains(k)` рождалось на каждый вызов CanStep.</summary>
+    private System.Func<Vector2Int, bool> SolidFn(int mask)
+    {
+        if (mask == _lastFnMask) return _lastFnValue;
+        System.Func<Vector2Int, bool> f;
+        if (_solidFn.TryGetValue(mask, out f)) { _lastFnMask = mask; _lastFnValue = f; return f; }
+        var bits = SolidBits(mask);
+        int bx = _bx0, by = _by0, bw = _bw, bh = _bh;
+        f = k =>
+        {
+            int px = k.x - bx, py = k.y - by;
+            return px >= 0 && py >= 0 && px < bw && py < bh && bits[py * bw + px];
+        };
+        _solidFn[mask] = f; _lastFnMask = mask; _lastFnValue = f; return f;
+    }
+
+    /// <summary>Границы битовой сетки: всё, о чём модель может спросить, плюс запас под бюджет пути
+    /// (правила щупают клетки вокруг цели, а не только саму цель).</summary>
+    private void BuildBitGrid()
+    {
+        int minX = int.MaxValue, minY = int.MaxValue, maxX = int.MinValue, maxY = int.MinValue;
+        System.Action<Vector2Int> grow = k =>
+        {
+            if (k.x < minX) minX = k.x; if (k.x > maxX) maxX = k.x;
+            if (k.y < minY) minY = k.y; if (k.y > maxY) maxY = k.y;
+        };
+        foreach (var k in Spec.rock) grow(k);
+        foreach (var g in Spec.groups)
+        {
+            foreach (var k in g.tiles) grow(k);
+            foreach (var b in g.buttons) grow(b.cell);
+        }
+        foreach (var a in Spec.artifacts) grow(a.cell);
+        foreach (var c in Spec.checkpoints) grow(c.cell);
+        if (Spec.finish.exists) grow(Spec.finish.cell);
+        grow(Spec.spawn);
+        if (minX > maxX) { _bx0 = _by0 = 0; _bw = _bh = 1; }
+        else
+        {
+            int pad = ReachSumCells + 2;
+            _bx0 = minX - pad; _by0 = minY - pad;
+            _bw = maxX - minX + 1 + 2 * pad; _bh = maxY - minY + 1 + 2 * pad;
+        }
+        _solidBits.Clear(); _solidFn.Clear();
+        _lastMask = _lastFnMask = -1; _lastBits = null; _lastFnValue = null;
+        RebuildButtonBits();
+    }
+
+    /// <summary>Кнопки, занимающие клетку под пэд. ⚠️ Кнопки убранных групп сюда НЕ попадают: вместе
+    /// с механизмом исчезает и его кнопка, а значит и помеха. Пересобирается на каждый прогон, потому
+    /// что зависит от <see cref="IgnoreGroups"/>; всё остальное (клетки, соседи, сетки, кэш шагов)
+    /// от него не зависит и переживает смену маски.</summary>
+    private void RebuildButtonBits()
+    {
+        if (_buttonBits == null || _buttonBits.Length != _bw * _bh) _buttonBits = new bool[_bw * _bh];
+        else System.Array.Clear(_buttonBits, 0, _buttonBits.Length);
+        for (int g = 0; g < Spec.groups.Count; g++)
+        {
+            if ((IgnoreGroups & (1 << g)) != 0) continue;
+            foreach (var b in Spec.groups[g].buttons)
+            { int i = BitIndex(b.cell.x, b.cell.y); if (i >= 0) _buttonBits[i] = true; }
+        }
+    }
+
     /// <summary>
     /// ⭐ КНОПКА ЗАНИМАЕТ КЛЕТКУ, В КОТОРУЮ ИГРОК СТАВИТ ПЭД. Холд — это камень, над которым воздух;
     /// но если в этом воздухе сидит кнопка, встать на холд НЕЛЬЗЯ — руке некуда лечь.
@@ -358,11 +501,12 @@ public class LevelModel
 
     public bool IsHold(int mask, Vector2Int k)
     {
-        var s = SolidFor(mask);
-        if (!s.Contains(k)) return false;
-        var above = new Vector2Int(k.x, k.y + 1);
-        if (s.Contains(above)) return false;
-        return !ButtonsBlockPad || !_buttonCells.Contains(above);
+        var bits = SolidBits(mask);
+        int i = BitIndex(k.x, k.y);
+        if (!At(bits, i)) return false;
+        int iu = BitIndex(k.x, k.y + 1);
+        if (At(bits, iu)) return false;
+        return !ButtonsBlockPad || !At(_buttonBits, iu);
     }
 
     public bool CanStep(int mask, Vector2Int a, Vector2Int b)
@@ -372,16 +516,12 @@ public class LevelModel
                  ^ ((long)(b.x + 512) << 12) ^ (long)(b.y + 512);
         bool cached;
         if (_stepCache.TryGetValue(key, out cached)) return cached;
-        var solid = SolidFor(mask);
-        bool ok = StepPossible(k => solid.Contains(k), a, b, RS, RU);
+        bool ok = StepPossible(SolidFn(mask), a, b, RS, RU);
         _stepCache[key] = ok; return ok;
     }
 
     public bool CanTouch(int mask, Vector2Int a, Vector2Int target, Vector2 center, Vector2 half)
-    {
-        var solid = SolidFor(mask);
-        return TouchPossible(k => solid.Contains(k), a, target, center, half, RS, RU);
-    }
+        => TouchPossible(SolidFn(mask), a, target, center, half, RS, RU);
 
     public bool CanTouch(int mask, Vector2Int a, LevelTarget t)
         => t.exists && CanTouch(mask, a, t.cell, t.center, t.half);
@@ -424,6 +564,62 @@ public class LevelModel
     /// Поиск по состояниям (позиция + маска), идёт ДО КОНЦА — и финиш, и ключи берутся из одного
     /// дерева. Ходы: перейти на холд, нажать кнопку, дождаться конца окна (может уронить).
     /// </summary>
+    /// <summary>Подготовка уже сделана — второй прогон переиспользует клетки, соседей, битовые сетки
+    /// и кэш шагов, а перебирает только состояния.</summary>
+    private bool _prepared;
+    /// <summary>Индексы состояний, которых прогон коснулся: по ним и только по ним чистится
+    /// состояние перед следующим прогоном (см. <see cref="Rerun"/>).</summary>
+    private readonly List<int> _touched = new List<int>();
+
+    /// <summary>
+    /// ⭐⭐ ДОСТИГНУТЫЕ ПАРЫ (МАСКА ГРУПП, КЛЕТКА) — индексы вида mask*N+ci, без оси ключей.
+    ///
+    /// Зачем: вопрос «дотянусь ли отсюда до цели» зависит ТОЛЬКО от маски и клетки, а состояний с
+    /// одной и той же парой ровно 2^ключей — на трёх артефактах это восемь, на шести шестьдесят
+    /// четыре. Приёмка же перебирала все состояния подряд и звала CanTouch на каждое, то есть делала
+    /// одну и ту же работу по восемь раз, и так на каждую цель и на каждую убранную группу.
+    /// </summary>
+    public List<int> ReachedPositions => _reachedPos;
+    private readonly List<int> _reachedPos = new List<int>();
+    private bool[] _posSeen;
+
+    private void MarkTouched(int st)
+    {
+        _touched.Add(st);
+        int pos = ((st / N) & (MASKS - 1)) * N + st % N;
+        if (!_posSeen[pos]) { _posSeen[pos] = true; _reachedPos.Add(pos); }
+    }
+
+    /// <summary>
+    /// ⭐ ПРОГНАТЬ ЗАНОВО, УБРАВ ГРУППЫ <paramref name="ignoreGroups"/> — без пересборки модели.
+    /// Именно этим приёмка проверяет «каждый механизм несущий»: раньше на каждую группу строилась
+    /// новая модель, то есть заново считались клетки, соседи в дотяжке, сетки и кэш шагов.
+    /// От маски убранных групп зависят только кнопки (какие можно нажать и какие мешают пэду) и
+    /// сам обход; вся тяжёлая подготовка от неё не зависит и переживает смену маски.
+    /// </summary>
+    public void Rerun(int ignoreGroups)
+    {
+        if (!_prepared || TooManyGroups || N == 0) { IgnoreGroups = ignoreGroups; Search(); return; }
+        IgnoreGroups = ignoreGroups;
+        RebuildButtonBits();
+        // ⚠️ СБРАСЫВАЕМ ТОЛЬКО ТРОНУТОЕ, А НЕ ВЕСЬ МАССИВ. 🐞 Первая версия чистила все TOTAL клеток
+        // пяти массивов на каждый прогон — и переиспользование модели вышло МЕДЛЕННЕЕ пересборки
+        // (потолок 8: 1311 → 1443 мс на уровень). Причина простая: у общей модели ось масок полная,
+        // 2^G, тогда как у отдельной модели без одной группы она вдвое короче. Зато достигается всего
+        // 2-4% состояний, и список тронутых на порядки короче самого массива.
+        for (int i = 0; i < _touched.Count; i++)
+        {
+            int x = _touched[i];
+            Seen[x] = false; Prev[x] = 0; PrevKind[x] = 0; Depth[x] = 0; _timeLeft[x] = -1;
+        }
+        _touched.Clear();
+        for (int i = 0; i < _reachedPos.Count; i++) _posSeen[_reachedPos[i]] = false;
+        _reachedPos.Clear();
+        _stuckFlag = null;               // тупики считаются заново под новую маску
+        _q.Clear();
+        Explore();
+    }
+
     public void Search()
     {
         G = Spec.groups.Count;
@@ -433,6 +629,8 @@ public class LevelModel
         // остальное, а уровней с семью артефактами у нас нет (прогрессия требует трёх).
         K = Mathf.Min(Spec.artifacts.Count, 6);
         MASKS_ALL = MASKS << K;
+
+        BuildBitGrid();                         // адресация клетки индексом вместо хеша
 
         // Клетки, твёрдые ХОТЬ ПРИ КАКОЙ-ТО маске. ⚠️ Одной маски MASKS-1 мало: в ней как раз
         // отсутствуют тайлы инверсных групп.
@@ -467,6 +665,9 @@ public class LevelModel
         _minY = int.MaxValue;
         foreach (var c in Cells) if (c.y < _minY) _minY = c.y;
 
+        _prepared = true;
+        _posSeen = new bool[MASKS * N];
+        _reachedPos.Clear(); _touched.Clear();
         TOTAL = MASKS_ALL * N;
         Seen = new bool[TOTAL]; Prev = new int[TOTAL]; PrevKind = new byte[TOTAL]; Depth = new int[TOTAL];
         // ⭐ ВРЕМЯ ЕДЕТ ОТДЕЛЬНЫМ МАССИВОМ, А НЕ ТРЕТЬЕЙ ОСЬЮ ИНДЕКСА. Состояние по-прежнему
@@ -497,12 +698,20 @@ public class LevelModel
             }
         }
 
+        Explore();
+    }
+
+    /// <summary>Сам обход по состояниям. Вынесен из <see cref="Search"/>, чтобы <see cref="Rerun"/>
+    /// мог повторить его на уже подготовленной модели.</summary>
+    private void Explore()
+    {
         int full = MoveBudget > 0 ? MoveBudget : int.MaxValue / 4;
         for (int i = 0; i < N; i++)
             if (IsHold(0, Cells[i]) && CanStep(0, SpawnCell, Cells[i]))
             {
                 int s0i = WithKeys(0, i);
                 if (Seen[s0i]) continue;
+                MarkTouched(s0i);
                 Seen[s0i] = true; Prev[s0i] = -1; Depth[s0i] = 0; _timeLeft[s0i] = full; _q.Enqueue(s0i);
             }
 
@@ -516,10 +725,12 @@ public class LevelModel
             for (int g = 0; g < G; g++)                     // нажать кнопку (касание пэдом)
             {
                 if ((m & (1 << g)) != 0) continue;
+                if ((IgnoreGroups & (1 << g)) != 0) continue;              // группы в этом прогоне нет
                 bool can = false;
                 foreach (var b in Spec.groups[g].buttons)
                 {
                     if (b.host == LevelButton.HostGone) continue;          // хозяина больше нет вовсе
+                    if (b.host >= 0 && (IgnoreGroups & (1 << b.host)) != 0) continue;   // хозяина убрали
                     if (b.host >= 0 && !TilesSolid(m, b.host)) continue;   // хозяин ещё в превью
                     if (!CanTouch(m, hc, b.cell, b.center, b.half)) continue;
                     can = true; break;
@@ -545,7 +756,7 @@ public class LevelModel
                 if (!CanStep(m, hc, Cells[j])) continue;
                 int ns = WithKeys(keys, m, j);              // по дороге подбираем всё, до чего дотянулись
                 if (Seen[ns] && _timeLeft[ns] >= nt) continue;
-                if (!Seen[ns]) { Prev[ns] = cur; PrevKind[ns] = 0; Depth[ns] = Depth[cur] + 1; }
+                if (!Seen[ns]) { MarkTouched(ns); Prev[ns] = cur; PrevKind[ns] = 0; Depth[ns] = Depth[cur] + 1; }
                 Seen[ns] = true; _timeLeft[ns] = nt; _q.Enqueue(ns);
             }
         }
@@ -562,7 +773,7 @@ public class LevelModel
         if (idx < 0) return;
         int ns = WithKeys(KeyMask(from), nm, idx);
         if (Seen[ns] && _timeLeft[ns] >= newTime) return;
-        if (!Seen[ns]) { Prev[ns] = from; PrevKind[ns] = kind; Depth[ns] = Depth[from] + 1; }
+        if (!Seen[ns]) { MarkTouched(ns); Prev[ns] = from; PrevKind[ns] = kind; Depth[ns] = Depth[from] + 1; }
         Seen[ns] = true; _timeLeft[ns] = newTime; _q.Enqueue(ns);
     }
 
@@ -574,16 +785,16 @@ public class LevelModel
     private int Landing(int nm, int ci)
     {
         var pos = Cells[ci];
-        var s = SolidFor(nm);
-        if (!s.Contains(pos))
+        var bits = SolidBits(nm);
+        if (!At(bits, BitIndex(pos.x, pos.y)))
         {
             int landY = int.MinValue;
             for (int y = pos.y - 1; y >= _minY; y--)
-                if (s.Contains(new Vector2Int(pos.x, y))) { landY = y; break; }
+                if (At(bits, BitIndex(pos.x, y))) { landY = y; break; }
             if (landY == int.MinValue) return -1;
             return CellIndex(new Vector2Int(pos.x, landY));
         }
-        if (s.Contains(new Vector2Int(pos.x, pos.y + 1))) return -1;
+        if (At(bits, BitIndex(pos.x, pos.y + 1))) return -1;
         return ci;
     }
 
@@ -688,10 +899,12 @@ public class LevelModel
                 int nm;
                 if ((m & (1 << g)) == 0)
                 {
+                    if ((IgnoreGroups & (1 << g)) != 0) continue;
                     bool can = false;
                     foreach (var b in Spec.groups[g].buttons)
                     {
                         if (b.host == LevelButton.HostGone) continue;
+                        if (b.host >= 0 && (IgnoreGroups & (1 << b.host)) != 0) continue;
                         if (b.host >= 0 && !TilesSolid(m, b.host)) continue;
                         if (!CanTouch(m, Cells[ci], b.cell, b.center, b.half)) continue;
                         can = true; break;

@@ -40,6 +40,12 @@ public static class RoomLayout
         public int wall;              // ряд-стена между ними (верт.) либо столбец-стена (гор.)
         /// <summary>Связь СВЕРХ дерева: даёт петлю, механизма на ней нет.</summary>
         public bool extra;
+        /// <summary>РЕБРО ВОЗВРАТА: выход петли на основной маршрут, закрытый односторонней дверью.
+        /// Тоже <see cref="extra"/>, но проход по нему ОДНОСТОРОННИЙ — только из ветки наружу.</summary>
+        public bool returnEdge;
+        /// <summary>Для ребра возврата — комната ВЕТКИ (та, где кнопка). Проход разрешён только
+        /// в направлении returnFrom → противоположная комната.</summary>
+        public int returnFrom = -1;
         /// <summary>Для ТОННЕЛЯ: последний столбец прорезаемого хода (у обычной связи равен wall).
         /// 🐞 Пока лишними рёбрами могли стать только комнаты, стоящие ровно через одну стену,
         /// петель выходило 0.4 на уровень и процент ни на что не влиял — несвязанные комнаты почти
@@ -244,6 +250,24 @@ public static class RoomLayout
         public List<int> reattach;
 
         /// <summary>
+        /// ⭐⭐ ЗАБРОНИРОВАТЬ ПОЛОСУ ПОД ЭТОЙ КОМНАТОЙ (глубина в клетках, 0 — не бронировать).
+        /// Туда никто не встанет — кроме кольца, ради которого бронь и делается.
+        ///
+        /// 🐞 Замер, из-за которого понадобилось: вычисляемое кольцо не встало НИ РАЗУ, и по мере
+        /// починки причин отказ смещался к столкновениям — 137 из 184 попыток. Кольцу нужен свободный
+        /// прямоугольник примерно 30×10 на ярус ниже трассы, а его успевает занять сам хребет.
+        /// Резервировать ПОСЛЕ укладки поздно: бронь должна существовать в момент, когда хребет
+        /// ещё кладётся.
+        /// ⚠️ Бронируем не под всем хребтом, а только под комнатами, к которым цепляются ветки:
+        /// сплошная бронь заставила бы маршрут идти плоско, а разброс высот — половина вида уровня.
+        /// </summary>
+        public int reserveBelow;
+        /// <summary>Насколько ШИРОКОЙ должна быть бронь (клеток в каждую сторону от комнаты).
+        /// 🐞 Сперва бронь была шириной в саму комнату — три-восемь клеток, — а кольцу нужен марш
+        /// вбок клеток на тридцать. Узкая бронь не спасала: столкновений оставалось 125 из 184.</summary>
+        public int reserveWide;
+
+        /// <summary>
         /// ⭐⭐ КОМНАТУ МОЖНО СВЯЗАТЬ С РОДИТЕЛЕМ ТОННЕЛЕМ, а не только общей стеной (предложение
         /// игрока): пара «родитель-ребёнок» остаётся связанной, а проход между ними ПРОРЕЗАЕТСЯ.
         ///
@@ -380,6 +404,7 @@ public static class RoomLayout
         // Перезапуск возвращает утраченное, оставаясь во много раз дешевле прежних 300 попыток —
         // те начинали с нуля ВСЕГДА, а эти только когда действительно тупик.
         RoomBox[] boxes = null; Result res = null;
+        List<RoomBox> reserved = null;
         bool allOk = false;
         StatBuilds++;
         for (int restart = 0; restart < 12 && !allOk; restart++)
@@ -387,8 +412,13 @@ public static class RoomLayout
             if (restart > 0) StatRestarts++;
         boxes = new RoomBox[n];
         res = new Result();
+        reserved = new List<RoomBox>();
         var s0 = Size(req[root], rng);
         boxes[root] = new RoomBox { id = root, x0 = 0, y0 = 0, w = s0[0], h = s0[1] };
+        if (req[root].reserveBelow > 0)
+            reserved.Add(new RoomBox { id = -1, x0 = -req[root].reserveWide,
+                w = s0[0] + req[root].reserveWide * 2,
+                y0 = -1 - req[root].reserveBelow, h = req[root].reserveBelow });
         allOk = true;
 
         foreach (var stageNodes in stages)
@@ -407,14 +437,18 @@ public static class RoomLayout
             }
             for (int attempt = 0; attempt < triesPerStage && !ok; attempt++)
             {
-                int linksBefore = res.links.Count;
-                ok = PlaceStage(n, parent, req, dir, rng, boxes, res, stageNodes);
+                int linksBefore = res.links.Count, resBefore = reserved.Count;
+                ok = PlaceStage(n, parent, req, dir, rng, boxes, res, stageNodes, reserved);
                 if (!ok)
                 {
                     StatStageRetries++;
                     // Откат ТОЛЬКО этого этапа: всё, что стояло раньше, остаётся на месте.
+                    // ⚠️ Вместе с комнатами снимаем и БРОНЬ, выданную в этой попытке. 🐞 Без этого
+                    // бронь копилась с каждой переигровкой и заполняла уровень: переигровок стало
+                    // 553 вместо 272, а кольцу от такой брони только хуже.
                     foreach (int id in stageNodes) boxes[id] = null;
                     res.links.RemoveRange(linksBefore, res.links.Count - linksBefore);
+                    reserved.RemoveRange(resBefore, reserved.Count - resBefore);
                 }
             }
             // ⭐⭐ ПОДГОНКА ПЛАНА: не встала ветка — перевешиваем её на другую комнату маршрута.
@@ -433,12 +467,13 @@ public static class RoomLayout
                     parent[firstNode] = cand;
                     for (int attempt = 0; attempt < 12 && !ok; attempt++)
                     {
-                        int linksBefore = res.links.Count;
-                        ok = PlaceStage(n, parent, req, dir, rng, boxes, res, stageNodes);
+                        int linksBefore = res.links.Count, resBefore = reserved.Count;
+                        ok = PlaceStage(n, parent, req, dir, rng, boxes, res, stageNodes, reserved);
                         if (!ok)
                         {
                             foreach (int id in stageNodes) boxes[id] = null;
                             res.links.RemoveRange(linksBefore, res.links.Count - linksBefore);
+                            reserved.RemoveRange(resBefore, reserved.Count - resBefore);
                         }
                     }
                 }
@@ -466,12 +501,13 @@ public static class RoomLayout
                 }
                 for (int attempt = 0; attempt < triesPerStage && !ok; attempt++)
                 {
-                    int linksBefore = res.links.Count;
-                    ok = PlaceStage(n, parent, req, dir, rng, boxes, res, stageNodes);
+                    int linksBefore = res.links.Count, resBefore = reserved.Count;
+                    ok = PlaceStage(n, parent, req, dir, rng, boxes, res, stageNodes, reserved);
                     if (!ok)
                     {
                         foreach (int id in stageNodes) boxes[id] = null;
                         res.links.RemoveRange(linksBefore, res.links.Count - linksBefore);
+                        reserved.RemoveRange(resBefore, reserved.Count - resBefore);
                     }
                 }
                 for (int i = 0; i < stageNodes.Count; i++)
@@ -692,9 +728,11 @@ public static class RoomLayout
     /// откат делает вызывающий, и откатывает он только этот этап.
     /// </summary>
     private static bool PlaceStage(int n, int[] parent, RoomReq[] req, LinkDir[] dir,
-                                   System.Random rng, RoomBox[] boxes, Result res, List<int> stageNodes)
+                                   System.Random rng, RoomBox[] boxes, Result res, List<int> stageNodes,
+                                   List<RoomBox> reserved = null)
     {
         // Свободно ли место: со всеми уложенными, кроме родителя, держим зазор Margin.
+        // ⚠️ И не лезем в ЗАБРОНИРОВАННЫЕ полосы — они держатся пустыми под кольца.
         System.Func<RoomBox, int, bool> free = (cand, exceptId) =>
         {
             for (int i = 0; i < n; i++)
@@ -704,6 +742,10 @@ public static class RoomLayout
                 if (cand.x0 - Margin <= p.X1 && p.x0 - Margin <= cand.X1 &&
                     cand.y0 - Margin <= p.Y1 && p.y0 - Margin <= cand.Y1) return false;
             }
+            if (reserved != null)
+                foreach (var rr in reserved)
+                    if (cand.x0 <= rr.X1 && rr.x0 <= cand.X1 && cand.y0 <= rr.Y1 && rr.y0 <= cand.Y1)
+                        return false;
             return true;
         };
 
@@ -870,6 +912,22 @@ public static class RoomLayout
                     return false;                                 // этот этап не встал — переиграем его
                 }
                 boxes[k] = placed; res.links.Add(link);
+                // ⭐⭐ ПОЛОСА ТОННЕЛЯ — ЗАНЯТОЕ МЕСТО. Ход сквозь камень проверяет, что не вспорет
+                // УЖЕ СТОЯЩУЮ комнату, — но комнаты следующих этапов ещё не существуют, и одна из
+                // них спокойно вставала прямо в прорезанную полосу.
+                // 🐞 Разбор сида 1001: тоннель 6-7 шёл столбцами 37-42 по рядам 22-23, а комната 11
+                // (x38..41, y23..26) встала ровно над ним — и осталась БЕЗ ПОЛА. Отсюда сразу все
+                // симптомы: ключ в ней недостижим, группы мертвы, карман замурован, уровень
+                // непроходим. В статистике это давало четыре причины брака по девять раз каждая.
+                if (reserved != null && !link.vertical && link.wallEnd > link.wall)
+                    reserved.Add(new RoomBox { id = -1,
+                        x0 = link.wall, w = link.wallEnd - link.wall + 1,
+                        y0 = link.from - 1, h = link.to - link.from + 3 });
+                // Комната, к которой цепляется ветка, держит под собой полосу для кольца.
+                if (reserved != null && req[k].reserveBelow > 0)
+                    reserved.Add(new RoomBox { id = -1,
+                        x0 = placed.x0 - req[k].reserveWide, w = placed.w + req[k].reserveWide * 2,
+                        y0 = placed.y0 - 1 - req[k].reserveBelow, h = req[k].reserveBelow });
             }
         }
         return true;
@@ -905,8 +963,15 @@ public static class RoomLayout
             }
             else
             {
-                bool ok = b.x0 == a.X1 + 2 || a.x0 == b.X1 + 2;
-                if (!ok) sb.Append($"связь {l.a}-{l.b}: между ними не одна стена; ");
+                // ⚠️ ТОННЕЛЬ — ЗАКОННАЯ СВЯЗЬ, А НЕ БРАК. Проверка писалась, когда соседями могли быть
+                // только комнаты через ОДНУ стену; теперь ребро дерева вправе быть ходом сквозь
+                // камень (RoomReq.allowTunnel), и зазор между комнатами доходит до MaxTunnel.
+                // 🐞 Иначе самопроверка сыпала ложными жалобами на каждый тоннель — одиннадцать штук
+                // на уровень — и за ними не видно настоящих поломок.
+                var left = a.X1 < b.x0 ? a : b; var right = a.X1 < b.x0 ? b : a;
+                int gap = right.x0 - left.X1 - 1;
+                if (gap < 1 || gap > MaxTunnel)
+                    sb.Append($"связь {l.a}-{l.b}: зазор {gap} — не стена и не тоннель; ");
                 // Полы могут различаться: перепад в проёме разбивается ступенями (см. MaxFloorStep).
                 if (Mathf.Abs(a.y0 - b.y0) > MaxFloorStep)
                     sb.Append($"связь {l.a}-{l.b}: перепад полов сверх допустимого; ");

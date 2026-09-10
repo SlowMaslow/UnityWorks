@@ -232,6 +232,11 @@ public class ModuleStamp
     /// <summary>Это КЛАПАН ВОЗВРАТА — дверь из ветки на маршрут, кнопка только изнутри.</summary>
     public bool returnValve;
 
+    /// <summary>Ребро дерева комнат, которое этот механизм запирает: (родитель, ребёнок). (-1,-1) —
+    /// механизм не привязан к ребру (трафарет, клапан). Нужно для разбора холостых групп: без этой
+    /// связи «какая группа на каком ребре» приходится каждый раз восстанавливать по порядку списка.</summary>
+    public Vector2Int edgeRooms = new Vector2Int(-1, -1);
+
     /// <summary>Единственный способ добавить кнопку: списки иначе разъезжаются.</summary>
     public void AddButton(Vector2Int cell, char host = '\0', MountSide mount = MountSide.Floor)
     { buttons.Add(cell); buttonHosts.Add(host); buttonMounts.Add(mount); }

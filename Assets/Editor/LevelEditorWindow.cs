@@ -1976,6 +1976,23 @@ public class LevelEditorWindow : EditorWindow
             }
 
             var recipe = built.recipeText;
+            // ⭐ МОНЕТА, ДО КОТОРОЙ НЕ ДОТЯНУТЬСЯ, ПРОСТО УБИРАЕТСЯ. Мёртвый закуток сам по себе
+            // безобиден, а вот собираемое в нём — обман: игрок видит монету и не может её взять.
+            // Бракуем не уровень, а монету (решение игрока 2026-09-09).
+            // ⚠️ Стираем В СЕТКЕ, а не в spec: Refresh пересоберёт из сетки И схему, И описание, и
+            // картинка с уровнем не разъедутся. Правка spec напрямую оставила бы '$' в ASCII, и
+            // импорт в обход спеки вернул бы монету на место.
+            if (rep.deadCoins.Count > 0)
+            {
+                foreach (var dc in rep.deadCoins)
+                {
+                    int rr = built.rows - 1 - dc.y, cc = dc.x;
+                    if (rr >= 0 && rr < built.rows && cc >= 0 && cc < built.cols
+                        && built.grid[rr, cc] == '$') built.grid[rr, cc] = '.';
+                }
+                FreeMazeBuilder.Refresh(built);
+                Debug.Log($"[Свободный] Убрано монет из мёртвых зон: {rep.deadCoins.Count}");
+            }
             if (!rep.Bad)
             {
                 _mazeStamps = built.stamps; _mazeStampsFor = built.scheme; _mazeSpec = built.spec;
@@ -1987,6 +2004,8 @@ public class LevelEditorWindow : EditorWindow
                         + (tryNo > 0 ? $" (принято с попытки {tryNo + 1})" : ""));
                 return built.scheme;
             }
+            // deadInternal больше не брак, но в оценке «лучшей из плохих» остаётся: при прочих
+            // равных пустой породы лучше меньше.
             int score = -1000 * ((rep.finishOk ? 0 : 1) + (rep.artTotal - rep.artOk))
                         - 100 * rep.idleGroups.Count - rep.deadInternal;
             if (score > bestScore)
@@ -4044,8 +4063,14 @@ public class LevelEditorWindow : EditorWindow
         public int reachHolds, totalHolds;
         public int sealedPocket;      // самая большая ЗАМУРОВАННАЯ полость (связная область воздуха)
         /// <summary>Недостижимые холды ВНУТРИ массива (над ними потолок, а не небо). Отделяет
-        /// «мертва внешняя крыша» — это нормально и неизбежно — от «замурованы целые комнаты».</summary>
+        /// «мертва внешняя крыша» — это нормально и неизбежно — от «замурованы целые комнаты».
+        /// ⚠️ САМ ПО СЕБЕ НЕ БРАК (решение игрока 2026-09-09): пустой мёртвый закуток игроку не
+        /// мешает. Остаётся как мера бесхозной породы и как подсказка, где генератор роет зря.
+        /// Опасен он ровно одним — тем, что туда может попасть собираемое, а это ловит deadCoins.</summary>
         public int deadInternal;
+        /// <summary>Монеты, до которых игрок не дотянется ни в одном состоянии. Их не бракуют —
+        /// их ВЫБРАСЫВАЮТ из уровня: монета, которую нельзя взять, это не головоломка, а мусор.</summary>
+        public System.Collections.Generic.List<Vector2Int> deadCoins = new System.Collections.Generic.List<Vector2Int>();
         /// <summary>Механизмы, которые НИЧЕГО не держат: убери их совсем — все цели по-прежнему
         /// достижимы. Такую группу игрок обойдёт и головоломки не заметит.</summary>
         public System.Collections.Generic.List<string> idleGroups = new System.Collections.Generic.List<string>();
@@ -4089,7 +4114,6 @@ public class LevelEditorWindow : EditorWindow
         /// куда генератору ставить выход, и как мера того, насколько уровень наказывает за ошибку.
         public bool Bad => noSpawn || tooManyGroups || !playable || cpOk < cpTotal
                         || deadGroups.Count > 0 || idleGroups.Count > 0
-                        || deadInternal > DeadInternalLimit
                         || sealedPocket > SealedPocketLimit;
     }
 
@@ -4246,10 +4270,13 @@ public class LevelEditorWindow : EditorWindow
 
         // Цель достижима, если её достаёт ХОТЬ ОДНО посещённое состояние — в своей маске (например,
         // уже после того, как стена убрана).
+        // ⭐ Перебираем ПАРЫ (маска, клетка), а не состояния: дотянуться до цели можно или нельзя
+        // независимо от того, сколько ключей уже собрано, а состояний с одной парой ровно 2^ключей.
         System.Func<LevelTarget, bool> canGet = tg =>
         {
-            for (int st = 0; st < model.TOTAL; st++)
-                if (model.Seen[st] && model.CanTouch(model.GroupMask(st), model.Cells[st % model.N], tg)) return true;
+            var pos = model.ReachedPositions;
+            for (int i = 0; i < pos.Count; i++)
+                if (model.CanTouch(pos[i] / model.N, model.Cells[pos[i] % model.N], tg)) return true;
             return false;
         };
         rep.finishOk = !spec.finish.exists || canGet(spec.finish);
@@ -4299,11 +4326,25 @@ public class LevelEditorWindow : EditorWindow
             int GN = spec.groups.Count;
             var dep = new bool[GN, GN];
 
+            // ⭐⭐ ПРОВЕРКА «МЕХАНИЗМ НЕСУЩИЙ» ИДЁТ НА ОДНОЙ МОДЕЛИ, А НЕ НА G+1 НОВЫХ.
+            // 🐞 Раньше на каждую группу строилась новая модель через WithoutGroup — то есть заново
+            // считались клетки, соседи в дотяжке на каждую клетку, битовые сетки на маску и кэш шагов.
+            // Замер на уровне с девятью группами: один поиск 3.2 с, а вся приёмка 10.4 с — то есть
+            // две трети времени уходило на десять пересборок подряд, а не на сам перебор.
+            // LevelModel.Rerun делает ровно то же самое (кнопку убранной группы не нажать, её плиты
+            // ведут себя как при ненажатой, её кнопка не мешает пэду), но подготовку не трогает.
+            // ⚠️ Прогон портит состояние модели, поэтому в конце обязателен Rerun(0) — ниже по методу
+            // (порядок кнопок, монеты в мёртвых зонах) читается именно базовый прогон.
+            // ⚠️ Отдельная модель, а НЕ основная. 🐞 Сначала прогоны шли прямо на основной, и в конце
+            // приходилось звать Rerun(0), чтобы вернуть базовый прогон для всего, что ниже. Это лишний
+            // ПОЛНЫЙ поиск — самый дорогой из всех: приёмка на потолке 6 подорожала с 653 до 821 мс.
+            // Здесь же первый прогон сразу делается вариантом без группы 0, то есть подготовка стоит
+            // один раз, а базовый прогон никто не трогает.
+            var m2 = new LevelModel(spec, RS, RU) { MoveBudget = _moveBudget, IgnoreGroups = 1 };
+            m2.Search();
             for (int gi = 0; gi < spec.groups.Count; gi++)
             {
-                var variant = spec.WithoutGroup(gi);
-                var m2 = new LevelModel(variant, RS, RU) { MoveBudget = _moveBudget };
-                m2.Search();
+                if (gi > 0) m2.Rerun(1 << gi);
                 if (m2.TooManyGroups || m2.N == 0) continue;
                 var deadWithout = m2.DeadGroups();
                 for (int b = 0; b < GN; b++)
@@ -4313,8 +4354,9 @@ public class LevelEditorWindow : EditorWindow
                 {
                     if (!reachableNow[i]) continue;                 // и так было недостижимо — не в счёт
                     bool still = false;
-                    for (int st = 0; st < m2.TOTAL && !still; st++)
-                        if (m2.Seen[st] && m2.CanTouch(m2.GroupMask(st), m2.Cells[st % m2.N], targets[i])) still = true;
+                    var pos2 = m2.ReachedPositions;
+                    for (int p = 0; p < pos2.Count && !still; p++)
+                        if (m2.CanTouch(pos2[p] / m2.N, m2.Cells[pos2[p] % m2.N], targets[i])) still = true;
                     if (!still) somethingLost = true;
                 }
                 // ⭐⭐ ЗАПИРАНИЕ — ТОЖЕ ПОТЕРЯ. Дверь-выход, открываемая только изнутри, по критерию
@@ -4429,6 +4471,18 @@ public class LevelEditorWindow : EditorWindow
                 if (regionOf.TryGetValue(new Vector2Int(k.x, k.y + 1), out rid) && !openRegion[rid])
                     rep.deadInternal++;
             }
+        }
+
+        // ⭐ МОНЕТЫ В МЁРТВОЙ ЗОНЕ. Решение игрока 2026-09-09: сама мёртвая зона не критична —
+        // критично, чтобы в ней не лежало СОБИРАЕМОЕ. Ключи, финиш и чекпоинты приёмка проверяет
+        // с самого начала, а монеты не проверялись ВООБЩЕ («модели проходимости они не нужны»).
+        // Замер по 28 уровням: из 2082 монет недостижимы 2 — и обе ровно на том уровне, где
+        // deadInternal перевалил за порог. То есть метрика ловила правильное место, но карала не за
+        // то: браковала весь уровень из-за пустых закутков вместо того, чтобы убрать из них монеты.
+        foreach (var k in spec.coins)
+        {
+            var t = new LevelTarget { exists = true, cell = k, center = new Vector2(k.x, k.y), half = Vector2.zero };
+            if (!canGet(t)) rep.deadCoins.Add(k);
         }
         return rep;
     }
@@ -4575,9 +4629,12 @@ public class LevelEditorWindow : EditorWindow
         if (rep.idleGroups.Count > 0)
             Debug.LogWarning("[Reach] ⚠ Механизмы НИЧЕГО не держат (их можно обойти): "
                 + string.Join(",", rep.idleGroups.ToArray()));
+        if (rep.deadCoins.Count > 0)
+            Debug.LogWarning($"[Reach] ⚠ {rep.deadCoins.Count} монет(ы) в мёртвой зоне — их не взять. "
+                + "Генератор такие выбрасывает; в ручной схеме их надо убрать или открыть к ним ход.");
         if (rep.deadInternal > DeadInternalLimit)
-            Debug.LogWarning($"[Reach] ⚠ Замуровано {rep.deadInternal} холдов ВНУТРИ массива "
-                + "(порог " + DeadInternalLimit + ") — большой кусок уровня отрезан.");
+            Debug.Log($"[Reach] Замуровано {rep.deadInternal} холдов ВНУТРИ массива "
+                + "(ориентир " + DeadInternalLimit + ") — не брак, но породы вырыто зря.");
         if (rep.sealedPocket > SealedPocketLimit)
             Debug.LogWarning($"[Reach] ⚠ Замурованная зона: {rep.sealedPocket} холдов внутри массива, "
                 + "куда не попасть (порог " + SealedPocketLimit + ").");

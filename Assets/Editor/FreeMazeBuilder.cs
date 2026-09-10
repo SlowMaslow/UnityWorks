@@ -26,6 +26,10 @@ public static class FreeMazeBuilder
     public static bool SkipButtonAvoid;
     /// Битовая маска разрешённых узоров декора (тумба, пилон, балкон, зубцы, сталактит, лесенка).
     public static int DecorMask = 63;
+    /// <summary>Отключить проверку обхода замков по графу комнат — только для замера «с ней и без».</summary>
+    public static bool SkipBypassCheck;
+    /// <summary>Сколько ворот не поставлено из-за геометрического обхода (см. GateBypassed).</summary>
+    public static int StatGateBypass;
 
     /// <summary>Комната абстрактного дерева: кто родитель и какой элемент рецепта сидит на её ребре.</summary>
     public class Node
@@ -129,21 +133,30 @@ public static class FreeMazeBuilder
             if (!route.isMain) continue;
             for (int i = 0; i < route.elements.Count; i++)
             {
+                // ⭐⭐ ВЛОЖЕННЫЕ ВОРОТА САДЯТСЯ ВПЛОТНУЮ К ХОЗЯИНУ — развязки между ними нет.
+                // Вся вложенность в том, что кнопка лежит НА СТУПЕНЬКЕ предыдущих ворот: нажал, залез
+                // по ним — и ты уже в нижней комнате следующих. Комната-развязка эту цепочку рвёт, и
+                // кнопка остаётся в одной части уровня, а ворота — в другой (см. HostForNested).
+                var el = route.elements[i];
+                bool nest = el == PuzzleElement.NestedGate && i > 0
+                         && (route.elements[i - 1] == PuzzleElement.Gate
+                          || route.elements[i - 1] == PuzzleElement.NestedGate);
+                if (el == PuzzleElement.NestedGate && !nest) el = PuzzleElement.Gate;   // вкладывать не во что
                 // Комната-развязка между механизмами: два подряд в соседних комнатах не помещаются.
                 // Сверх обязательной добавляем долю бюджета, чтобы механизмы разошлись по уровню.
-                if (i > 0)
+                if (i > 0 && !nest)
                 {
                     int extra = spineBudget / gapsCount + (rng.Next(100) < 50 ? 1 : 0);
                     for (int k = 0; k <= extra; k++)
                         spine.Add(add(spine[spine.Count - 1], null, route.name, true));
                 }
-                spine.Add(add(spine[spine.Count - 1], route.elements[i], route.name, true));
+                spine.Add(add(spine[spine.Count - 1], el, route.name, true));
                 // ⚠️ Комнате-коридору нельзя подвешивать лишнее: у неё ровно две боковые стороны, и
                 // обе заняты трассой. 🐞 Замер: добор комнат вешал на камеру третьего ребёнка, все
                 // трое требовали горизонтали — раскладка не сходилась НИ РАЗУ из шестидесяти.
                 // ⚠️ Запираем ОБЕ комнаты ребра: сквозным коридором работает то комната элемента
                 // (камера), то комната родителя (мост), а лишний проём губит обе одинаково.
-                if (PuzzleVocabulary.Need(route.elements[i]).throughCorridor)
+                if (PuzzleVocabulary.Need(el).throughCorridor)
                 {
                     nodes[spine[spine.Count - 1]].sealed2 = true;
                     if (spine.Count >= 2) nodes[spine[spine.Count - 2]].sealed2 = true;
@@ -152,7 +165,7 @@ public static class FreeMazeBuilder
                 // под коридором: там лежат камера с ключом и колодец возврата. Раньше она пыталась
                 // выкопать его сама — «рою в сплошном камне», — и замер показал, что сплошного камня
                 // под коридором не бывает: 104 отказа из 110 посадок. Место надо РЕЗЕРВИРОВАТЬ.
-                if (PuzzleVocabulary.Need(route.elements[i]).cellarHeight > 0)
+                if (PuzzleVocabulary.Need(el).cellarHeight > 0)
                 {
                     int cellar = add(spine[spine.Count - 1], null, route.name + " (подвал)", false);
                     nodes[cellar].sealed2 = true;
@@ -210,13 +223,19 @@ public static class FreeMazeBuilder
                 cur = add(cur, null, route.name, false);            // разбег
             for (int i = 0; i < route.elements.Count; i++)
             {
-                if (i > 0) cur = add(cur, null, route.name, false); // развязка между механизмами
+                // Вложенные ворота — вплотную к хозяину, без развязки (см. HostForNested).
+                var el = route.elements[i];
+                bool nest = el == PuzzleElement.NestedGate && i > 0
+                         && (route.elements[i - 1] == PuzzleElement.Gate
+                          || route.elements[i - 1] == PuzzleElement.NestedGate);
+                if (el == PuzzleElement.NestedGate && !nest) el = PuzzleElement.Gate;
+                if (i > 0 && !nest) cur = add(cur, null, route.name, false); // развязка между механизмами
                 int prev = cur;
-                cur = add(cur, route.elements[i], route.name, false);
+                cur = add(cur, el, route.name, false);
                 // ⚠️ Комнате-коридору нельзя подвешивать лишнее: у неё ровно две боковые стороны,
                 // и обе заняты трассой. 🐞 Замер: добор комнат вешал на камеру третьего ребёнка,
                 // все трое требовали горизонтали — раскладка не сходилась НИ РАЗУ из шестидесяти.
-                if (PuzzleVocabulary.Need(route.elements[i]).throughCorridor)
+                if (PuzzleVocabulary.Need(el).throughCorridor)
                 { nodes[cur].sealed2 = true; if (prev >= 0) nodes[prev].sealed2 = true; }
             }
             // ⚠️ У вылазки хвоста нет: её камера И ЕСТЬ конец ветки, ключ лежит внутри неё.
@@ -346,21 +365,147 @@ public static class FreeMazeBuilder
     }
 
     /// <summary>
+    /// ⭐⭐ ВОРОТА ОБХОДЯТ ПО ГЕОМЕТРИИ, А НЕ ПО ГРАФУ. Проверяем ПЕРЕД штампом: дотянется ли игрок
+    /// до пола верхней комнаты из клетки, которая НЕ лежит за этими воротами. Ступеньки ещё нет,
+    /// значит это ровно вопрос «нужны ли ворота вообще».
+    ///
+    /// 🐞 Замер, ради которого правило заведено (сид 2008): комната 12 стоит справа-снизу, комната 14
+    /// слева-сверху, между ними комната 13 с воротами. Полы 12 и 14 разошлись на dx=2, dy=3 — ровно в
+    /// дотяжку. Игрок из 12 лезет прямо на кромку люка в полу 14, минуя и комнату 13, и ворота.
+    /// По ГРАФУ комнат обхода нет (проверка это подтверждала), и все прежние правила — лишние рёбра,
+    /// рёбра возврата, тоннели — тут ни при чём: комнаты просто оказались в дотяжке друг от друга.
+    ///
+    /// ⚠️ Правило шага берётся из <see cref="LevelModel.StepPossible"/>, а не пишется здесь заново:
+    /// копии правил в этом проекте уже трижды расходились и давали баги.
+    /// </summary>
+    /// <param name="stepRow">Ряд каменной ступеньки под люком и её столбцы: модуль сносит её и кладёт
+    /// на её место свой зигзаг, поэтому в расчёте обхода её быть НЕ должно.
+    /// 🐞 Без этого проверка браковала ВСЕ ворота подряд (17 из 17): она видела ступеньку, честно
+    /// находила по ней подъём и заключала «залезут и так» — хотя лезли ровно по той плите, которую
+    /// ворота вот-вот уберут.</param>
+    /// <param name="wallCol">Столбец ЗАКРЫТОЙ двери и её ряды: у инверсной двери камень в покое стоит,
+    /// но в сетке его ещё нет — модуль поставит его сам. Считать обход надо по ЗАКРЫТОЙ двери, иначе
+    /// проверка увидит открытый проём и решит, что дверь не нужна. Зеркало случая со ступенькой:
+    /// у ворот из геометрии плиту вычитаем, у двери — прибавляем. −1 — двери нет.</param>
+    private static bool GateBypassed(char[,] g, int rows, int cols, List<Node> nodes,
+                                     MazeCanvas.RoomRect[] rects, List<ModuleStamp> stamps, int childId,
+                                     int stepRow, int shaftCol0, int shaftWidth,
+                                     int wallCol = -1, int wallRowTop = 0, int wallHeight = 0)
+    {
+        // ⚠️ ИНВЕРСНЫЕ ПЛИТЫ В ПОКОЕ — КАМЕНЬ. В сетке они обычные буквы, и если считать их воздухом,
+        // проверка пропускает игрока сквозь закрытые стены и объявляет обходом то, чего нет.
+        var solidAtRest = new HashSet<char>();
+        foreach (var st0 in stamps) if (st0.inverted) solidAtRest.Add(char.ToLower(st0.groupId));
+        var behind = new HashSet<int> { childId };
+        for (bool grew = true; grew; )
+        {
+            grew = false;
+            foreach (var nd in nodes)
+                if (nd.parent >= 0 && behind.Contains(nd.parent) && behind.Add(nd.id)) grew = true;
+        }
+        // Камень: за краем сетки считаем камнем — так же, как MazeCanvas.At.
+        System.Func<Vector2Int, bool> solid = k =>
+        {
+            int r = rows - 1 - k.y, c = k.x;
+            if (r < 0 || r >= rows || c < 0 || c >= cols) return true;
+            if (r == stepRow && c >= shaftCol0 && c < shaftCol0 + shaftWidth) return false;  // ступеньку снесут
+            if (c == wallCol && r >= wallRowTop && r < wallRowTop + wallHeight) return true; // дверь закрыта
+            return g[r, c] == '#' || solidAtRest.Contains(g[r, c]);
+        };
+        System.Func<Vector2Int, bool> isHold = k => solid(k) && !solid(new Vector2Int(k.x, k.y + 1));
+
+        // ⚠️ Защищаемая область — ВСЁ ПОДДЕРЕВО, а не только комната сразу за механизмом.
+        // 🐞 Сначала целями были клетки одной комнаты, и три обхода из трёх на свежей серии прошли
+        // мимо: игрок входил не в неё, а глубже — во внучатую комнату, куда обход дотягивался ровно
+        // так же. Вопрос ставится один: можно ли попасть за механизм ГДЕ УГОДНО, минуя его проход.
+        var targets = new List<Vector2Int>();
+        foreach (int id in behind)
+        {
+            if (id < 0 || id >= rects.Length || rects[id].w == 0) continue;
+            var rm = rects[id];
+            for (int c = rm.col0; c < rm.col0 + rm.w; c++)
+            for (int r = rm.row0; r <= rm.row0 + rm.h; r++)
+            {
+                var k = new Vector2Int(c, rows - 1 - r);
+                if (isHold(k)) targets.Add(k);
+            }
+        }
+        if (targets.Count == 0) return false;
+
+        var targetSet = new HashSet<Vector2Int>(targets);
+
+        // ⭐⭐ ОБХОД ДОКАЗЫВАЕТСЯ ПОХОДОМ, А НЕ СОСЕДСТВОМ. Идём по холдам от стартовой комнаты,
+        // НЕ НАЖИМАЯ НИЧЕГО, и смотрим, доберёмся ли за механизм. Всё, что игрок может нажать,
+        // только добавляет ему возможностей, поэтому дошли без единой кнопки — обход доказан.
+        //
+        // 🐞 До этого проверка спрашивала «есть ли рядом с поддеревом достижимая на вид клетка», и
+        // это оказалось не тем вопросом: клетка может лежать в комнате-предке и всё равно быть
+        // недостижимой (высокий холд, до которого дотягиваются только с платформы этого же
+        // механизма). Замер: снималось 20 механизмов на 24 уровнях, причём 17 — на уровнях, которые
+        // и так были чисты; механизмов на уровень падало с 4.1 до 3.4. Сужения «только предки» и
+        // «инверсные плиты — камень» не помогли НИ НА ОДИН случай: вопрос был поставлен неверно,
+        // а не грубо.
+        var seen = new HashSet<Vector2Int>();
+        var queue = new Queue<Vector2Int>();
+        int rootRoom2 = 0;
+        foreach (var nd in nodes) if (nd.parent < 0) { rootRoom2 = nd.id; break; }
+        if (rootRoom2 < rects.Length && rects[rootRoom2].w > 0)
+        {
+            var rm = rects[rootRoom2];
+            for (int c = rm.col0; c < rm.col0 + rm.w; c++)
+            for (int r = rm.row0; r <= rm.row0 + rm.h; r++)
+            {
+                var k = new Vector2Int(c, rows - 1 - r);
+                if (isHold(k) && seen.Add(k)) queue.Enqueue(k);
+            }
+        }
+        while (queue.Count > 0)
+        {
+            var a = queue.Dequeue();
+            if (targetSet.Contains(a)) return true;
+            for (int dx = -MazeCanvas.ReachSide; dx <= MazeCanvas.ReachSide; dx++)
+            for (int dy = -MazeCanvas.Climb; dy <= MazeCanvas.Climb; dy++)
+            {
+                if (dx == 0 && dy == 0) continue;
+                if (!LevelModel.InReach(dx, dy, MazeCanvas.ReachSide, MazeCanvas.Climb)) continue;
+                var t = new Vector2Int(a.x + dx, a.y + dy);
+                if (seen.Contains(t) || !isHold(t)) continue;
+                if (!LevelModel.StepPossible(solid, a, t, MazeCanvas.ReachSide, MazeCanvas.Climb)) continue;
+                seen.Add(t); queue.Enqueue(t);
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
     /// Ближайший предок, в который МОЖНО вложить кнопку. ⚠️ Это обязательно ВОРОТА: полку под чужую
     /// кнопку умеет пристраивать только вертикальный зигзаг, у двери и моста платформы для этого нет.
     /// 🐞 Пока хозяином брался любой ближайший механизм, семь вложений из тринадцати доставались
     /// двери или мосту и молча вырождались в обычные ворота.
     /// </summary>
+    /// <summary>
+    /// Хозяин вложенной кнопки — ТОЛЬКО НЕПОСРЕДСТВЕННЫЙ РОДИТЕЛЬ, и только если на его ребре стоят
+    /// ворота (у двери и моста полки нет).
+    ///
+    /// 🐞🐞 РАНЬШЕ ИСКАЛОСЬ ВВЕРХ ПО ДЕРЕВУ ДО ПЕРВОГО МЕХАНИЗМА, БЕЗ ОГРАНИЧЕНИЯ РАССТОЯНИЯ — и это
+    /// ломало сами ворота. Кнопка «открыть» садится на полку хозяина; если хозяин в восьми рёбрах,
+    /// кнопка уезжает через полкарты, а в нижней комнате ворот НЕ ОСТАЁТСЯ НИ ОДНОГО триггера.
+    /// Игрок стоит под воротами и открыть их нечем. Замер: из пяти вложенных ворот на 24 уровнях
+    /// рядом с хозяином не оказалось НИ ОДНИХ (расстояния 3, 3, 4, 4 и 8 рёбер), и они всплывали
+    /// в приёмке двумя разными способами сразу — как «отсечение» (за воротами всё потеряно) и как
+    /// «холостая группа» (наверх нашёлся другой путь, а ворота так и не понадобились).
+    ///
+    /// Смысл вложенности требует соседства: игрок нажимает кнопку НА СТУПЕНЬКЕ хозяина, лезет по ней
+    /// наверх — и оказывается ровно в нижней комнате следующих ворот. Одна комната между ними эту
+    /// цепочку рвёт, восемь — превращают в мусор. Не соседи — не вложенность: строим обычные ворота
+    /// со своей кнопкой на полу (ветка `else hostSt = null` в Furnish).
+    /// </summary>
     public static int HostForNested(List<Node> nodes, int id)
     {
         int a = nodes[id].parent;
-        while (a >= 0)
-        {
-            var el = nodes[a].element;
-            if (el == PuzzleElement.Gate || el == PuzzleElement.NestedGate) return a;
-            a = nodes[a].parent;
-        }
-        return -1;
+        if (a < 0) return -1;
+        var el = nodes[a].element;
+        return (el == PuzzleElement.Gate || el == PuzzleElement.NestedGate) ? a : -1;
     }
 
     /// <summary>Требования и направления для раскладки — прямо из деклараций словаря.</summary>
@@ -450,6 +595,18 @@ public static class FreeMazeBuilder
                 // ⚠️ Не вышло кольцо — ветка ложится как обычная, без провала. Это осознанный
                 // размен: замысел целиком или ничего, но уровень не страдает.
                 req[nd.id].ringStart = true;
+                // ⭐⭐ ПОЛОСА ПОД КОЛЬЦО БРОНИРУЕТСЯ ВМЕСТЕ С ХРЕБТОМ. Комната, к которой цепляется
+                // ветка, держит под собой пустой прямоугольник — туда потом ляжет кольцо.
+                // 🐞 Без брони кольцо не встало ни разу: по мере починки прочих причин отказ
+                // смещался к столкновениям (137 из 184 попыток) — место занимал сам хребет.
+                // Глубина: ярус кольца (4) + провал (минимум 4) + запас.
+                // ⚠️⚠️ БРОНЬ ЗДЕСЬ ВЫКЛЮЧЕНА — ПО ЗАМЕРУ. Узкая (в ширину комнаты) не спасала:
+                // столкновений оставалось 125 из 184. Широкая (±20 клеток) сделала хуже — двери
+                // возврата упали с 5 до 0, потому что бронь выдавила из уровня всё остальное.
+                // Вывод: укладка «комната за комнатой от родителя» не умеет держать пустоту нужной
+                // кольцу формы (30×10). Правильный порядок, судя по схеме игрока, обратный —
+                // сперва кольца как готовые блоки, потом хребет между ними. Это другая укладка.
+                if (nd.parent >= 0) { req[nd.parent].reserveBelow = 0; req[nd.parent].reserveWide = 0; }
             }
             // ⚠️⚠️ ОДНОСТОРОННЕГО ВХОДА В ВЕТКУ ЗДЕСЬ НЕТ — ОТКАЧЕНО ПО ЗАМЕРУ (решение игрока).
             // Замысел верный: игрок должен сваливаться в ветку и возвращаться дверью, иначе дверь
@@ -1201,8 +1358,23 @@ public static class FreeMazeBuilder
                     site.shaftCol0 = link.from; site.shaftWidth = link.to - link.from + 1;
                     // Каменную ступеньку этой связи модуль уберёт: её место займёт его зигзаг.
                     int sr; site.shaftStepRow = stepRowOf.TryGetValue(nd.id, out sr) ? sr : -1;
-                    site.buttonBelow = parentBelow ? site.buttonBelow : site.buttonAbove;
-                    site.buttonAbove = parentBelow ? site.buttonAbove : site.buttonBelow;
+                    // ⭐ Замком ворота работают только когда игрок приходит СНИЗУ: при родителе сверху
+                    // это «дорога обратно», и запирать ею нечего. Обход считаем именно для замка —
+                    // и обязательно ПОСЛЕ того, как известна шахта: иначе в расчёт попадёт ступенька,
+                    // которую ворота как раз и сносят.
+                    if (parentBelow && GateBypassed(g, rows, cols, nodes, rects, stamps, nd.id,
+                                                    site.shaftStepRow, site.shaftCol0, site.shaftWidth))
+                    { story.Append("ворота ").Append(nd.parent).Append("->").Append(nd.id)
+                           .Append(" обходятся по геометрии — не ставлю; "); StatGateBypass++; break; }
+                    // 🐞 ОБМЕН БЕЗ ВРЕМЕННОЙ: было две строки подряд, и вторая брала УЖЕ ПЕРЕЗАПИСАННОЕ
+                    // значение — при родителе сверху обе кнопки схлопывались в одну и ту же клетку,
+                    // то есть ворота оставались без кнопки «открыть» внизу.
+                    if (!parentBelow)
+                    {
+                        var swap = site.buttonBelow;
+                        site.buttonBelow = site.buttonAbove;
+                        site.buttonAbove = swap;
+                    }
                     // Этому механизму предстоит принять чужую кнопку — просим у него полку.
                     site.wantButtonShelf = needsShelf.Contains(nd.id);
                     // ⚠️ Кнопка «открыть» садится НА ПОЛКУ ХОЗЯИНА: чтобы до неё дотянуться, придётся
@@ -1235,6 +1407,13 @@ public static class FreeMazeBuilder
                     // двери и не попасть. Группа выхода получалась МЁРТВОЙ, игрок оставался в камере
                     // с ключом навсегда, и уровень становился непроходимым, хотя каждая цель по
                     // отдельности была достижима (поймано моделью, критерием «одно прохождение»).
+                    // Тот же вопрос, что и у ворот, только зеркально: если за ЗАКРЫТУЮ дверь всё равно
+                    // попадают, дверь декоративна. ⚠️ Выход из камеры (exitOnly) не проверяем: он
+                    // выпускает игрока наружу, а не запирает вход, и «обход» для него бессмыслен.
+                    if (!nd.isExit && GateBypassed(g, rows, cols, nodes, rects, stamps, nd.id,
+                                                   -1, 0, 0, site.doorCol, site.doorRowTop, site.doorHeight))
+                    { story.Append("дверь ").Append(nd.parent).Append("->").Append(nd.id)
+                           .Append(" обходится по геометрии — не ставлю; "); StatGateBypass++; break; }
                     site.exitOnly = nd.isExit;
                     site.insideIsBelow = true;                     // buttonBelow = комната родителя
                     st = new InvertedDoorModule().Stamp(canvas, site);
@@ -1251,6 +1430,11 @@ public static class FreeMazeBuilder
                     }
                     if (vert > 0 || hor != 2)
                     { story.Append("мост: комната ").Append(nd.parent).Append(" не сквозной коридор; "); break; }
+                    // Тот же вопрос, что у ворот и двери: если за мост попадают в обход, он украшение.
+                    // Провал в полу мост режет сам, значит в сетке его ещё нет — поправок не нужно.
+                    if (GateBypassed(g, rows, cols, nodes, rects, stamps, nd.id, -1, 0, 0))
+                    { story.Append("мост ").Append(nd.parent).Append("->").Append(nd.id)
+                           .Append(" обходится по геометрии — не ставлю; "); StatGateBypass++; break; }
                     site.roomId = nd.parent;
                     st = new TimedBridgeModule().Stamp(canvas, site);
                     break;
@@ -1281,7 +1465,11 @@ public static class FreeMazeBuilder
                     // под ним. Размер коридора заказан словарём ровно под картинку.
                     int chamber = nd.id;
                     Vector2Int keyCell;
-                    var made = StencilStamper.Stamp(canvas, chamber, stencil, rng, out keyCell);
+                    // ⭐ С КАКОЙ СТОРОНЫ ИГРОК ПРИХОДИТ — это решает зеркало формы: у камеры пролог с
+                    // кнопкой только с одной стороны, и войти с другой значит упереться в провал,
+                    // кнопка которого за провалом (см. StencilStamper.Stamp, parentSide).
+                    int side = rects[nd.parent].col0 <= rects[chamber].col0 ? 0 : 1;
+                    var made = StencilStamper.Stamp(canvas, chamber, stencil, rng, out keyCell, side);
                     if (made == null) break;
                     // ⚠️ Ключ трафарет уже нарисовал в сетке — сюда он приходит только чтобы генератор
                     // знал, что артефакт этой ветки поставлен, и не клал второй.
@@ -1295,6 +1483,7 @@ public static class FreeMazeBuilder
             if (st == null) { story.Append("не встал ").Append(PuzzleVocabulary.Name(nd.element.Value))
                                    .Append(" на ").Append(nd.parent).Append("→").Append(nd.id).Append("; "); continue; }
             stampOf[nd.id] = st;
+            st.edgeRooms = new Vector2Int(nd.parent, nd.id);
             stamps.Add(st);
         }
 
@@ -1367,6 +1556,15 @@ public static class FreeMazeBuilder
         // приёмка его забракует, и вся затея выйдет в минус. Поэтому открываем только те рёбра, чей
         // путь ПО ДЕРЕВУ не пересекает ни одного замка: такая петля ничего не обходит, она просто
         // даёт второй способ пройти уже открытый участок.
+        //
+        // 🐞🐞 ЭТОГО НЕ ХВАТИЛО, И ИМЕННО ЭТО ДАВАЛО ХОЛОСТЫЕ ВОРОТА. Проверка смотрит на путь ПО
+        // ДЕРЕВУ, а рёбра открываются ПО ОДНОМУ и каждое сверяется с деревом заново — то есть друг
+        // друга они не видят. Два ребра, поодиночке безобидных, вместе замыкают крюк вокруг замка:
+        // замер по 12 уровням дал шесть холостых ворот, и в обходном маршруте КАЖДОГО из четырёх с
+        // обходом лежало лишнее ребро (одно из них — цепочка из трёх сразу, через полкарты).
+        // Поэтому ниже к дешёвой проверке по дереву добавлена честная проверка ПО ГРАФУ: ребро
+        // открывается только если после него КАЖДОЕ запертое ребро всё ещё остаётся единственным
+        // путём в своё поддерево. Рёбра возврата в этот граф не входят — их дверь односторонняя.
         System.Func<int, int, bool> pathHasElement = (x, y) =>
         {
             var upX = new List<int>(); int cur = x;
@@ -1383,12 +1581,59 @@ public static class FreeMazeBuilder
         };
         var cands = RoomLayout.FindAdjacent(lay);
 
+        // ── ⭐ ЕДИНАЯ ПРОВЕРКА ОБХОДА: ориентированный граф комнат ───────────────────────────────
+        // Запертые рёбра берём из ПЛАНА, а не из построенного: механизм может ещё не встать, но
+        // открывать под него обход заранее всё равно нельзя.
+        var locked = new List<Vector2Int>();
+        foreach (var nd in nodes)
+            if (nd.element != null && nd.parent >= 0) locked.Add(new Vector2Int(nd.parent, nd.id));
+        int rootRoom = 0;
+        foreach (var nd in nodes) if (nd.parent < 0) { rootRoom = nd.id; break; }
+
+        // ⚠️ РЕБРО ВОЗВРАТА ОДНОСТОРОННЕЕ, НО ОПАСНОЕ НАПРАВЛЕНИЕ У НЕГО — НАРУЖУ. Долгое время оно
+        // считалось безобидным («снаружи дверь не открыть»), и проверку на нём не делали вовсе.
+        // 🐞 Замер поймал обратное: все четыре обойдённых замка обходились ИМЕННО через возврат и ни
+        // один — без него. Схема обхода одна и та же: игрок входит в ветку сбоку (лишним ребром или
+        // просто по дереву), доходит до её конца и выходит дверью УЖЕ ЗА воротами. Дверь при этом
+        // работает ровно как задумано — обесценивает не она, а то, куда она ведёт.
+        System.Func<List<RoomLayout.RoomLink>, Vector2Int, bool> lockBypassed = (ls, e) =>
+        {
+            var adj = new Dictionary<int, List<int>>();
+            System.Action<int, int> link = (x, y) =>
+            { if (!adj.ContainsKey(x)) adj[x] = new List<int>(); adj[x].Add(y); };
+            foreach (var l in ls)
+            {
+                if ((l.a == e.x && l.b == e.y) || (l.a == e.y && l.b == e.x)) continue;
+                if (l.returnEdge && l.returnFrom >= 0)
+                { link(l.returnFrom, l.returnFrom == l.a ? l.b : l.a); continue; }
+                link(l.a, l.b); link(l.b, l.a);
+            }
+            var seen = new HashSet<int> { rootRoom };
+            var q = new Queue<int>(); q.Enqueue(rootRoom);
+            while (q.Count > 0)
+            {
+                int cur = q.Dequeue();
+                if (cur == e.y) return true;
+                List<int> ns; if (!adj.TryGetValue(cur, out ns)) continue;
+                foreach (int o in ns) if (seen.Add(o)) q.Enqueue(o);
+            }
+            return false;
+        };
+        // 🐞 И ВТОРАЯ ПОЛОВИНА ТОЙ ЖЕ ОШИБКИ: рёбра открывались ПО ОДНОМУ и каждое сверялось с
+        // ДЕРЕВОМ заново, то есть друг друга они не видели. Два ребра, поодиночке безобидных, вместе
+        // замыкали крюк вокруг замка (в одном обходе их набралось три, через полкарты). Поэтому
+        // кандидат добавляется в граф НАЧЕРНО и проверяется вместе со всем, что уже открыто.
+        System.Func<RoomLayout.RoomLink, bool> tryOpen = c =>
+        {
+            lay.links.Add(c);
+            if (SkipBypassCheck) return true;
+            foreach (var e in locked)
+                if (lockBypassed(lay.links, e)) { lay.links.RemoveAt(lay.links.Count - 1); return false; }
+            return true;
+        };
+
         // ⭐⭐ РЕБРО ВОЗВРАТА: замыкаем ветку-петлю на основной маршрут. Ветка ушла с трассы, прошла
         // виток, забрала ключ — и выходит обратно рядом с точкой отрыва, как на схеме игрока.
-        // ⚠️ Это ребро НЕ проверяется правилом «путь не пересекает механизм»: обычные лишние рёбра
-        // тем и опасны, что обходят замок, а это ставится ИМЕННО ради обхода — но обход закрывается
-        // дверью, у которой кнопка есть только изнутри. Снаружи ею не войти, значит ничего не
-        // обесценивается (разбор с игроком: «дверь заперта со стороны трассы»).
         var loopLinks = new List<RoomLayout.RoomLink>();
         {
             var onMainSet = new HashSet<int>();
@@ -1396,17 +1641,17 @@ public static class FreeMazeBuilder
             foreach (var nd in nodes)
             {
                 if (nd.returnTo < 0) continue;
-                RoomLayout.RoomLink best = null;
-                foreach (var c in cands)
+                for (int i = 0; i < cands.Count; i++)
                 {
+                    var c = cands[i];
                     bool mine = (c.a == nd.id && onMainSet.Contains(c.b))
                              || (c.b == nd.id && onMainSet.Contains(c.a));
                     if (!mine || c.vertical) continue;      // дверь ставится в боковую стену
-                    best = c; break;
+                    c.returnEdge = true; c.returnFrom = nd.id;
+                    if (!tryOpen(c)) { c.returnEdge = false; c.returnFrom = -1; continue; }
+                    loopLinks.Add(c); cands.RemoveAt(i);
+                    break;
                 }
-                if (best == null) continue;
-                lay.links.Add(best); loopLinks.Add(best);
-                cands.Remove(best);
             }
         }
         for (int i = cands.Count - 1; i > 0; i--)
@@ -1415,8 +1660,8 @@ public static class FreeMazeBuilder
         foreach (var c in cands)
         {
             if (wantExtra <= 0) break;
-            if (pathHasElement(c.a, c.b)) continue;
-            lay.links.Add(c); wantExtra--;
+            if (pathHasElement(c.a, c.b)) continue;         // дешёвый отсев до полной проверки
+            if (tryOpen(c)) wantExtra--;
         }
 
         int rows, cols;
