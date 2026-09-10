@@ -28,7 +28,7 @@ public static class FreeMazeBuilder
     public static int DecorMask = 63;
     /// <summary>Отключить проверку обхода замков по графу комнат — только для замера «с ней и без».</summary>
     public static bool SkipBypassCheck;
-    /// <summary>Сколько ворот не поставлено из-за геометрического обхода (см. GateBypassed).</summary>
+    /// <summary>Сколько механизмов не поставлено: обход есть, а завалить его нечем.</summary>
     public static int StatGateBypass;
 
     /// <summary>Комната абстрактного дерева: кто родитель и какой элемент рецепта сидит на её ребре.</summary>
@@ -322,7 +322,7 @@ public static class FreeMazeBuilder
         // ⚠️ Родитель уже занимает одну сторону, значит детей у комнаты не больше трёх.
         var kidCount = new int[Mathf.Max(wantRooms, nodes.Count) + 8];
         foreach (var nd in nodes) if (nd.parent >= 0) kidCount[nd.parent]++;
-        int guard = 0;
+        int guard = 0, fillerStage = 0;
         while (nodes.Count < wantRooms && guard++ < 2000)
         {
             int at = -1;
@@ -337,7 +337,12 @@ public static class FreeMazeBuilder
             if (at < 0) break;                                      // свободных сторон не осталось
             kidCount[at]++;
             int filler = add(at, null, "простор", nodes[at].onMainPath && rng.Next(100) < 30);
-            nodes[filler].stage = 99;      // добор кладём последним: его провал безвреден
+            // ⭐⭐ КАЖДАЯ КОМНАТА ДОБОРА — СВОЙ ЭТАП, а не общий девяносто девятый.
+            // 🐞 Комментарий «его провал безвреден» был правдой замысла и неправдой кода: одинаковый
+            // номер этапа складывал ВЕСЬ добор в одну укладку, и провал любой комнаты ронял уровень
+            // целиком. На тридцати комнатах добора мало и это не замечалось, на восьмидесяти их
+            // полсотни и все обязаны встать разом — уровень не собирался в 9 случаях из 12.
+            nodes[filler].stage = 99 + fillerStage++;
         }
         return nodes;
     }
@@ -456,13 +461,15 @@ public static class FreeMazeBuilder
             for (int r = rm.row0; r <= rm.row0 + rm.h; r++)
             {
                 var k = new Vector2Int(c, rows - 1 - r);
-                if (isHold(k) && seen.Add(k)) queue.Enqueue(k);
+                if (!isHold(k)) continue;
+                // Вырожденный случай: стартовая комната сама попала в защищаемую область.
+                if (targetSet.Contains(k)) return true;
+                if (seen.Add(k)) queue.Enqueue(k);
             }
         }
         while (queue.Count > 0)
         {
             var a = queue.Dequeue();
-            if (targetSet.Contains(a)) return true;
             for (int dx = -MazeCanvas.ReachSide; dx <= MazeCanvas.ReachSide; dx++)
             for (int dy = -MazeCanvas.Climb; dy <= MazeCanvas.Climb; dy++)
             {
@@ -471,6 +478,8 @@ public static class FreeMazeBuilder
                 var t = new Vector2Int(a.x + dx, a.y + dy);
                 if (seen.Contains(t) || !isHold(t)) continue;
                 if (!LevelModel.StepPossible(solid, a, t, MazeCanvas.ReachSide, MazeCanvas.Climb)) continue;
+                // ⭐ Первый же шаг ИЗВНЕ ВНУТРЬ и есть обход — запоминаем его целиком, а не факт.
+                if (targetSet.Contains(t)) return true;
                 seen.Add(t); queue.Enqueue(t);
             }
         }
@@ -651,6 +660,17 @@ public static class FreeMazeBuilder
         // у комнат без всяких требований.
         foreach (var nd in nodes)
             if (nd.element == null && !nd.isCellar) req[nd.id].allowTunnel = true;
+
+        // ⭐ Раскладке нужно знать, на каких рёбрах стоят ЗАМКИ: вокруг них она держит зазор, иначе
+        // игрок перешагивает из комнаты перед механизмом в комнату за ним (см. RoomReq.lockedEdge).
+        foreach (var nd in nodes)
+            if (nd.element != null && nd.parent >= 0) req[nd.id].lockedEdge = true;
+
+        // ⭐ Комнаты ДОБОРА (те, что добавлены ради простора) раскладка вправе пропустить, если им не
+        // нашлось места: за ними нет ни цели, ни механизма (см. RoomReq.optional).
+        foreach (var nd in nodes)
+            if (nd.element == null && !nd.holdsKey && !nd.isFinish && !nd.isCellar
+                && nd.parent >= 0 && nd.stage >= 99) req[nd.id].optional = true;
 
         var dirL = dir;                                // out-параметр в лямбду не пускают, ссылка та же
         System.Action<int, RoomLayout.LinkDir> claim = (id, d) =>
@@ -1362,6 +1382,9 @@ public static class FreeMazeBuilder
                     // это «дорога обратно», и запирать ею нечего. Обход считаем именно для замка —
                     // и обязательно ПОСЛЕ того, как известна шахта: иначе в расчёт попадёт ступенька,
                     // которую ворота как раз и сносят.
+                    // Обходятся — не ставим. ⚠️ Проверено замером, что это НЕ ложное срабатывание:
+                    // если такие ворота всё-таки построить, приёмка тут же метит их холостыми
+                    // (сиды 3009 и 4014 из чистых становились браком).
                     if (parentBelow && GateBypassed(g, rows, cols, nodes, rects, stamps, nd.id,
                                                     site.shaftStepRow, site.shaftCol0, site.shaftWidth))
                     { story.Append("ворота ").Append(nd.parent).Append("->").Append(nd.id)
@@ -1432,9 +1455,10 @@ public static class FreeMazeBuilder
                     { story.Append("мост: комната ").Append(nd.parent).Append(" не сквозной коридор; "); break; }
                     // Тот же вопрос, что у ворот и двери: если за мост попадают в обход, он украшение.
                     // Провал в полу мост режет сам, значит в сетке его ещё нет — поправок не нужно.
-                    if (GateBypassed(g, rows, cols, nodes, rects, stamps, nd.id, -1, 0, 0))
-                    { story.Append("мост ").Append(nd.parent).Append("->").Append(nd.id)
-                           .Append(" обходится по геометрии — не ставлю; "); StatGateBypass++; break; }
+                    // ⚠️ МОСТ ПРОВЕРЯТЬ ОБХОДОМ НЕЛЬЗЯ, и это выяснилось замером: провал в полу коридора
+                    // мост вырезает САМ, при штампе, а проверка идёт до него — и видит ровный проход,
+                    // объявляя обходом ровно то место, где мост и появится. Ложное срабатывание,
+                    // а не находка (разбор: «(43,12)->(37,12) путь 7 клеток, все внутри комнат»).
                     site.roomId = nd.parent;
                     st = new TimedBridgeModule().Stamp(canvas, site);
                     break;

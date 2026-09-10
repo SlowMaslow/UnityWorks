@@ -69,6 +69,29 @@ public static class RoomLayout
     public static int StatBuilds, StatRestarts, StatRelaxed, StatStageRetries;
     /// <summary>Отключить подгонку плана — только для замера «с ней и без неё».</summary>
     public static bool SkipReattach;
+    /// <summary>Отключить зазор вокруг замков — только для замера «с ним и без него».</summary>
+    public static bool SkipLockClearance;
+    /// <summary>Сколько посадок отвергнуто из-за зазора вокруг замка: это цена правила.</summary>
+    public static int StatLockClear;
+    /// <summary>Сколько случайных положений пробуется на одно направление при посадке комнаты.</summary>
+    public static int Shots = 12;
+    /// <summary>Сколько комнат-доборов пришлось выбросить: уровень собран, но чуть теснее заказа.</summary>
+    public static int StatDropped;
+    /// <summary>
+    /// ⭐ ТРЕБУЕМЫЙ ЗАЗОР между комнатами по разные стороны замка. Числа подобраны ЗАМЕРОМ на 24
+    /// уровнях, а не выведены из формулы:
+    ///   без правила — 22/24 чистых, 95 групп;
+    ///   1/0 — 22/24, 105 групп (мало);
+    ///   ⭐ 2/1 — 24/24, 101 группа;
+    ///   4/2 — 23/23, но один уровень не построился вовсе, групп 75;
+    ///   6/3 (полный восьмиугольник дотяжки, формальная гарантия) — 21/21, три уровня не построились,
+    ///        групп 66.
+    /// Полная гарантия оказалась худшим вариантом: раскладка перестаёт сходиться, а вместе с ней
+    /// теряется треть механизмов. 2/1 не гарантирует ничего формально, зато выигрывает по ОБОИМ
+    /// показателям сразу — и по чистоте, и по содержанию: механизмов становится БОЛЬШЕ, чем без
+    /// правила (101 против 95), потому что их перестаёт снимать проверка обхода при обстановке.
+    /// </summary>
+    public static int LockGapX = 2, LockGapY = 1;
     /// <summary>Сколько раз ОТДЕЛЬНАЯ комната не смогла пристроиться к родителю, и сколько сторон
     /// родителя было к тому моменту занято. Ровно вопрос «часто ли ветвь не знает, как состыковаться».</summary>
     public static int StatPlaceFail;
@@ -287,6 +310,29 @@ public static class RoomLayout
         /// глубиной, и лестница внутри него нарисована картинкой.
         /// </summary>
         public bool ownClimb;
+
+        /// <summary>
+        /// ⭐⭐ НА РЕБРЕ К РОДИТЕЛЮ СТОИТ МЕХАНИЗМ — то есть это ЗАМОК, и всё, что за ним, игрок
+        /// обязан открывать, а не обходить. Раскладка должна знать об этом ДО постановки: замок
+        /// работает не сам по себе, а только если между двумя сторонами нет другой дороги.
+        ///
+        /// 🐞 Пока раскладка про замки не знала, она спокойно ставила комнату по ту сторону замка
+        /// в дотяжке от комнаты по эту — и игрок просто перешагивал из одной в другую. Замер (сид
+        /// 2008): комната 12 справа-снизу, комната 14 слева-сверху, между ними комната 13 с воротами,
+        /// а полы 12 и 14 разошлись на dx=2, dy=3 — ровно в дотяжку. По графу комнат обхода нет,
+        /// геометрически он есть. Ни лишние рёбра, ни возвраты, ни тоннели тут ни при чём.
+        /// </summary>
+        public bool lockedEdge;
+
+        /// <summary>
+        /// ⭐ КОМНАТА-ДОБОР: она добавлена ради простора, за ней нет ни цели, ни механизма. Если ей
+        /// не нашлось места — её просто НЕ БУДЕТ, а уровень соберётся без неё. Ронять из-за неё всю
+        /// раскладку нельзя: дешевле отдать уровень на комнату меньше, чем не отдать вовсе.
+        /// ⚠️ Пропуск безопасен только потому, что этапы идут по возрастанию номера, а у ребёнка
+        /// номер больше родительского: если добор не встал, его дети упрутся в «родителя нет» и
+        /// пропустятся тем же правилом.
+        /// </summary>
+        public bool optional;
     }
 
     /// <summary>Куда обязан встать ребёнок относительно родителя (диктуется ролью на ребре).</summary>
@@ -514,6 +560,13 @@ public static class RoomLayout
                 { req[stageNodes[i]].nextToAny = savedNext[i]; req[stageNodes[i]].pullTo = savedPull[i];
                   dir[stageNodes[i]] = savedDir[i]; }
             }
+            // ⭐ Комнате-добору место не нашлось — уровень собираем без неё, а не выбрасываем.
+            if (!ok)
+            {
+                bool allOptional = true;
+                foreach (int id in stageNodes) if (!req[id].optional) { allOptional = false; break; }
+                if (allOptional) { StatDropped += stageNodes.Count; continue; }
+            }
             if (!ok) { allOk = false; break; }
         }
         }
@@ -523,13 +576,16 @@ public static class RoomLayout
         int minX = int.MaxValue, minY = int.MaxValue, maxX = int.MinValue, maxY = int.MinValue;
         for (int i = 0; i < n; i++)
         {
-            if (boxes[i] == null) return null;
+            // Пропущенная комната-добор — законное «нет»; всё остальное обязано стоять.
+            if (boxes[i] == null) { if (req[i].optional) continue; return null; }
             minX = Mathf.Min(minX, boxes[i].x0); minY = Mathf.Min(minY, boxes[i].y0);
             maxX = Mathf.Max(maxX, boxes[i].X1); maxY = Mathf.Max(maxY, boxes[i].Y1);
         }
+        if (minX == int.MaxValue) return null;
         const int Shell = 3;
         int dx = Shell - minX, dy = Shell - minY;
-        for (int i = 0; i < n; i++) { boxes[i].x0 += dx; boxes[i].y0 += dy; res.rooms.Add(boxes[i]); }
+        for (int i = 0; i < n; i++)
+        { if (boxes[i] == null) continue; boxes[i].x0 += dx; boxes[i].y0 += dy; res.rooms.Add(boxes[i]); }
         foreach (var l in res.links)
         {
             if (l.vertical) { l.from += dx; l.to += dx; l.wall += dy; l.wallEnd += dy; }
@@ -749,6 +805,56 @@ public static class RoomLayout
             return true;
         };
 
+        // ⭐⭐ ЗАМОК РАБОТАЕТ, ТОЛЬКО ЕСЛИ ЕГО НЕ ПЕРЕШАГНУТЬ.
+        // Подпись комнаты — набор механизмов на её пути от корня. Тогда путь по дереву между двумя
+        // комнатами пересекает ровно те механизмы, что различают их подписи: XOR и есть ответ.
+        var lockSig = new long[n];
+        {
+            var order = new List<int>();
+            var depth = new int[n];
+            for (int i = 0; i < n; i++) depth[i] = -1;
+            for (int i = 0; i < n; i++)
+            {
+                int d = 0, cur = i;
+                while (cur >= 0 && d < n) { cur = parent[cur]; d++; }
+                depth[i] = d;
+            }
+            for (int i = 0; i < n; i++) order.Add(i);
+            order.Sort((x, y) => depth[x].CompareTo(depth[y]));
+            int bit = 0;
+            var bitOf = new int[n];
+            for (int i = 0; i < n; i++) bitOf[i] = -1;
+            foreach (int i in order)
+            {
+                int p = parent[i];
+                lockSig[i] = p >= 0 ? lockSig[p] : 0L;
+                if (p >= 0 && req[i].lockedEdge && bit < 63)
+                { bitOf[i] = bit; lockSig[i] |= 1L << bit; bit++; }
+            }
+        }
+        // Зазор, через который игрок ПЕРЕШАГНЁТ: сбоку до дотяжки, вверх до подъёма. Требуем строго
+        // больше — тогда шага между коробками не бывает ни при какой их внутренней геометрии.
+        System.Func<RoomBox, RoomBox, bool> farEnough = (a, b) =>
+        {
+            int gapX = Mathf.Max(0, Mathf.Max(a.x0 - b.X1, b.x0 - a.X1) - 1);
+            int gapY = Mathf.Max(0, Mathf.Max(a.y0 - b.Y1, b.y0 - a.Y1) - 1);
+            return gapX > LockGapX || gapY > LockGapY;
+        };
+        // Кандидат не должен оказаться в дотяжке от комнаты, отделённой от него замком.
+        // ⚠️ Родитель — исключение: с ним связь объявлена, они и обязаны соприкасаться.
+        System.Func<RoomBox, int, bool> lockClear = (cand, exceptId) =>
+        {
+            if (SkipLockClearance) return true;
+            for (int i = 0; i < n; i++)
+            {
+                var p = boxes[i];
+                if (p == null || p.id == exceptId || p.id == cand.id) continue;
+                if ((lockSig[cand.id] ^ lockSig[p.id]) == 0) continue;   // замка между ними нет
+                if (!farEnough(cand, p)) return false;
+            }
+            return true;
+        };
+
         {
             foreach (int k in stageNodes)
             {
@@ -795,7 +901,7 @@ public static class RoomLayout
                 foreach (var d in dirs)
                 {
                     if (placed != null && !pulling) break;
-                    for (int shot = 0; shot < 12 && (placed == null || pulling); shot++)
+                    for (int shot = 0; shot < Shots && (placed == null || pulling); shot++)
                     {
                         RoomBox cand; RoomLink lk;
                         if (d == LinkDir.Horizontal)
@@ -873,6 +979,7 @@ public static class RoomLayout
                                                 from = l2, to = h2, wall = wrow, wallEnd = wrow };
                         }
                         if (!free(cand, v)) continue;
+                        if (!lockClear(cand, v)) { StatLockClear++; continue; }
                         // Замыкание петли: звено должно касаться заданной комнаты с достаточным
                         // перекрытием — иначе прохода между ними не прорезать.
                         if (!relaxNextTo && req[k].nextTo >= 0 && req[k].nextTo < n

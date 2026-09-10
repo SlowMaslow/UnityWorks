@@ -112,6 +112,17 @@ public class PatternPiece
     /// <summary>Окно в секундах. Пока модель считает бюджет ходов общим, но число уже здесь —
     /// чтобы не переделывать формат, когда бюджет станет считаться из окна каждой группы.</summary>
     public float window = 5f;
+    /// <summary>
+    /// ⭐ КЛАПАН ВОЗВРАТА: стена, которую игрок открывает ИЗНУТРИ, чтобы выйти. Держать цель — не её
+    /// работа, и критерий «убери механизм — пропала ли цель» на ней врёт: убери её, и цель тем более
+    /// достижима, просто наружу не выйти.
+    ///
+    /// 🐞 У камеры две такие стены (выход из шахты с ключом и ход в колодец возврата), и признак им
+    /// не проставлялся — приёмка исправно звала их холостыми. Замер: сиды 4007 и 4009 браковались
+    /// ровно по ним, при полном комплекте ключей и достижимом финише. То же исключение, что у
+    /// двери-выхода из ветки (LevelGroup.returnValve), просто трафарету его забыли передать.
+    /// </summary>
+    public bool returnValve;
     public List<PatternButton> buttons = new List<PatternButton>();
 }
 
@@ -215,13 +226,15 @@ public static class StencilLibrary
 
         // 3 — НИЖНЯЯ СТЕНКА ШАХТЫ: кнопка ВНУТРИ шахты, на её полу. Ею игрок выходит из кармана
         // обратно в камеру — не отменяя ничего, а двигаясь дальше. Ровно группа E оригинала.
-        var wallDown = new PatternPiece { name = "стенка шахты (низ)", inverted = true, window = 5f };
+        var wallDown = new PatternPiece { name = "стенка шахты (низ)", inverted = true, window = 5f,
+                                          returnValve = true };
         for (int r = 11; r <= 13; r++) wallDown.cells.Add(new Vector2Int(4, r));
         wallDown.buttons.Add(new PatternButton { cell = new Vector2Int(3, 13) });
         p.pieces.Add(wallDown);
 
         // 4 — СТЕНКА В КОЛОДЕЦ: кнопка на полу камеры. Ею открывается дорога к возврату (группа D).
-        var wallOut = new PatternPiece { name = "стенка в колодец", inverted = true, window = 5f };
+        var wallOut = new PatternPiece { name = "стенка в колодец", inverted = true, window = 5f,
+                                         returnValve = true };
         for (int r = 11; r <= 13; r++) wallOut.cells.Add(new Vector2Int(13, r));
         wallOut.buttons.Add(new PatternButton { cell = new Vector2Int(11, 13) });
         p.pieces.Add(wallOut);
@@ -434,6 +447,7 @@ public static class StencilStamper
             var st = new ModuleStamp
             { moduleName = p.name + (piece.name.Length > 0 ? ": " + piece.name : ""),
               groupId = id, inverted = piece.inverted, window = piece.window,
+              returnValve = piece.returnValve,
               gates = "паттерн " + p.name };
             foreach (var b in piece.buttons)
             {
