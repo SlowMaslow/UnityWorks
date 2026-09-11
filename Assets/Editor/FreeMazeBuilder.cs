@@ -30,6 +30,13 @@ public static class FreeMazeBuilder
     public static bool SkipBypassCheck;
     /// <summary>Сколько механизмов не поставлено: обход есть, а завалить его нечем.</summary>
     public static int StatGateBypass;
+    /// <summary>
+    /// ⭐ РАЗБОР ПЕТЕЛЬ: сколько веток помечено петлёй, сколько кандидатов на ребро возврата нашлось,
+    /// сколько отвергла проверка обхода и у скольких меток кандидата не было вовсе.
+    /// Заведены потому, что «петли не замыкаются» я трижды объяснял неверно — геометрией, шириной
+    /// люка и порогом перекрытия, — а настоящая причина оказалась четвёртой и видна только здесь.
+    /// </summary>
+    public static int StatLoopCand, StatLoopBypass, StatLoopMarks, StatLoopNoCand;
 
     /// <summary>
     /// По сколько комнат класть за раз в длинной ветке к ключу. Смысл этапа — дешёвый откат, а он
@@ -258,6 +265,34 @@ public static class FreeMazeBuilder
                 for (int k = 0; k < tail; k++) cur = add(cur, null, route.name, false);
             }
             nodes[cur].holdsKey = true;                             // ключ — в последней комнате ветки
+
+            // ⭐⭐ ВЕТКА РЕЦЕПТА ТОЖЕ ЗАМЫКАЕТСЯ В ПЕТЛЮ.
+            //
+            // 🐞 Метку петли получали ТОЛЬКО ветки, которые добирает «запасной проход» до трёх
+            // ключей, а ветки рецепта — те, на которых и стоят механизмы, — не получали её вовсе.
+            // Замер на умолчаниях: ключей 31, из них в замкнутой петле 4, в тупиковой ветке 27.
+            // При заказе 50 — 0 из 15. Отсюда же и вся непроходимость: из тупика выходят тем же
+            // механизмом, которым вошли, и возвратную кнопку с него не снять.
+            //
+            // ⭐ Гарантию несёт ВЕТКА, А НЕ МЕХАНИЗМ (решение игрока 2026-09-11): основной маршрут
+            // односторонний по замыслу, а ветка обязана уйти с трассы, забрать ключ и вернуться на
+            // трассу дальше по ходу. Метка включает связку ringTarget + nextToAny: конец ветки
+            // садится рядом с любой комнатой маршрута, и туда открывается ребро возврата с клапаном
+            // (см. loopLinks в Build). Именно она и даёт работающие клапаны — вычисляемое кольцо
+            // PlaceRing не встаёт по другим причинам, см. комментарий при ringStart.
+            {
+                var chain = new List<int>();
+                for (int c4 = cur; c4 >= 0 && c4 != attach; c4 = nodes[c4].parent) chain.Add(c4);
+                chain.Reverse();                                   // от точки отрыва к ключу
+                for (int k2 = 0; k2 < chain.Count; k2++)
+                { nodes[chain[k2]].branchStep = k2; nodes[chain[k2]].branchLen = chain.Count; }
+                // Возвращаемся на трассу в комнату СЛЕДУЮЩУЮ за точкой отрыва — тогда игрок выходит
+                // дальше по ходу, а не там же, где свернул.
+                int ai2 = spine.IndexOf(attach);
+                if (chain.Count > 0 && ai2 >= 0 && ai2 + 1 < spine.Count && !nodes[spine[ai2 + 1]].sealed2)
+                    nodes[cur].returnTo = spine[ai2 + 1];
+            }
+
             // ⭐⭐ ВЕТКА РЕЦЕПТА РЕЖЕТСЯ НА ЭТАПЫ ПО KeyChainChunk КОМНАТ (см. константу).
             // 🐞 Раньше вся ветка получала ОДИН номер этапа. Её длина растёт от размера уровня
             // (хвост = 1 + wantRooms*0.06), и при заказе в 160 комнат ветка выходила на 14-16 комнат:
@@ -268,6 +303,23 @@ public static class FreeMazeBuilder
             // ⚠️ Выбросить звено нельзя: в конце ветки ключ, и цепочка к нему обязана быть целой.
             // Поэтому не выбрасываем, а дробим: откат стоит куска, ветка остаётся той же.
             {
+                // ⛔ УКЛАДКА КОЛЬЦОМ (PlaceRing) РАЗОБРАНА И ОСТАВЛЕНА КАК ЕСТЬ (2026-09-11).
+                //
+                // Счётчики показали, что кольцо не встаёт по ДВУМ причинам, и первую я починил, а
+                // вторая оказалась не по зубам этой укладке вовсе:
+                //   • дробление веток на этапы ломало ПРЕДУСЛОВИЕ кольца: PlaceRing ищет ringStart на
+                //     первом звене этапа и ringTarget на последнем, а разные чанки — разные этапы.
+                //     Отказов «не размечено» было 504 на десяти уровнях. Если ветку не дробить,
+                //     кольцо доходит до геометрии — но поставка падает с 19.85 до 19.10;
+                //   • из 152 вызовов, дошедших до геометрии, 145 отказывают «задели чужое». Кольцу
+                //     нужен свободный прямоугольник примерно 30×10 на ярус ниже трассы, а укладка
+                //     «комната за комнатой от родителя» такой формы не держит. Ранняя очередь для
+                //     кольцевых веток тоже не помогла: стало 145 вместо 140.
+                //
+                // ⚠️ ВЫВОД: кольцо не поставить, пока хребет кладётся первым. Нужен обратный порядок —
+                // кольца как готовые блоки, а хребет между ними, — то есть ДРУГАЯ укладка, а не
+                // правка этой. Пока петли замыкает простой механизм (соседство + ребро возврата),
+                // и он даёт 9 замыканий из 23 меток без всякого PlaceRing.
                 int stageNow = myStage;
                 int since = 0;
                 for (int id = attach + 1; id < nodes.Count; id++)
@@ -304,7 +356,10 @@ public static class FreeMazeBuilder
                     foreach (int u in used) gap = Mathf.Min(gap, Mathf.Abs(spine.IndexOf(u) - i));
                     if (used.Count == 0) gap = i;
                     // Разнос по маршруту важнее, но при равном разносе берём менее загруженную.
-                    float score = gap - 0.25f * load0[spine[i]];
+                    // ⭐ И ещё: следующее ребро трассы должно быть СВОБОДНО от механизма — иначе
+                    // ребро возврата обойдёт его, и проверка обхода петлю не пропустит (см. PickAttach).
+                    bool nextFree = i + 1 < spine.Count && nodes[spine[i + 1]].element == null;
+                    float score = gap - 0.25f * load0[spine[i]] + (nextFree ? 2f : 0f);
                     if (score > bestGap) { bestGap = score; attach = spine[i]; }
                 }
                 if (attach < 0) break;
@@ -335,6 +390,13 @@ public static class FreeMazeBuilder
                 // комнат, из них 10-13 — рядовые звенья цепочки.
                 // ⚠️ Выбросить звено нельзя: в конце ветки лежит КЛЮЧ, и цепочка к нему обязана быть
                 // целой. Поэтому не выбрасываем, а дробим — откат становится дешевле, а ветка та же.
+                // ⭐⭐ ЗАМЫКАЕМ ПЕТЛЮ: последнее звено должно вернуться к маршруту — к комнате
+                // СЛЕДУЮЩЕЙ за точкой отрыва. Так игрок выходит на трассу дальше по ходу, как на
+                // схеме игрока, а не возвращается тем же путём.
+                // ⚠️ ДО разметки этапов: от того, кольцевая ли ветка, зависит, дробить ли её.
+                int ai = spine.IndexOf(attach);
+                if (ai >= 0 && ai + 1 < spine.Count && !nodes[spine[ai + 1]].sealed2)
+                    nodes[cur2].returnTo = spine[ai + 1];
                 {
                     var chain = new List<int>();
                     for (int c3 = cur2; c3 >= 0 && c3 != attach; c3 = nodes[c3].parent) chain.Add(c3);
@@ -346,12 +408,6 @@ public static class FreeMazeBuilder
                         nodes[chain[k2]].stage = stageNow;
                     }
                 }
-                // ⭐⭐ ЗАМЫКАЕМ ПЕТЛЮ: последнее звено должно вернуться к маршруту — к комнате
-                // СЛЕДУЮЩЕЙ за точкой отрыва. Так игрок выходит на трассу дальше по ходу, как на
-                // схеме игрока, а не возвращается тем же путём.
-                int ai = spine.IndexOf(attach);
-                if (ai >= 0 && ai + 1 < spine.Count && !nodes[spine[ai + 1]].sealed2)
-                    nodes[cur2].returnTo = spine[ai + 1];
                 // ⚠️ Резервировать бок комнаты-цели (sealed2) пробовал — не помогает: 22% → 20%.
                 // Дело не в занятых боках, см. замер ниже.
                 haveKeys++;
@@ -870,6 +926,10 @@ public static class FreeMazeBuilder
                 var upper = lay.rooms.Find(rr => rr.id == (nodesAbove(l)));
                 int span = l.to - l.from + 1;
                 int hw = Mathf.Min(span, 2 + rng.Next(2));
+                // ⛔ ПОБЛАЖКУ РЕБРУ ВОЗВРАТА ЗДЕСЬ ПРОБОВАЛ И УБРАЛ (2026-09-11). Рассуждение было
+                // такое: MinFloorKept бережёт пол от люков, а инверсный барьер в покое КАМЕНЬ и пола
+                // не отнимает, значит клапану можно резать шире. Замер не подтвердил: клапанов стало
+                // 8 вместо 9, поставка 20.00 вместо 20.10. Правило остаётся общим для всех люков.
                 if (upper != null)
                 {
                     int free = 0;
@@ -1183,6 +1243,45 @@ public static class FreeMazeBuilder
             if (g[air, c] == '.' && g[floor, c] == '#') return c;
         }
         return -1;
+    }
+
+    /// <summary>
+    /// ⭐⭐ МЕСТО ПОД КНОПКУ В ЛЮБОЙ ПЛОСКОСТИ: пол, потолок или боковая стена.
+    ///
+    /// 🐞 Кнопку умели сажать ТОЛЬКО на пол (<see cref="FloorSpot"/>), и когда пола не находилось,
+    /// механизм просто не ставился. На клапанах возврата это стоило трёх замыканий из одиннадцати
+    /// попыток — отказ «возврат: негде кнопка».
+    /// Игрок: «кнопки теперь также должны уметь располагаться в любой плоскости».
+    /// ⚠️ Пол пробуем первым: на него игрок встаёт, и это самое удобное место. Потолок и стены —
+    /// когда пола нет. Рисовать все четыре ориентации редактор уже умеет (см. MountSide).
+    /// </summary>
+    private static bool MountSpot(char[,] g, MazeCanvas.RoomRect r, int rows, int cols,
+                                  int preferCol, HashSet<int> avoidCols,
+                                  out Vector2Int cell, out MountSide mount)
+    {
+        cell = new Vector2Int(-1, -1); mount = MountSide.Floor;
+        int col = FloorSpot(g, r, rows, cols, preferCol, avoidCols);
+        if (col >= 0) { cell = new Vector2Int(col, r.row0 + r.h - 1); return true; }
+
+        int anchor = preferCol >= 0 ? Mathf.Clamp(preferCol - r.col0, 0, r.w - 1) : r.w / 2;
+        for (int d = 0; d < r.w; d++)
+        {
+            int off = anchor + (d % 2 == 0 ? d / 2 : -(d / 2 + 1));
+            if (off < 0 || off >= r.w) continue;
+            int c = r.col0 + off;
+            if (c < 0 || c >= cols) continue;
+            for (int row = r.row0; row < r.row0 + r.h; row++)
+            {
+                if (row < 0 || row >= rows || g[row, c] != '.') continue;
+                if (row - 1 >= 0 && g[row - 1, c] == '#')
+                { cell = new Vector2Int(c, row); mount = MountSide.Ceiling; return true; }
+                if (c - 1 >= 0 && g[row, c - 1] == '#')
+                { cell = new Vector2Int(c, row); mount = MountSide.WallLeft; return true; }
+                if (c + 1 < cols && g[row, c + 1] == '#')
+                { cell = new Vector2Int(c, row); mount = MountSide.WallRight; return true; }
+            }
+        }
+        return false;
     }
 
     /// <summary>Столбцы, в которых игрок лезет через люк, — по одному набору на комнату.
@@ -1666,23 +1765,48 @@ public static class FreeMazeBuilder
             HashSet<int> avoidIn, avoidOut;
             climbCols.TryGetValue(inside, out avoidIn);
             climbCols.TryGetValue(outside, out avoidOut);
-            int cIn = FloorSpot(g, rects[inside], rows, cols, ll.wall, avoidIn);
-            int cOut = FloorSpot(g, rects[outside], rows, cols, ll.wallEnd, avoidOut);
-            if (cIn < 0 || cOut < 0) { story.Append("возврат: негде кнопка; "); continue; }
+            // ⚠️ У ВЕРТИКАЛЬНОЙ связи wall — это РЯД, и тянуть к нему кнопку по столбцу бессмысленно.
+            // Тянемся к столбцу люка; у боковой связи всё как было.
+            int nearCol = ll.vertical ? (ll.cutFrom >= 0 ? ll.cutFrom : ll.from) : ll.wall;
+            int nearCol2 = ll.vertical ? (ll.cutTo >= 0 ? ll.cutTo : ll.to) : ll.wallEnd;
+            // ⭐ Кнопка садится в ЛЮБУЮ плоскость: пола может не быть, а клапан нужен.
+            Vector2Int cellIn, cellOut; MountSide mIn, mOut;
+            if (!MountSpot(g, rects[inside], rows, cols, nearCol, avoidIn, out cellIn, out mIn)
+             || !MountSpot(g, rects[outside], rows, cols, nearCol2, avoidOut, out cellOut, out mOut))
+            { story.Append("возврат: негде кнопка; "); continue; }
             var site = new MazeSite
             {
                 roomId = inside, roomAboveId = outside,
-                buttonBelow = new Vector2Int(cIn, rects[inside].row0 + rects[inside].h - 1),
-                buttonAbove = new Vector2Int(cOut, rects[outside].row0 + rects[outside].h - 1),
+                buttonBelow = cellIn,  mountBelow = mIn,
+                buttonAbove = cellOut, mountAbove = mOut,
                 exitOnly = true, insideIsBelow = true      // «внутри» = buttonBelow = комната ветки
             };
-            // Проём режем от пола вверх, как и обычной двери, — берём его фактическую высоту.
-            site.doorCol = ll.wall;
-            int top = ll.from, hgt = 0;
-            for (int r = rects[inside].row0 + rects[inside].h - 1; r >= 0 && g[r, ll.wall] == '.'; r--)
-            { top = r; hgt++; }
-            if (hgt < 2) { story.Append("возврат: проём низкий; "); continue; }
-            site.doorRowTop = top; site.doorHeight = hgt;
+            if (ll.vertical)
+            {
+                // ⭐ ЛЮК В ПОЛУ: у вертикальной связи wall — это ряд-стена, а прорезанные столбцы
+                // лежат в cutFrom..cutTo (весь общий отрезок шире реально прорезанного).
+                // ⚠️⚠️ КООРДИНАТА РАСКЛАДКИ, А НЕ РЯД СЕТКИ. У раскладки y растёт ВВЕРХ, у сетки
+                // ряды идут ВНИЗ — рендер переводит через toRow, и здесь надо так же.
+                // 🐞 Я взял ll.wall напрямую как ряд, и вертикальный клапан не встал НИ РАЗУ:
+                // проверка смотрела в чужое место и честно сообщала «люк не прорезан».
+                int wallRow = rows - 1 - ll.wall;
+                int x0 = ll.cutFrom >= 0 ? ll.cutFrom : ll.from;
+                int x1 = ll.cutTo   >= 0 ? ll.cutTo   : ll.to;
+                while (x0 <= x1 && (wallRow < 0 || wallRow >= rows || g[wallRow, x0] != '.')) x0++;
+                while (x1 >= x0 && (wallRow < 0 || wallRow >= rows || g[wallRow, x1] != '.')) x1--;
+                if (x1 < x0) { story.Append("возврат: люк не прорезан; "); continue; }
+                site.doorRow = wallRow; site.doorCol0 = x0; site.doorWidth = x1 - x0 + 1;
+            }
+            else
+            {
+                // Проём режем от пола вверх, как и обычной двери, — берём его фактическую высоту.
+                site.doorCol = ll.wall;
+                int top = ll.from, hgt = 0;
+                for (int r = rects[inside].row0 + rects[inside].h - 1; r >= 0 && g[r, ll.wall] == '.'; r--)
+                { top = r; hgt++; }
+                if (hgt < 2) { story.Append("возврат: проём низкий; "); continue; }
+                site.doorRowTop = top; site.doorHeight = hgt;
+            }
             var stDoor = new InvertedDoorModule().Stamp(canvas, site);
             if (stDoor == null) { story.Append("возврат: дверь не встала; "); continue; }
             stDoor.returnValve = true;        // роль объявлена: приёмка не считает клапан холостым
@@ -1806,17 +1930,62 @@ public static class FreeMazeBuilder
             foreach (var nd in nodes)
             {
                 if (nd.returnTo < 0) continue;
-                for (int i = 0; i < cands.Count; i++)
+                // ⭐⭐ ВЫХОД ИЩЕТСЯ ПО ВСЕЙ ВЕТКЕ, А НЕ ТОЛЬКО ОТ ПОСЛЕДНЕЙ КОМНАТЫ.
+                // 🐞 Раньше ребро возврата пробовали открыть ровно из комнаты с ключом. Она стоит в
+                // конце цепочки из десятка звеньев, и рядом с трассой оказывается редко: требование
+                // «коснуться маршрута» (nextToAny) — пожелание, а не ультиматум, жёстким оно роняло
+                // раскладку до 4 сборок из 40. Замер: меток петли 23, а до попытки открыть ребро
+                // доходило ТРИ, и клапан вставал у двух.
+                // ⚠️ Петле и не нужно замыкаться именно ключевой комнатой. Смысл — «игрок забрал ключ
+                // и вышел на трассу, не возвращаясь тем же путём», а выйти он может из любого звена
+                // ветки: до него он дойдёт изнутри, своим же путём назад. Поэтому перебираем ВСЮ
+                // ветку от ключа к точке отрыва и берём первое звено, у которого выход нашёлся, —
+                // чем глубже, тем короче обратный путь.
+                var branch = new List<int>();
+                for (int c5 = nd.id; c5 >= 0 && !onMainSet.Contains(c5); c5 = nodes[c5].parent) branch.Add(c5);
+                bool closed = false;
+                StatLoopMarks++; int candsHere = 0;
+                foreach (int room in branch)
                 {
-                    var c = cands[i];
-                    bool mine = (c.a == nd.id && onMainSet.Contains(c.b))
-                             || (c.b == nd.id && onMainSet.Contains(c.a));
-                    if (!mine || c.vertical) continue;      // дверь ставится в боковую стену
-                    c.returnEdge = true; c.returnFrom = nd.id;
-                    if (!tryOpen(c)) { c.returnEdge = false; c.returnFrom = -1; continue; }
-                    loopLinks.Add(c); cands.RemoveAt(i);
-                    break;
+                    for (int i = 0; i < cands.Count && !closed; i++)
+                    {
+                        var c = cands[i];
+                        // ⛔ РАСШИРЯТЬ ЦЕЛЬ ДО «ЛЮБОЙ КОМНАТЫ ВНЕ ВЕТКИ» ПРОБОВАЛ — ИНЕРТНО (2026-09-11).
+                        // Рассуждение верное: смысл петли — «вышел, не возвращаясь тем же путём», и
+                        // для этого годится не только маршрут, до него игрок дойдёт дальше сам.
+                        // Замер: кандидатов ровно столько же (16) и клапанов столько же (10) —
+                        // у веток попросту не бывает годных соседей вне маршрута.
+                        // ⚠️ Заодно выяснилось: исключать сквозные комнаты (sealed2) НЕЛЬЗЯ — их треть
+                        // от всех комнат маршрута (118 из 386), и без них кандидатов становится 13
+                        // вместо 16. Третий проём в такой комнате ловит сам модуль моста (hor != 2).
+                        bool mine = (c.a == room && onMainSet.Contains(c.b))
+                                 || (c.b == room && onMainSet.Contains(c.a));
+                        // ⭐ Вертикальные соседства тоже годятся: дверь теперь режется и в пол
+                        // (см. MazeSite.doorRow). Раньше здесь стояло «|| c.vertical» — и половина
+                        // найденных соседств отбрасывалась только из-за ориентации.
+                        if (!mine) continue;
+                        candsHere++; StatLoopCand++;
+                        c.returnEdge = true; c.returnFrom = room;
+                        if (!tryOpen(c)) { c.returnEdge = false; c.returnFrom = -1; StatLoopBypass++; continue; }
+                        loopLinks.Add(c); cands.RemoveAt(i); closed = true;
+                    }
+                    if (closed) break;
                 }
+                if (candsHere == 0) StatLoopNoCand++;
+                // ⛔ ЗАПАСНОЙ ПОИСК ПО ПЕРЕКРЫТИЮ В ОДНУ КЛЕТКУ ПРОБОВАЛСЯ И УБРАН (2026-09-11).
+                // Замысел: из 12 веток без кандидата ОДИННАДЦАТЬ стоят прямо над комнатой маршрута
+                // через одну стену и промахиваются мимо неё на колонку — общий список соседств
+                // требует перекрытия в две клетки (MinOverlap), и они отсеиваются.
+                //
+                // ⚠️ ШИРИНА ЛЮКА ПРОХОДИМОСТИ НЕ МЕШАЕТ — проверено на голой геометрии: артефакт под
+                // люком достижим одинаково через 1, 2, 3 и 5 клеток. Первый заход я списал провал
+                // именно на ширину и ошибся.
+                // 🐞 Ломала РУЧНАЯ ВРЕЗКА в сетку уже ПОСЛЕ рендера — мимо уступов, climbCols и всего,
+                // что рендер делает вокруг люка: клапанов становилось 14 против 9, но чистых уровней
+                // 5 из 10 вместо 8. А когда люк стал резать сам рендер, запасной поиск не дал НИ
+                // ОДНОГО лишнего клапана (8 против 9) — то есть искал он то, что и так не строится.
+                // Чинить надо не порог перекрытия, а ПОСАДКУ последнего звена ветки: оно должно
+                // вставать в створ с комнатой маршрута, а не «где получилось». Это правка раскладки.
             }
         }
         for (int i = cands.Count - 1; i > 0; i--)
@@ -2007,15 +2176,36 @@ public static class FreeMazeBuilder
 
     /// <summary>Комната трассы, к которой можно подвесить ветку: наименее загруженная из случайной
     /// горстки. ⚠️ Не самая свободная из всех — иначе все ветки соберутся в одном месте.</summary>
+    /// <summary>
+    /// ⭐⭐ ТОЧКА ОТРЫВА ВЕТКИ. Кроме загруженности сторон учитывает ещё одно: СВОБОДНО ЛИ СЛЕДУЮЩЕЕ
+    /// РЕБРО ТРАССЫ.
+    ///
+    /// 🐞 Петля возвращается на маршрут в комнату СЛЕДУЮЩУЮ за точкой отрыва. Если на ребре между
+    /// ними стоит механизм, ребро возврата его ОБХОДИТ — и проверка обхода честно его отвергает.
+    /// Замер: из 25 найденных кандидатов на ребро возврата 14 зарубила именно она, а не геометрия.
+    /// Петля и замок на трассе дерутся за одно и то же ребро, и разнять их можно только здесь, при
+    /// выборе точки отрыва: механизмы на хребте расставлены раньше веток, так что мы их уже видим.
+    /// ⚠️ Это ПРЕДПОЧТЕНИЕ, а не запрет: если свободного ребра рядом нет, ветку всё равно цепляем —
+    /// без петли она хуже, но без ветки хуже вдвое.
+    /// </summary>
     private static int PickAttach(List<Node> nodes, List<int> spine, System.Random rng)
     {
         var load = KidCounts(nodes);
-        int best = -1, bestLoad = int.MaxValue;
+        // Следующее ребро свободно, если у комнаты за точкой отрыва нет своего механизма.
+        System.Func<int, bool> nextFree = id =>
+        {
+            int ix = spine.IndexOf(id);
+            return ix >= 0 && ix + 1 < spine.Count && nodes[spine[ix + 1]].element == null;
+        };
+        int best = -1, bestScore = int.MaxValue;
         for (int t = 0; t < 8; t++)
         {
             int cand = spine[1 + rng.Next(Mathf.Max(1, spine.Count - 2))];
             if (nodes[cand].sealed2) continue;
-            if (load[cand] < bestLoad) { bestLoad = load[cand]; best = cand; }
+            // Занятая сторона стоит одно очко, занятое следующее ребро — сразу четыре: без него
+            // петля не замкнётся вовсе, а лишняя сторона лишь усложняет посадку.
+            int score = load[cand] + (nextFree(cand) ? 0 : 4);
+            if (score < bestScore) { bestScore = score; best = cand; }
         }
         if (best < 0)
             foreach (int c2 in spine) if (!nodes[c2].sealed2) { best = c2; break; }

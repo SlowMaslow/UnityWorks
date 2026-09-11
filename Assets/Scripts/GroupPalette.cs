@@ -15,10 +15,30 @@ public static class GroupPalette
 {
     public static Color For(string groupId)
     {
-        char c = string.IsNullOrEmpty(groupId) ? 'A' : char.ToUpperInvariant(groupId[0]);
-        int idx = Mathf.Clamp(c - 'A', 0, 25);
+        int idx = IndexOf(groupId);
         float hue = (idx * 0.6180339887f) % 1f;
         bool dark = (idx & 1) == 1;
         return Color.HSVToRGB(hue, dark ? 0.95f : 0.70f, dark ? 0.70f : 1f);
+    }
+
+    /// <summary>
+    /// ⭐⭐ НОМЕР ГРУППЫ ИЗ ЕЁ КЛЮЧА. Ключи бывают двух видов, и оба надо понимать:
+    ///   • «A».. «Z» — ручные уровни, ключ это буква;
+    ///   • «g0», «g1», «g17» — генератор, ключ это НОМЕР.
+    ///
+    /// 🐞 Здесь стояло <c>char.ToUpperInvariant(groupId[0]) - 'A'</c>, то есть номер брался из ПЕРВОГО
+    /// символа. Для ручных уровней это верно, а у генератора первый символ у всех 'g' — и все группы
+    /// получали один и тот же индекс 6, то есть ОДИН ЦВЕТ НА ВЕСЬ УРОВЕНЬ. Поймано игроком сразу:
+    /// «в режиме редактора вижу, что все одного цвета». Регресс приехал с переводом групп генератора
+    /// с букв на номера (снятие потолка в 26 групп, см. MazeCanvas.NextGroup).
+    /// ⚠️ Потолок в 25 тоже снят: групп теперь бывает до 63, а формула оттенка в номере не ограничена.
+    /// </summary>
+    private static int IndexOf(string groupId)
+    {
+        if (string.IsNullOrEmpty(groupId)) return 0;
+        int n;
+        if ((groupId[0] == 'g' || groupId[0] == 'G') && groupId.Length > 1
+            && int.TryParse(groupId.Substring(1), out n) && n >= 0) return n;
+        return Mathf.Max(0, char.ToUpperInvariant(groupId[0]) - 'A');
     }
 }

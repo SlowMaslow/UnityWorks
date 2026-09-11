@@ -53,34 +53,6 @@ public class MazeCanvas
     /// </summary>
     public const int PitDepth = 3;
 
-    /// <summary>
-    /// ⭐⭐ ДВЕ КНОПКИ НА МЕХАНИЗМ ИЛИ ОДНА. Сейчас ОДНА (решение игрока 2026-09-11).
-    ///
-    /// Правило «всегда две» стояло с самого начала: кнопка со стороны прихода открывает проход,
-    /// вторая, за замком, даёт вернуться тем же путём. Разбор ручного Level_11 показал, что игрок
-    /// строит иначе: «Одна кнопка у двери — не недосмотр, а замысел: каждая дверь работает в свою
-    /// сторону». Вывод тогда записали, но до кода он не дошёл — камера (из того же Level_11) уже
-    /// была с одной кнопкой, а три собственных модуля генератора остались с двумя.
-    /// Замер до правки (10 уровней на умолчаниях): ворота 194 кнопки на 97 групп, мост 96 на 48,
-    /// дверь 80 на 40 — ровно по две; камера 40 на 40 — одна.
-    ///
-    /// ⚠️ УБИРАЕТСЯ ИМЕННО ВОЗВРАТНАЯ КНОПКА, та что за замком. Кнопка со стороны прихода остаётся
-    /// всегда: без неё механизм не открыть снаружи, и всё, что за ним, становится недостижимым.
-    /// ⚠️ Проходы становятся ОДНОСТОРОННИМИ. Это не поломка по нынешним правилам: тупики перестали
-    /// быть браком ещё 2026-09-04 («у игры есть чекпоинты и продолжение»). Но сцепление уровня от
-    /// этого растёт, и приёмка на плотных заказах станет строже — смотреть по «проходим».
-    /// </summary>
-    public static bool TwoSidedButtons = true;
-
-    /// <summary>
-    /// ⛔ ГИПОТЕЗА «ВОРОТАМ ВТОРАЯ КНОПКА НЕ НУЖНА» ПРОВЕРЕНА И ОПРОВЕРГНУТА (2026-09-11).
-    /// Рассуждение было такое: ворота дают только ПОДЪЁМ, а спуститься можно всегда и без кнопки,
-    /// значит односторонности не возникает. Замер сказал иначе: одна кнопка только у ворот —
-    /// чистых 1 уровень из 10, непроходимых 9, безвыходных клеток 801 против 40-129.
-    /// Спуск в шахту без вызванных платформ модель проходом не считает, и ворота оказываются
-    /// такими же односторонними, как дверь и мост.
-    /// </summary>
-    public static bool TwoSidedGateButtons = true;
 
     /// <summary>Прямоугольник комнаты в СЕТКЕ СИМВОЛОВ: (col0, row0) — левый ВЕРХНИЙ угол интерьера.</summary>
     public struct RoomRect { public int col0, row0, w, h; }
@@ -274,6 +246,30 @@ public class MazeSite
     /// произвольного размера, и решётка — лишь один из способов их получить.</summary>
     public int roomId = -1, roomAboveId = -1;
     public bool onRoute;               // лежит ли на маршруте спавн→финиш
+
+    /// <summary>
+    /// ⭐⭐ НУЖНА ЛИ ВОЗВРАТНАЯ КНОПКА — та, что стоит ЗА механизмом и пускает игрока обратно.
+    ///
+    /// ⭐ ОСНОВНОЙ МАРШРУТ ОДНОСТОРОННИЙ ПО ЗАМЫСЛУ (решение игрока 2026-09-11): шаг назад по
+    /// трассе не гарантируется, точка невозврата — это приём, а не поломка. Значит на маршруте
+    /// возвратная кнопка не нужна вовсе, а это 145 механизмов из 185 по замеру.
+    /// Гарантию проходимости несёт НЕ механизм, а ВЕТКА: она уходит с трассы, забирает ключ и
+    /// возвращается на трассу дальше по ходу. Поэтому на ветке возврат пока оставляем — сегодня
+    /// петлёй помечены 4 ветки из 31, остальные 27 ключей лежат в тупиках, и выйти оттуда можно
+    /// только тем же механизмом.
+    ///
+    /// ⛔ ДВЕ ГИПОТЕЗЫ ПРОВЕРЕНЫ И ОПРОВЕРГНУТЫ (2026-09-11), не повторять:
+    ///   • «одна кнопка у ВСЕХ механизмов» — чистых 0 уровней из 10, непроходимых 10. Сторона
+    ///     кнопки при этом была верной (мёртвых групп ноль, цели достижимы порознь) — ломалось
+    ///     ровно одно: не существует прохождения за один заход;
+    ///   • «воротам вторая кнопка не нужна, спуститься можно всегда» — чистых 1 из 10,
+    ///     безвыходных клеток 801 против 40-129. Спуск в шахту без вызванных платформ модель
+    ///     проходом не считает.
+    /// Оба раза причина одна: механизм сидит на ЕДИНСТВЕННОЙ связи между двумя частями дерева.
+    /// Снимать возврат можно там, где обход гарантирован чем-то ещё, — на трассе это её
+    /// односторонность, на ветке это будет замкнутая петля.
+    /// </summary>
+    public bool NeedsReturnButton => !onRoute;
     public bool hasFloorBelow;         // есть ли под комнатой этаж (падение не смертельно)
     public bool throughCorridor;       // сквозной горизонтальный коридор (вход слева, выход справа)
 
@@ -282,9 +278,24 @@ public class MazeSite
     // Куда встанут кнопки: (столбец, ряд). Считает ГЕНЕРАТОР — место под кнопку зависит от того,
     // относится ли клетка к основной области воздуха, а это его знание, не модуля.
     public Vector2Int buttonBelow = new Vector2Int(-1, -1), buttonAbove = new Vector2Int(-1, -1);
+    /// <summary>Плоскость крепления каждой из двух кнопок. По умолчанию пол — как было всегда.</summary>
+    public MountSide mountBelow = MountSide.Floor, mountAbove = MountSide.Floor;
 
     // ── Дверной проём между двумя комнатами по горизонтали (для двери-инверсии) ──
     public int doorCol = -1, doorRowTop, doorHeight;
+
+    /// <summary>
+    /// ⭐⭐ ГОРИЗОНТАЛЬНАЯ ДВЕРЬ: барьер лежит в ПОЛУ/ПОТОЛКЕ между комнатами друг над другом.
+    /// <c>doorRow</c> — ряд-стена, <c>doorCol0..doorCol0+doorWidth-1</c> — прорезанный люк; −1 —
+    /// дверь вертикальная (см. <see cref="doorCol"/>).
+    ///
+    /// 🐞 Дверь умела резаться ТОЛЬКО вертикальной щелью в боковой стене, и это молча ограничивало
+    /// всё вокруг. Ближайшее следствие: ребро возврата петли искали лишь среди боковых соседей, а
+    /// ветка возвращается к трассе как придётся. Замер: из 23 помеченных петель боковое соседство
+    /// с маршрутом было у 9, только вертикальное — у 2.
+    /// Игрок: «дверь должна резаться абсолютно в любой ориентации, хоть сверху, хоть снизу».
+    /// </summary>
+    public int doorRow = -1, doorCol0, doorWidth;
 
     // ── ЛЮК в полу верхней комнаты (для люка-провала): сам ряд и его колонки ──
     public int hatchRow = -1, hatchCol0, hatchWidth;
@@ -480,8 +491,8 @@ public class TimedBridgeModule : IMazeModule
         bool b2 = c.At(rAir, cRight) == '.' && c.At(floorRow, cRight) == '#';
         // ⚠️ Обе клетки обязаны ГОДИТЬСЯ и при одной кнопке: ставим одну, но выбирать сторону можно
         // только когда годны обе. Иначе кнопка уедет за пропасть.
-        bool keepLeft  = MazeCanvas.TwoSidedButtons || s.entryOnLeft != 0;
-        bool keepRight = MazeCanvas.TwoSidedButtons || s.entryOnLeft == 0;
+        bool keepLeft  = s.NeedsReturnButton || s.entryOnLeft != 0;
+        bool keepRight = s.NeedsReturnButton || s.entryOnLeft == 0;
         if (b1 && keepLeft)  c.SetButton(rAir, cLeft, grp);
         if (b2 && keepRight) c.SetButton(rAir, cRight, grp);
 
@@ -608,7 +619,7 @@ public class VerticalGateModule : IMazeModule
         if (placedLedges == 0) { c.Rollback(); RolledBackCount++; FailWhy[5]++; return null; }
 
         c.SetButton(s.buttonBelow.y, s.buttonBelow.x, grp);             // «открыть» — сторона прихода
-        if (MazeCanvas.TwoSidedGateButtons)
+        if (s.NeedsReturnButton)
             c.SetButton(s.buttonAbove.y, s.buttonAbove.x, grp);         // «вернуться» — за замком
 
         var st = new ModuleStamp
@@ -641,7 +652,7 @@ public class VerticalGateModule : IMazeModule
 
         c.Commit(); StampedCount++;
         st.AddButton(s.buttonBelow);
-        if (MazeCanvas.TwoSidedGateButtons) st.AddButton(s.buttonAbove);
+        if (s.NeedsReturnButton) st.AddButton(s.buttonAbove);
         return st;
     }
 }
@@ -665,10 +676,21 @@ public class InvertedDoorModule : IMazeModule
 
     public bool Fits(MazeCanvas c, MazeSite s)
     {
-        if (s.doorCol < 0 || s.doorHeight < 2) return false;      // проём в одну клетку — не дверь
         if (s.buttonBelow.x < 0 || s.buttonAbove.x < 0) return false;
+        if (s.doorRow >= 0)                                        // ГОРИЗОНТАЛЬНАЯ: барьер в полу
+        {
+            // ⚠️ ОБЫЧНОМУ проходу нужен люк в две клетки, КЛАПАНУ ВОЗВРАТА хватает одной: сквозь него
+            // проваливаются ровно один раз, и это люк, а не коридор. 🐞 Замер: одиннадцать веток из
+            // двенадцати не замыкались только потому, что промахивались мимо комнаты маршрута на
+            // одну колонку, — порог был написан не про клапан.
+            if (s.doorWidth < (s.exitOnly ? 1 : 2)) return false;
+            for (int x = s.doorCol0; x < s.doorCol0 + s.doorWidth; x++)
+                if (c.At(s.doorRow, x) != '.') return false;
+            return true;
+        }
+        if (s.doorCol < 0 || s.doorHeight < 2) return false;       // проём в одну клетку — не дверь
         for (int r = s.doorRowTop; r < s.doorRowTop + s.doorHeight; r++)
-            if (c.At(r, s.doorCol) != '.') return false;          // проём должен быть чистым воздухом
+            if (c.At(r, s.doorCol) != '.') return false;           // проём должен быть чистым воздухом
         return true;
     }
 
@@ -676,31 +698,46 @@ public class InvertedDoorModule : IMazeModule
     {
         if (!Fits(c, s)) { RolledBackCount++; return null; }
         int grp = c.NextGroup();
+        bool horizontal = s.doorRow >= 0;
         c.Begin();
-        for (int r = s.doorRowTop; r < s.doorRowTop + s.doorHeight; r++)
-            c.SetGroup(r, s.doorCol, grp);
+        if (horizontal)
+            for (int x = s.doorCol0; x < s.doorCol0 + s.doorWidth; x++) c.SetGroup(s.doorRow, x, grp);
+        else
+            for (int r = s.doorRowTop; r < s.doorRowTop + s.doorHeight; r++) c.SetGroup(r, s.doorCol, grp);
         // ⭐ В РОЛИ ВЫХОДА кнопка ставится ТОЛЬКО ИЗНУТРИ: снаружи этим путём не войти, и вход в
         // область остаётся единственным — тем, ради которого она и запиралась.
         var inside = s.insideIsBelow ? s.buttonBelow : s.buttonAbove;
         var outside = s.insideIsBelow ? s.buttonAbove : s.buttonBelow;
         c.SetButton(inside.y, inside.x, grp);
-        if (!s.exitOnly && MazeCanvas.TwoSidedButtons)
+        if (!s.exitOnly && s.NeedsReturnButton)
             c.SetButton(outside.y, outside.x, grp);                     // возвратная, за дверью
 
         // Заложенный проём не должен породить диагональный зажим с соседним камнем.
         bool pinched = false;
-        for (int r = s.doorRowTop - 1; r <= s.doorRowTop + s.doorHeight && !pinched; r++)
-        for (int dc = -1; dc <= 1 && !pinched; dc++)
-            if (c.MakesPinch(r, s.doorCol + dc)) pinched = true;
+        if (horizontal)
+        {
+            for (int dr = -1; dr <= 1 && !pinched; dr++)
+            for (int x = s.doorCol0 - 1; x <= s.doorCol0 + s.doorWidth && !pinched; x++)
+                if (c.MakesPinch(s.doorRow + dr, x)) pinched = true;
+        }
+        else
+        {
+            for (int r = s.doorRowTop - 1; r <= s.doorRowTop + s.doorHeight && !pinched; r++)
+            for (int dc = -1; dc <= 1 && !pinched; dc++)
+                if (c.MakesPinch(r, s.doorCol + dc)) pinched = true;
+        }
         if (pinched) { c.Rollback(); RolledBackCount++; return null; }
 
         c.Commit(); StampedCount++;
         var st = new ModuleStamp
         { moduleName = s.exitOnly ? Name + ": выход изнутри" : Name,
           groupIx = grp, inverted = true,
-          gates = s.exitOnly ? "выход из запертой области" : "дверной проём между комнатами" };
-        st.AddButton(inside);
-        if (!s.exitOnly && MazeCanvas.TwoSidedButtons) st.AddButton(outside);
+          gates = s.exitOnly
+              ? (horizontal ? "выход из запертой области (люк)" : "выход из запертой области")
+              : (horizontal ? "люк между комнатами" : "дверной проём между комнатами") };
+        st.AddButton(inside, -1, s.insideIsBelow ? s.mountBelow : s.mountAbove);
+        if (!s.exitOnly && s.NeedsReturnButton)
+            st.AddButton(outside, -1, s.insideIsBelow ? s.mountAbove : s.mountBelow);
         return st;
     }
 }
