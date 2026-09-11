@@ -55,6 +55,9 @@ public static class LevelSpecIO
         public float cell; public bool hasSpawn; public Vector2Int spawn;
         public List<Vector2Int> rock = new List<Vector2Int>();
         public List<Vector2Int> coins = new List<Vector2Int>();
+        /// <summary>Шипы. ⚠️ Без них сохранённое описание теряет смертельные клетки, и уровень,
+        /// собранный из файла, отличается от того, что проверила приёмка.</summary>
+        public List<Vector2Int> spikes = new List<Vector2Int>();
         public List<GroupDto> groups = new List<GroupDto>();
         public TargetDto finish = new TargetDto();
         public List<TargetDto> artifacts = new List<TargetDto>();
@@ -86,6 +89,7 @@ public static class LevelSpecIO
         var d = new SpecDto { cell = s.cell, hasSpawn = s.hasSpawn, spawn = s.spawn };
         foreach (var k in s.rock) d.rock.Add(k);
         d.coins.AddRange(s.coins);
+        d.spikes.AddRange(s.spikes);
         foreach (var g in s.groups)
         {
             var gd = new GroupDto { id = g.id, inverted = g.inverted, window = g.window };
@@ -112,6 +116,7 @@ public static class LevelSpecIO
         var s = new LevelSpec { cell = d.cell, hasSpawn = d.hasSpawn, spawn = d.spawn };
         foreach (var k in d.rock) s.rock.Add(k);
         s.coins.AddRange(d.coins);
+        if (d.spikes != null) s.spikes.AddRange(d.spikes);
         foreach (var g in d.groups)
         {
             var gg = new LevelGroup { id = g.id, inverted = g.inverted, window = g.window };

@@ -419,9 +419,9 @@ public static class StencilStamper
 
         // Сперва раздаём id всем платформам: кнопка может ссылаться на кусок, до которого обход
         // ещё не дошёл, и без предварительной раздачи ссылка осталась бы пустой.
-        var idOf = new char[p.pieces.Count];
+        var idOf = new int[p.pieces.Count];
         for (int i = 0; i < p.pieces.Count; i++)
-            idOf[i] = p.pieces[i].kind == PieceKind.Platform ? c.NextGroupId() : '\0';
+            idOf[i] = p.pieces[i].kind == PieceKind.Platform ? c.NextGroup() : -1;
 
         var stamps = new List<ModuleStamp>();
         for (int i = 0; i < p.pieces.Count; i++)
@@ -440,20 +440,20 @@ public static class StencilStamper
                 continue;
             }
 
-            char id = idOf[i];
+            int id = idOf[i];
             foreach (var cell in piece.cells)
-            { var g = Place(p, cell, row, col, mirror); c.Set(g.y, g.x, char.ToLower(id)); }
+            { var g = Place(p, cell, row, col, mirror); c.SetGroup(g.y, g.x, id); }
 
             var st = new ModuleStamp
             { moduleName = p.name + (piece.name.Length > 0 ? ": " + piece.name : ""),
-              groupId = id, inverted = piece.inverted, window = piece.window,
+              groupIx = id, inverted = piece.inverted, window = piece.window,
               returnValve = piece.returnValve,
               gates = "паттерн " + p.name };
             foreach (var b in piece.buttons)
             {
                 var g = Place(p, b.cell, row, col, mirror);
-                c.Set(g.y, g.x, id);
-                char host = b.hostPiece >= 0 && b.hostPiece < idOf.Length ? idOf[b.hostPiece] : '\0';
+                c.SetButton(g.y, g.x, id);
+                int host = b.hostPiece >= 0 && b.hostPiece < idOf.Length ? idOf[b.hostPiece] : -1;
                 // ⚠️ Зеркало меняет и сторону крепления: правая стена становится левой.
                 var mount = b.mount;
                 if (mirror && mount == MountSide.WallLeft) mount = MountSide.WallRight;

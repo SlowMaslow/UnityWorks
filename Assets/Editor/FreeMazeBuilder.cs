@@ -31,6 +31,14 @@ public static class FreeMazeBuilder
     /// <summary>Сколько механизмов не поставлено: обход есть, а завалить его нечем.</summary>
     public static int StatGateBypass;
 
+    /// <summary>
+    /// По сколько комнат класть за раз в длинной ветке к ключу. Смысл этапа — дешёвый откат, а он
+    /// теряется, когда этап разрастается: вероятность уложить N комнат подряд падает с ростом N,
+    /// и переигрывать приходится всё. Шесть — компромисс: форма ветки (вверх-вбок-вниз) ещё
+    /// читается внутри куска, а откат стоит куска, а не всей ветки.
+    /// </summary>
+    private const int KeyChainChunk = 6;
+
     /// <summary>Комната абстрактного дерева: кто родитель и какой элемент рецепта сидит на её ребре.</summary>
     public class Node
     {
@@ -91,6 +99,8 @@ public static class FreeMazeBuilder
         public string scheme;
         /// <summary>Та же сетка, но живая: по ней прокладывается дорога назад (см. CarveReturn).</summary>
         public char[,] grid; public int rows, cols;
+        /// <summary>Плоскость номеров групп, парная к <see cref="grid"/>: личность плиток живёт тут.</summary>
+        public int[,] grp;
         public List<Node> nodes;
         public RoomLayout.Result layout;
         public List<ModuleStamp> stamps;   // что построили модули (инверсия, вложенность кнопок)
@@ -248,8 +258,25 @@ public static class FreeMazeBuilder
                 for (int k = 0; k < tail; k++) cur = add(cur, null, route.name, false);
             }
             nodes[cur].holdsKey = true;                             // ключ — в последней комнате ветки
-            for (int id = attach + 1; id < nodes.Count; id++)
-                if (nodes[id].stage == 0 && !nodes[id].onMainPath) nodes[id].stage = myStage;
+            // ⭐⭐ ВЕТКА РЕЦЕПТА РЕЖЕТСЯ НА ЭТАПЫ ПО KeyChainChunk КОМНАТ (см. константу).
+            // 🐞 Раньше вся ветка получала ОДИН номер этапа. Её длина растёт от размера уровня
+            // (хвост = 1 + wantRooms*0.06), и при заказе в 160 комнат ветка выходила на 14-16 комнат:
+            // 2-4 с механизмами и 10-13 рядовых. Разбор пяти несошедшихся уровней при заказе 50
+            // показал у ВСЕХ ПЯТИ ровно такой этап, и все пятеро умирали после двенадцати
+            // перезапусков подряд. Этап заведён ради дешёвого отката — «не встал, переигрываем
+            // только его», — а этап в четверть уровня этот смысл отменяет.
+            // ⚠️ Выбросить звено нельзя: в конце ветки ключ, и цепочка к нему обязана быть целой.
+            // Поэтому не выбрасываем, а дробим: откат стоит куска, ветка остаётся той же.
+            {
+                int stageNow = myStage;
+                int since = 0;
+                for (int id = attach + 1; id < nodes.Count; id++)
+                {
+                    if (nodes[id].stage != 0 || nodes[id].onMainPath) continue;
+                    if (since > 0 && since % KeyChainChunk == 0) stageNow = ++stageCounter;
+                    nodes[id].stage = stageNow; since++;
+                }
+            }
         }
 
         // ── ТРИ КЛЮЧА РАЗМЕЧАЕТ ПЛАН, А НЕ АВАРИЙНЫЙ ЗАПАСНОЙ ПРОХОД ─────────────────────────────
@@ -298,8 +325,27 @@ public static class FreeMazeBuilder
                 // добора. 🐞 Замер объяснил, почему вычисляемое кольцо не встало ни разу: ему нужен
                 // свободный прямоугольник на ярус ниже трассы, а укладывалось оно последним, когда
                 // место уже разобрано (120 отказов «цель не подошла», 64 «задели чужое»).
-                int keyStage = ++keyCounter;
-                { int c3 = cur2; while (c3 >= 0 && c3 != attach) { nodes[c3].stage = keyStage; c3 = nodes[c3].parent; } }
+                // ⭐⭐ ДЛИННАЯ ВЕТКА РЕЖЕТСЯ НА НЕСКОЛЬКО ЭТАПОВ.
+                // 🐞 Раньше вся ветка была ОДНИМ этапом, а её длина растёт от размера уровня
+                // (len = 5 + wantRooms*0.06): при заказе в 160 комнат это пятнадцать комнат разом.
+                // Этапы заведены ровно ради дешёвого отката — «не встал этап, переигрываем только
+                // его», — а этап в четверть уровня этот смысл отменяет: не встала одна комната из
+                // пятнадцати, и переигрывается всё, включая четырнадцать вставших. Разбор пяти
+                // несошедшихся уровней при заказе 50 показал у всех пяти именно такой этап: 14-16
+                // комнат, из них 10-13 — рядовые звенья цепочки.
+                // ⚠️ Выбросить звено нельзя: в конце ветки лежит КЛЮЧ, и цепочка к нему обязана быть
+                // целой. Поэтому не выбрасываем, а дробим — откат становится дешевле, а ветка та же.
+                {
+                    var chain = new List<int>();
+                    for (int c3 = cur2; c3 >= 0 && c3 != attach; c3 = nodes[c3].parent) chain.Add(c3);
+                    chain.Reverse();                       // от точки отрыва к ключу
+                    int stageNow = ++keyCounter;
+                    for (int k2 = 0; k2 < chain.Count; k2++)
+                    {
+                        if (k2 > 0 && k2 % KeyChainChunk == 0) stageNow = ++keyCounter;
+                        nodes[chain[k2]].stage = stageNow;
+                    }
+                }
                 // ⭐⭐ ЗАМЫКАЕМ ПЕТЛЮ: последнее звено должно вернуться к маршруту — к комнате
                 // СЛЕДУЮЩЕЙ за точкой отрыва. Так игрок выходит на трассу дальше по ходу, как на
                 // схеме игрока, а не возвращается тем же путём.
@@ -392,15 +438,17 @@ public static class FreeMazeBuilder
     /// но в сетке его ещё нет — модуль поставит его сам. Считать обход надо по ЗАКРЫТОЙ двери, иначе
     /// проверка увидит открытый проём и решит, что дверь не нужна. Зеркало случая со ступенькой:
     /// у ворот из геометрии плиту вычитаем, у двери — прибавляем. −1 — двери нет.</param>
-    private static bool GateBypassed(char[,] g, int rows, int cols, List<Node> nodes,
+    private static bool GateBypassed(char[,] g, int[,] grp, int rows, int cols, List<Node> nodes,
                                      MazeCanvas.RoomRect[] rects, List<ModuleStamp> stamps, int childId,
                                      int stepRow, int shaftCol0, int shaftWidth,
                                      int wallCol = -1, int wallRowTop = 0, int wallHeight = 0)
     {
         // ⚠️ ИНВЕРСНЫЕ ПЛИТЫ В ПОКОЕ — КАМЕНЬ. В сетке они обычные буквы, и если считать их воздухом,
         // проверка пропускает игрока сквозь закрытые стены и объявляет обходом то, чего нет.
-        var solidAtRest = new HashSet<char>();
-        foreach (var st0 in stamps) if (st0.inverted) solidAtRest.Add(char.ToLower(st0.groupId));
+        // 🐞 Раньше множество было по БУКВАМ сетки. Буква повторяется по кругу (см. MazeCanvas.TileChar),
+        // так что опознавать по ней группу нельзя — спрашиваем плоскость номеров.
+        var solidAtRest = new HashSet<int>();
+        foreach (var st0 in stamps) if (st0.inverted) solidAtRest.Add(st0.groupIx);
         var behind = new HashSet<int> { childId };
         for (bool grew = true; grew; )
         {
@@ -415,7 +463,7 @@ public static class FreeMazeBuilder
             if (r < 0 || r >= rows || c < 0 || c >= cols) return true;
             if (r == stepRow && c >= shaftCol0 && c < shaftCol0 + shaftWidth) return false;  // ступеньку снесут
             if (c == wallCol && r >= wallRowTop && r < wallRowTop + wallHeight) return true; // дверь закрыта
-            return g[r, c] == '#' || solidAtRest.Contains(g[r, c]);
+            return g[r, c] == '#' || solidAtRest.Contains(grp[r, c]);
         };
         System.Func<Vector2Int, bool> isHold = k => solid(k) && !solid(new Vector2Int(k.x, k.y + 1));
 
@@ -666,8 +714,25 @@ public static class FreeMazeBuilder
         foreach (var nd in nodes)
             if (nd.element != null && nd.parent >= 0) req[nd.id].lockedEdge = true;
 
+        // ⭐⭐ РАСКЛАДКА ВПРАВЕ ПРОПУСТИТЬ ПОДДЕРЕВО, КОТОРОЕ НИЧЕГО НЕ НЕСЁТ.
+        //
+        // 🐞 Раньше это право имели ТОЛЬКО комнаты-доборы (условие «nd.stage >= 99»), а хвост ветки
+        // рецепта — точно такие же пустые комнаты — считался обязательным. Разбор пяти несошедшихся
+        // уровней при заказе 50 показал у всех пяти одну и ту же картину: этап из 14-16 комнат, из
+        // них 2-4 с механизмом, а 10-13 — пустые 3x3 без направления. Не встала одна пустая комната
+        // из шестнадцати — не встал ВЕСЬ УРОВЕНЬ, после двенадцати перезапусков подряд.
+        //
+        // ⚠️ Пропускать можно не всякую пустую комнату, а только ту, ЗА КОТОРОЙ тоже пусто: посреди
+        // цепочки она держит потомков, и выбросив её, мы оторвём то, что за ней. Поэтому считаем
+        // признак по ПОДДЕРЕВУ снизу вверх. Комнаты маршрута не трогаем вовсе — на них стоят
+        // чекпоинты, и трасса обязана быть целой.
         // ⭐ Комнаты ДОБОРА (те, что добавлены ради простора) раскладка вправе пропустить, если им не
         // нашлось места: за ними нет ни цели, ни механизма (см. RoomReq.optional).
+        // ⛔ ПРОБОВАЛ РАСШИРИТЬ ЭТО ПРАВИЛО — НЕ ПРИГОДИЛОСЬ (2026-09-11). Идея была отдавать
+        // раскладке право бросить ЛЮБОЕ поддерево, которое ничего не несёт, а звенья ветки-петли
+        // ронять на последней ступени послаблений. Замер убил затею: StatDropped = 0 и на
+        // умолчаниях, и при заказе 50 — раскладка не бросает комнаты ВООБЩЕ, ни старым правилом,
+        // ни новым. Сходимость чинило не это, а дробление длинных веток на этапы (см. KeyChainChunk).
         foreach (var nd in nodes)
             if (nd.element == null && !nd.holdsKey && !nd.isFinish && !nd.isCellar
                 && nd.parent >= 0 && nd.stage >= 99) req[nd.id].optional = true;
@@ -695,6 +760,28 @@ public static class FreeMazeBuilder
                 // ограничение существует ради проходимости, а он за неё уже отвечает.
                 int hCap = need.selfClimbing ? RoomLayout.MaxHallHeight : RoomLayout.MaxRoomHeight;
                 req[id].minH = Mathf.Max(req[id].minH, Mathf.Min(need.minHeight, hCap));
+
+                // ⭐⭐ МЕСТО ЗАКАЗЫВАЕТСЯ И ПОД ПОДМЕНУ. Направление ребра выбирает раскладка, то есть
+                // ПОЗЖЕ этого места, и на постройке элемент может смениться (дверь на вертикальном
+                // ребре → ворота, мост без коридора → ворота или дверь). Комната при этом остаётся
+                // отмеренной под исходный элемент — и модуль отказывается встать.
+                // 🐞 Замер при заказе 50 механизмов: 72 потери из 85 — ровно отказ ворот «комната
+                // ниже 4 рядов», потому что дверь просила 3. Остальные пять причин отказа дали НОЛЬ.
+                // Результат: заказ 50 — встало 99% вместо 72%, все шесть причин отказа ворот по нулям.
+                //
+                // ⚠️ ЦЕНА ИЗМЕРЕНА И ПРИНЯТА. Комната двери и моста стала 4 ряда вместо 3, раскладке
+                // теснее. A/B на 20 сидах (заказ 20, 56 комнат): поставка 18.75 → 19.79 из 20, зато
+                // раскладка сошлась 19/20 вместо 20/20, а чистых стало 14/19 против 17/20.
+                // Чистота падает НЕ от поломки: непроходимых 5 против 3, потому что замки, которые
+                // раньше молча пропадали и оставляли проход открытым, теперь действительно стоят.
+                // Перебор сидов дорожает с 1.2 попытки до 1.4 — дёшево за +1 механизм на уровень и
+                // за снятие главной потери на плотных заказах.
+                foreach (var alt in PuzzleVocabulary.Substitutes(nd.element.Value))
+                {
+                    var an = PuzzleVocabulary.Need(alt);
+                    req[id].minW = Mathf.Max(req[id].minW, an.minWidth);
+                    req[id].minH = Mathf.Max(req[id].minH, Mathf.Min(an.minHeight, hCap));
+                }
             }
             // ⚠️ ПОТОЛОК РАЗМЕРА — ТОЛЬКО КОМНАТЕ САМОГО ЭЛЕМЕНТА, не соседней: трафарет рисует
             // себя в одной комнате, а вторая нужна ему лишь как место для кнопки снаружи.
@@ -1127,15 +1214,17 @@ public static class FreeMazeBuilder
     /// ⚠️ Порядок важен: сперва объекты, потом механизмы. Вылазке нужен ключ уже лежащим в её камере,
     /// а модули могут занять клетки, куда объект потом не встанет.
     /// </summary>
-    private static void Furnish(char[,] g, int rows, int cols, List<Node> nodes,
-                                MazeCanvas.RoomRect[] rects, List<RoomLayout.RoomLink> links,
-                                System.Random rng, List<ModuleStamp> stamps, System.Text.StringBuilder story,
-                                List<RoomLayout.RoomLink> loopLinks = null)
+    /// <returns>Плоскость НОМЕРОВ ГРУПП по клеткам (−1 — ничья). Уходит дальше в Built и BuildSpec:
+    /// личность плитки живёт в ней, а не в букве сетки.</returns>
+    private static int[,] Furnish(char[,] g, int rows, int cols, List<Node> nodes,
+                                  MazeCanvas.RoomRect[] rects, List<RoomLayout.RoomLink> links,
+                                  System.Random rng, List<ModuleStamp> stamps, System.Text.StringBuilder story,
+                                  List<RoomLayout.RoomLink> loopLinks = null)
     {
         // ⚠️ Уступы зала — ДО объектов: объект должен встать на готовый пол, а не быть замурован.
         HallLedges(g, rows, cols, rects, rng);
         PlaceObjects(g, rows, cols, nodes, rects);
-        FurnishLinks(g, rows, cols, nodes, rects, links, rng, stamps, story, loopLinks);
+        return FurnishLinks(g, rows, cols, nodes, rects, links, rng, stamps, story, loopLinks);
     }
 
     /// <summary>
@@ -1267,7 +1356,7 @@ public static class FreeMazeBuilder
 
     /// <summary>Ступени в связях и модули механизмов — это уже про КОНКРЕТНУЮ модель связи
     /// (дыра в общей стене), поэтому живёт отдельно от расстановки объектов.</summary>
-    private static void FurnishLinks(char[,] g, int rows, int cols, List<Node> nodes,
+    private static int[,] FurnishLinks(char[,] g, int rows, int cols, List<Node> nodes,
                                      MazeCanvas.RoomRect[] rects, List<RoomLayout.RoomLink> links,
                                      System.Random rng, List<ModuleStamp> stamps,
                                      System.Text.StringBuilder story,
@@ -1378,6 +1467,28 @@ public static class FreeMazeBuilder
             { element = PuzzleElement.Gate; story.Append("дверь ").Append(nd.id).Append(" → ворота (ребро вертикальное); "); }
             else if (!link.vertical && (element == PuzzleElement.Gate || element == PuzzleElement.NestedGate))
             { element = PuzzleElement.Door; story.Append("ворота ").Append(nd.id).Append(" → дверь (ребро боковое); "); }
+            // ⭐ МОСТУ НЕ ДОСТАЛСЯ СКВОЗНОЙ КОРИДОР — СТАВИМ ТО, ЧТО ЗДЕСЬ УМЕСТНО.
+            // Коридор мост заказывает заранее, но когда этап не встаёт, раскладка снимает требование
+            // направления, чтобы не уронить весь уровень (см. «послабление» в BuildStaged). При
+            // многих механизмах этапы срываются часто, и мост оставался ни с чем.
+            // 🐞 Замер на заказе в 36 групп: из 108 заказанных элементов построено 68, и двадцать
+            // потерь — мост, причём у ВСЕХ десяти проверенных комната имела ровно две связи, одну
+            // горизонтальную и одну вертикальную. То есть коридор не «занят», а просто не выдан.
+            if (element == PuzzleElement.Bridge)
+            {
+                int horB = 0, vertB = 0;
+                foreach (var l2 in links)
+                {
+                    if (l2.a != nd.parent && l2.b != nd.parent) continue;
+                    if (l2.vertical) vertB++; else horB++;
+                }
+                if (vertB > 0 || horB != 2)
+                {
+                    element = link.vertical ? PuzzleElement.Gate : PuzzleElement.Door;
+                    story.Append("мост ").Append(nd.id).Append(" → ")
+                         .Append(link.vertical ? "ворота" : "дверь").Append(" (коридор не сквозной); ");
+                }
+            }
             switch (element)
             {
                 case PuzzleElement.Gate:
@@ -1397,7 +1508,7 @@ public static class FreeMazeBuilder
                     // Обходятся — не ставим. ⚠️ Проверено замером, что это НЕ ложное срабатывание:
                     // если такие ворота всё-таки построить, приёмка тут же метит их холостыми
                     // (сиды 3009 и 4014 из чистых становились браком).
-                    if (parentBelow && GateBypassed(g, rows, cols, nodes, rects, stamps, nd.id,
+                    if (parentBelow && GateBypassed(g, canvas.Grp, rows, cols, nodes, rects, stamps, nd.id,
                                                     site.shaftStepRow, site.shaftCol0, site.shaftWidth))
                     // ⚠️ continue, а не break: после break сработало бы ещё и «не встал», и один
                     // отказ печатался ДВАЖДЫ — на этом я сам сбился, разбирая потери.
@@ -1424,7 +1535,7 @@ public static class FreeMazeBuilder
                     st = new VerticalGateModule().Stamp(canvas, site);
                     if (st != null && hostSt != null)
                         for (int i = 0; i < st.buttons.Count; i++)
-                            if (st.buttons[i] == site.buttonBelow) st.buttonHosts[i] = hostSt.groupId;
+                            if (st.buttons[i] == site.buttonBelow) st.buttonHosts[i] = hostSt.groupIx;
                     break;
                 case PuzzleElement.Door:
                     if (link.vertical) break;
@@ -1452,7 +1563,7 @@ public static class FreeMazeBuilder
                     // Тот же вопрос, что и у ворот, только зеркально: если за ЗАКРЫТУЮ дверь всё равно
                     // попадают, дверь декоративна. ⚠️ Выход из камеры (exitOnly) не проверяем: он
                     // выпускает игрока наружу, а не запирает вход, и «обход» для него бессмыслен.
-                    if (!nd.isExit && GateBypassed(g, rows, cols, nodes, rects, stamps, nd.id,
+                    if (!nd.isExit && GateBypassed(g, canvas.Grp, rows, cols, nodes, rects, stamps, nd.id,
                                                    -1, 0, 0, site.doorCol, site.doorRowTop, site.doorHeight))
                     { story.Append("дверь ").Append(nd.parent).Append("->").Append(nd.id)
                            .Append(" обходится по геометрии — не ставлю; "); StatGateBypass++; continue; }
@@ -1479,6 +1590,16 @@ public static class FreeMazeBuilder
                     // объявляя обходом ровно то место, где мост и появится. Ложное срабатывание,
                     // а не находка (разбор: «(43,12)->(37,12) путь 7 клеток, все внутри комнат»).
                     site.roomId = nd.parent;
+                    // ⭐ С КАКОЙ СТОРОНЫ ПРИХОДИТ ИГРОК. Комната моста — сквозной коридор с ровно
+                    // двумя боковыми связями: одна к деду (оттуда приходят), вторая к nd.id (туда
+                    // уходят). При одной кнопке (см. MazeCanvas.TwoSidedButtons) сторона решает всё:
+                    // кнопка с неверной стороны оказывается ЗА пропастью, и мост не перейти вовсе.
+                    {
+                        int granny = nodes[nd.parent].parent;
+                        site.entryOnLeft = granny >= 0 && rects[granny].w > 0
+                            ? (rects[granny].col0 < rects[nd.parent].col0 ? 1 : 0)
+                            : -1;
+                    }
                     st = new TimedBridgeModule().Stamp(canvas, site);
                     break;
                 case PuzzleElement.Vault:
@@ -1568,6 +1689,7 @@ public static class FreeMazeBuilder
             stamps.Add(stDoor);
             story.Append("возврат на маршрут ").Append(inside).Append("→").Append(outside).Append("; ");
         }
+        return canvas.Grp;
     }
 
     /// <summary>Полный проход: рецепт → дерево → роли → раскладка → сетка. null, если не уложилось.</summary>
@@ -1727,7 +1849,7 @@ public static class FreeMazeBuilder
         var story = new System.Text.StringBuilder();
         story.Append("комнат ").Append(nodes.Count).Append(", габарит ").Append(cols).Append('×').Append(rows).Append(": ");
         var stamps = new List<ModuleStamp>();
-        Furnish(g, rows, cols, nodes, rects, lay.links, rng, stamps, story, loopLinks);
+        var grpPlane = Furnish(g, rows, cols, nodes, rects, lay.links, rng, stamps, story, loopLinks);
         foreach (var st in stamps) story.Append(st.moduleName).Append(' ').Append(st.groupId).Append("; ");
 
         // ── Неприкосновенное: проходы, клетки над ними (посадочные холды) и ступени ──
@@ -1790,8 +1912,8 @@ public static class FreeMazeBuilder
         for (int r = 0; r < rows; r++) { for (int c = 0; c < cols; c++) sb.Append(g[r, c]); sb.Append('\n'); }
         return new Built { scheme = sb.ToString(), nodes = nodes, layout = lay,
                            stamps = stamps, story = story.ToString(),
-                           grid = g, rows = rows, cols = cols,
-                           spec = BuildSpec(g, rows, cols, stamps, cellSize) };
+                           grid = g, grp = grpPlane, rows = rows, cols = cols,
+                           spec = BuildSpec(g, grpPlane, rows, cols, stamps, cellSize) };
     }
 
     /// <summary>
@@ -1872,7 +1994,7 @@ public static class FreeMazeBuilder
         var sb = new System.Text.StringBuilder();
         for (int r = 0; r < b.rows; r++) { for (int c = 0; c < b.cols; c++) sb.Append(b.grid[r, c]); sb.Append('\n'); }
         b.scheme = sb.ToString();
-        b.spec = BuildSpec(b.grid, b.rows, b.cols, b.stamps, cellSize);
+        b.spec = BuildSpec(b.grid, b.grp, b.rows, b.cols, b.stamps, cellSize);
     }
 
     /// <summary>Сколько детей у каждого узла — мера того, сколько сторон комнаты уже занято.</summary>
@@ -1917,7 +2039,14 @@ public static class FreeMazeBuilder
     /// ⚠️ Из сетки берётся только КАМЕНЬ И ЦЕЛИ — то, что она выражает честно. Всё про механизмы
     /// приходит из штампов, а не вычитывается из букв обратно.
     /// </summary>
-    public static LevelSpec BuildSpec(char[,] g, int rows, int cols, List<ModuleStamp> stamps, float cell)
+    /// <summary>
+    /// ⭐ КЛЮЧ ГРУППЫ В СПЕКЕ. Раньше это была буква из сетки, и потому групп не могло быть больше
+    /// 26. Теперь ключ построен из НОМЕРА и с буквой никак не связан; ручные уровни продолжают
+    /// жить со своими "A".."Z" — ключи спека это просто строки, и пересечься им негде.
+    /// </summary>
+    private static string GroupKey(int groupIx) => "g" + groupIx;
+
+    public static LevelSpec BuildSpec(char[,] g, int[,] grp, int rows, int cols, List<ModuleStamp> stamps, float cell)
     {
         var spec = new LevelSpec { cell = cell };
         System.Func<int, int, Vector2Int> K = (r, c) => new Vector2Int(c, rows - 1 - r);
@@ -1925,19 +2054,24 @@ public static class FreeMazeBuilder
         { exists = true, cell = k, center = new Vector2(k.x, k.y), half = Vector2.zero,
           world = new Vector3(k.x * cell, k.y * cell, 0f) };
 
-        var groupCells = new Dictionary<char, List<Vector2Int>>();
+        var groupCells = new Dictionary<int, List<Vector2Int>>();
         for (int r = 0; r < rows; r++)
         for (int c = 0; c < cols; c++)
         {
             char ch = g[r, c];
             var k = K(r, c);
             if (ch == '#') spec.rock.Add(k);
-            else if (ch >= 'a' && ch <= 'z')
+            // 🐞 Здесь стояло «ch >= 'a' && ch <= 'z'» — необъявленный потолок в 26 групп: у 27-й
+            // ключ был '[', он мимо диапазона, и группа уезжала БЕЗ ЕДИНОЙ ПЛИТКИ. Теперь плитку
+            // опознаёт номер в плоскости, а буква осталась только для глаз и может повторяться.
+            else if (grp[r, c] >= 0)
             {
                 List<Vector2Int> l;
-                if (!groupCells.TryGetValue(ch, out l)) { l = new List<Vector2Int>(); groupCells[ch] = l; }
+                int gx = grp[r, c];
+                if (!groupCells.TryGetValue(gx, out l)) { l = new List<Vector2Int>(); groupCells[gx] = l; }
                 l.Add(k);
             }
+            else if (ch == MazeCanvas.Spike) spec.spikes.Add(k);
             else if (ch == '@') { spec.spawn = k; spec.hasSpawn = true; }
             else if (ch == '^') spec.finish = mkT(k);
             else if (ch == '*') spec.artifacts.Add(mkT(k));
@@ -1949,27 +2083,26 @@ public static class FreeMazeBuilder
         // какие клетки заняты, и то сверяются с тем же штампом.
         foreach (var st in stamps)
         {
-            char low = char.ToLowerInvariant(st.groupId);
-            var grp = spec.GetOrAddGroup(low.ToString(), st.inverted);
-            grp.inverted = st.inverted;
-            grp.window = st.window;
-            grp.returnValve = st.returnValve;
+            var gr = spec.GetOrAddGroup(GroupKey(st.groupIx), st.inverted);
+            gr.inverted = st.inverted;
+            gr.window = st.window;
+            gr.returnValve = st.returnValve;
             List<Vector2Int> tiles;
-            if (groupCells.TryGetValue(low, out tiles)) grp.tiles.AddRange(tiles);
+            if (groupCells.TryGetValue(st.groupIx, out tiles)) gr.tiles.AddRange(tiles);
         }
         // Кнопки — вторым проходом: хозяин ищется по УЖЕ созданным группам.
         foreach (var st in stamps)
         {
-            int gi = spec.IndexOfGroup(char.ToLowerInvariant(st.groupId).ToString());
+            int gi = spec.IndexOfGroup(GroupKey(st.groupIx));
             if (gi < 0) continue;
             for (int i = 0; i < st.buttons.Count; i++)
             {
                 var b = st.buttons[i];
-                char hostCh = i < st.buttonHosts.Count ? st.buttonHosts[i] : '\0';
+                int hostIx = i < st.buttonHosts.Count ? st.buttonHosts[i] : -1;
                 int host = LevelButton.NoHost;
-                if (hostCh != '\0')
+                if (hostIx >= 0)
                 {
-                    host = spec.IndexOfGroup(char.ToLowerInvariant(hostCh).ToString());
+                    host = spec.IndexOfGroup(GroupKey(hostIx));
                     if (host < 0) host = LevelButton.NoHost;
                 }
                 var k = K(b.y, b.x);

@@ -16,6 +16,9 @@ using UnityEngine;
 public class MazeCanvas
 {
     public readonly char[,] G;
+    /// <summary>⭐ НОМЕР ГРУППЫ В КАЖДОЙ КЛЕТКЕ, −1 — ничья. Это и есть личность плитки; буква в
+    /// <see cref="G"/> рядом — только картинка (см. NextGroup).</summary>
+    public readonly int[,] Grp;
     public readonly int Rows, Cols;
     public readonly int CW, CH;
     public readonly bool[,] Bump;      // декор, который можно снести
@@ -36,6 +39,49 @@ public class MazeCanvas
     /// </summary>
     public const int ReachSide = 6;
 
+    /// <summary>
+    /// ⭐ СИМВОЛ ШИПОВ В СЕТКЕ. Выбран из свободных: '#' камень, '.' воздух, '@' спавн, '^' финиш,
+    /// '*' артефакт, '=' чекпоинт, '$' монета, буквы — группы. Восклицательный знак не занят ничем
+    /// и читается как опасность.
+    /// </summary>
+    public const char Spike = '!';
+
+    /// <summary>
+    /// Глубина ямы под пролётом моста в рядах воздуха (дно с шипами идёт следующим рядом).
+    /// Три ряда — чуть больше дотяжки вверх (Climb = 3): назад из ямы уже не выбраться, но на
+    /// высоту уровня она почти не влияет. Раньше на её месте была дыра до самого дна сетки.
+    /// </summary>
+    public const int PitDepth = 3;
+
+    /// <summary>
+    /// ⭐⭐ ДВЕ КНОПКИ НА МЕХАНИЗМ ИЛИ ОДНА. Сейчас ОДНА (решение игрока 2026-09-11).
+    ///
+    /// Правило «всегда две» стояло с самого начала: кнопка со стороны прихода открывает проход,
+    /// вторая, за замком, даёт вернуться тем же путём. Разбор ручного Level_11 показал, что игрок
+    /// строит иначе: «Одна кнопка у двери — не недосмотр, а замысел: каждая дверь работает в свою
+    /// сторону». Вывод тогда записали, но до кода он не дошёл — камера (из того же Level_11) уже
+    /// была с одной кнопкой, а три собственных модуля генератора остались с двумя.
+    /// Замер до правки (10 уровней на умолчаниях): ворота 194 кнопки на 97 групп, мост 96 на 48,
+    /// дверь 80 на 40 — ровно по две; камера 40 на 40 — одна.
+    ///
+    /// ⚠️ УБИРАЕТСЯ ИМЕННО ВОЗВРАТНАЯ КНОПКА, та что за замком. Кнопка со стороны прихода остаётся
+    /// всегда: без неё механизм не открыть снаружи, и всё, что за ним, становится недостижимым.
+    /// ⚠️ Проходы становятся ОДНОСТОРОННИМИ. Это не поломка по нынешним правилам: тупики перестали
+    /// быть браком ещё 2026-09-04 («у игры есть чекпоинты и продолжение»). Но сцепление уровня от
+    /// этого растёт, и приёмка на плотных заказах станет строже — смотреть по «проходим».
+    /// </summary>
+    public static bool TwoSidedButtons = true;
+
+    /// <summary>
+    /// ⛔ ГИПОТЕЗА «ВОРОТАМ ВТОРАЯ КНОПКА НЕ НУЖНА» ПРОВЕРЕНА И ОПРОВЕРГНУТА (2026-09-11).
+    /// Рассуждение было такое: ворота дают только ПОДЪЁМ, а спуститься можно всегда и без кнопки,
+    /// значит односторонности не возникает. Замер сказал иначе: одна кнопка только у ворот —
+    /// чистых 1 уровень из 10, непроходимых 9, безвыходных клеток 801 против 40-129.
+    /// Спуск в шахту без вызванных платформ модель проходом не считает, и ворота оказываются
+    /// такими же односторонними, как дверь и мост.
+    /// </summary>
+    public static bool TwoSidedGateButtons = true;
+
     /// <summary>Прямоугольник комнаты в СЕТКЕ СИМВОЛОВ: (col0, row0) — левый ВЕРХНИЙ угол интерьера.</summary>
     public struct RoomRect { public int col0, row0, w, h; }
 
@@ -53,7 +99,7 @@ public class MazeCanvas
     private readonly RoomRect[] _rooms;
 
     private readonly int[] _colX, _rowY, _colW, _rowH;
-    private readonly List<(int r, int c, char ch)> _journal = new List<(int, int, char)>();
+    private readonly List<(int r, int c, char ch, int grp)> _journal = new List<(int, int, char, int)>();
     private bool _recording;
     private int _nextGroup;            // 0 → 'A'
 
@@ -62,6 +108,7 @@ public class MazeCanvas
                       bool[,] bump, bool[,] noBump, bool[,] noFill, System.Random rng)
     {
         G = g; Rows = rows; Cols = cols; CW = cw; CH = ch;
+        Grp = NewGrpPlane(rows, cols);
         _colX = colX; _rowY = rowY; _colW = colW; _rowH = rowH;
         Bump = bump; NoBump = noBump; NoFill = noFill; Rng = rng;
         // Решётка выкладывает свои комнаты прямоугольниками: id = cy*CW + cx.
@@ -77,8 +124,16 @@ public class MazeCanvas
                       bool[,] bump, bool[,] noBump, bool[,] noFill, System.Random rng)
     {
         G = g; Rows = rows; Cols = cols; CW = 0; CH = 0;
+        Grp = NewGrpPlane(rows, cols);
         _rooms = rooms;
         Bump = bump; NoBump = noBump; NoFill = noFill; Rng = rng;
+    }
+
+    private static int[,] NewGrpPlane(int rows, int cols)
+    {
+        var p = new int[rows, cols];
+        for (int r = 0; r < rows; r++) for (int c = 0; c < cols; c++) p[r, c] = -1;
+        return p;
     }
 
     /// <summary>Номер комнаты решётки — чтобы старый генератор мог назвать её так же, как модули.</summary>
@@ -90,9 +145,36 @@ public class MazeCanvas
     public void Set(int r, int c, char ch)
     {
         if (r < 0 || r >= Rows || c < 0 || c >= Cols) return;
-        if (_recording) _journal.Add((r, c, G[r, c]));
-        G[r, c] = ch;
+        if (_recording) _journal.Add((r, c, G[r, c], Grp[r, c]));
+        G[r, c] = ch; Grp[r, c] = -1;
     }
+
+    /// <summary>
+    /// ⭐ ЕДИНСТВЕННЫЙ СПОСОБ ПОЛОЖИТЬ ПЛИТКУ ГРУППЫ. Пишет номер в <see cref="Grp"/> и букву в
+    /// сетку. 🐞 Раньше модули писали просто <c>Set(r, c, char.ToLower(grp))</c>, и личность группы
+    /// существовала ТОЛЬКО в виде буквы — отсюда потолок в 26 и потерянные группы.
+    /// </summary>
+    public void SetGroup(int r, int c, int groupIx)
+    {
+        if (r < 0 || r >= Rows || c < 0 || c >= Cols) return;
+        if (_recording) _journal.Add((r, c, G[r, c], Grp[r, c]));
+        G[r, c] = TileChar(groupIx); Grp[r, c] = groupIx;
+    }
+
+    /// <summary>
+    /// ⭐ ПОЛОЖИТЬ КНОПКУ группы. ⚠️ Номер в плоскость НЕ пишется, и это существенно: плоскость
+    /// отвечает на вопрос «чья тут ПЛИТКА», а кнопка — не плитка. Запиши сюда номер — и BuildSpec
+    /// соберёт клетку кнопки в список платформ группы.
+    /// </summary>
+    public void SetButton(int r, int c, int groupIx)
+    {
+        if (r < 0 || r >= Rows || c < 0 || c >= Cols) return;
+        if (_recording) _journal.Add((r, c, G[r, c], Grp[r, c]));
+        G[r, c] = ButtonChar(groupIx); Grp[r, c] = -1;
+    }
+
+    /// <summary>Номер группы в клетке; за краем и на «ничьей» клетке — −1.</summary>
+    public int GrpAt(int r, int c) => (r >= 0 && r < Rows && c >= 0 && c < Cols) ? Grp[r, c] : -1;
 
     // ─── Комнаты ──────────────────────────────────────────────────────────────
     // ⚠️ ВСЕ ЭТИ МЕТОДЫ ТЕПЕРЬ ПРИНИМАЮТ id КОМНАТЫ, а не индекс колонки/строки. Раньше размер был
@@ -115,12 +197,37 @@ public class MazeCanvas
     public void Rollback()
     {
         for (int i = _journal.Count - 1; i >= 0; i--)
-        { var e = _journal[i]; G[e.r, e.c] = e.ch; }
+        { var e = _journal[i]; G[e.r, e.c] = e.ch; Grp[e.r, e.c] = e.grp; }
         _recording = false; _journal.Clear();
     }
 
-    /// <summary>Следующий свободный ключ группы: A, B, C…</summary>
-    public char NextGroupId() => (char)('A' + _nextGroup++);
+    /// <summary>
+    /// ⭐⭐ ЛИЧНОСТЬ ГРУППЫ — ЭТО НОМЕР, А НЕ БУКВА В СЕТКЕ.
+    ///
+    /// 🐞 БЫЛО: <c>NextGroupId() => (char)('A' + _nextGroup++)</c>, плитки рисовались той же буквой
+    /// в нижнем регистре, а собирались обратно сканом диапазона 'a'..'z'. Это молчаливый потолок в
+    /// 26 групп, который нигде не объявлен: 27-я получала '[', у него НЕТ регистра (char.ToLower('[')
+    /// это '['), плитка и кнопка становились одним символом, а скан такую клетку не видел вовсе.
+    /// Группа уезжала в уровень с ПУСТЫМ списком плиток — кнопка есть, нажимать нечего.
+    /// Замер при заказе 50 механизмов: мёртвых групп с ключом за 'Z' — 17, среди букв A-Z — НИ ОДНОЙ.
+    ///
+    /// ⛔ ПОПЫТКА ПОЧИНИТЬ АЛФАВИТОМ ОТВЕРГНУТА. Продолжить латиницу кириллицей технически можно
+    /// (48 пар с настоящим регистром, char.ToLower работает), но кириллические а е о р с у х
+    /// НЕОТЛИЧИМЫ на вид от латинских a e o p c y x. Схему читают и правят глазами — дамп из
+    /// смеси омоглифов не правится руками вообще. Опасение игрока было верным.
+    ///
+    /// ⭐ РЕШЕНИЕ: разнести личность и картинку. Номер группы живёт в <see cref="Grp"/> — отдельной
+    /// плоскости той же формы, что и сетка. Буква в сетке остаётся ЧИСТО ДЛЯ ГЛАЗ и спокойно
+    /// повторяется по кругу (a-z), потому что по ней больше никто ничего не опознаёт. Потолок групп
+    /// теперь один и объявленный: 63 бита маски в LevelModel.
+    /// </summary>
+    public int NextGroup() => _nextGroup++;
+
+    /// <summary>Буква для ГЛАЗ: после 'z' начинается сначала. Опознавать по ней ничего нельзя.</summary>
+    public static char TileChar(int groupIx) => (char)('a' + ((groupIx % 26) + 26) % 26);
+    /// <summary>Та же буква в верхнем регистре — так кнопка выглядит в дампе схемы.</summary>
+    public static char ButtonChar(int groupIx) => (char)('A' + ((groupIx % 26) + 26) % 26);
+
     public int GroupsUsed => _nextGroup;
     /// <summary>Синхронизация с группами, заведёнными вне модулей (пока такие ещё есть).</summary>
     public void SetNextGroupIndex(int i) { _nextGroup = i; }
@@ -204,13 +311,25 @@ public class MazeSite
 
     /// <summary>Какая из сторон прохода — ВНУТРИ запертой области (для <see cref="exitOnly"/>).</summary>
     public bool insideIsBelow;
+
+    /// <summary>
+    /// ⭐ С КАКОЙ СТОРОНЫ ИГРОК ПРИХОДИТ в сквозной коридор: 1 — слева, 0 — справа, −1 — неизвестно.
+    /// Нужна мосту при одной кнопке: поставить её не с той стороны значит оставить кнопку ЗА
+    /// пропастью, и мост станет непроходим вовсе. У ворот и двери этот вопрос решает buttonBelow
+    /// (он считается по комнате родителя), а мост живёт внутри ОДНОЙ комнаты и сторон не знает.
+    /// </summary>
+    public int entryOnLeft = -1;
 }
 
 /// <summary>Что модуль пообещал компоновщику: какую группу он завёл и что она держит.</summary>
 public class ModuleStamp
 {
     public string moduleName;
-    public char groupId;
+    /// <summary>⭐ НОМЕР группы — её личность. Буква в сетке повторяется по кругу и ничего не
+    /// опознаёт (см. MazeCanvas.NextGroup).</summary>
+    public int groupIx = -1;
+    /// <summary>Буква ДЛЯ ЛОГА И ГЛАЗ, та же, что легла в сетку. По ней ничего не ищут.</summary>
+    public char groupId => MazeCanvas.TileChar(groupIx);
     public bool inverted;
     public string gates;               // человекочитаемо: что именно закрыто этой группой
     public List<Vector2Int> buttons = new List<Vector2Int>();   // (столбец, ряд) в координатах сетки
@@ -222,7 +341,7 @@ public class ModuleStamp
     /// — это ИЕРАРХИЯ. Поэтому едет отдельным каналом, как и инверсия. Тот, кто читает схему и забудет
     /// про этот канал, получит уровень, где заведомо запертая кнопка считается вечно доступной.
     /// </summary>
-    public List<char> buttonHosts = new List<char>();
+    public List<int> buttonHosts = new List<int>();
     /// <summary>Сторона крепления каждой кнопки (тот же индекс). Ось, независимая от вложенности:
     /// «на чём держится» и «внутри какой группы лежит» — разные вопросы.</summary>
     public List<MountSide> buttonMounts = new List<MountSide>();
@@ -238,7 +357,7 @@ public class ModuleStamp
     public Vector2Int edgeRooms = new Vector2Int(-1, -1);
 
     /// <summary>Единственный способ добавить кнопку: списки иначе разъезжаются.</summary>
-    public void AddButton(Vector2Int cell, char host = '\0', MountSide mount = MountSide.Floor)
+    public void AddButton(Vector2Int cell, int host = -1, MountSide mount = MountSide.Floor)
     { buttons.Add(cell); buttonHosts.Add(host); buttonMounts.Add(mount); }
 
     /// <summary>Сторона крепления кнопки по её клетке (по умолчанию пол).</summary>
@@ -253,12 +372,12 @@ public class ModuleStamp
     /// пристройкой к платформе. (-1,-1) — полки нет, вложить в этот механизм нельзя.</summary>
     public Vector2Int shelfCell = new Vector2Int(-1, -1);
 
-    /// <summary>Хозяин кнопки по её клетке ('\0' — своя).</summary>
-    public char HostOf(Vector2Int cell)
+    /// <summary>Хозяин кнопки по её клетке (−1 — своя).</summary>
+    public int HostOf(Vector2Int cell)
     {
         for (int i = 0; i < buttons.Count; i++)
-            if (buttons[i] == cell) return i < buttonHosts.Count ? buttonHosts[i] : '\0';
-        return '\0';
+            if (buttons[i] == cell) return i < buttonHosts.Count ? buttonHosts[i] : -1;
+        return -1;
     }
 }
 
@@ -319,22 +438,52 @@ public class TimedBridgeModule : IMazeModule
         int floorRow = c.FloorRow(s.roomId);
         int cLeft = c.C0(s.roomId), cRight = c.C0(s.roomId) + c.W(s.roomId) - 1;
         int c0 = cLeft + 1, c1 = cRight - 1, rAir = floorRow - 1;
-        char grp = c.NextGroupId();
+        int grp = c.NextGroup();
 
         c.Begin();
         // Декор, стоявший НА полу пролёта: иначе повиснет в воздухе над мостом и даст зажим.
         for (int x = c0; x <= c1; x++)
             if (c.Bump[rAir, x]) { c.Set(rAir, x, '.'); c.Bump[rAir, x] = false; }
-        for (int x = c0; x <= c1; x++) c.Set(floorRow, x, char.ToLower(grp));
-        if (!s.hasFloorBelow)                                    // ПРОПАСТЬ: режем оболочку вниз
+        for (int x = c0; x <= c1; x++) c.SetGroup(floorRow, x, grp);
+        // ⭐⭐ ЯМА С ШИПАМИ ВМЕСТО ПРОПАСТИ ДО ДНА.
+        // 🐞 Здесь было: «if (!s.hasFloorBelow) режем оболочку вниз до c.Rows». Смерть в игре была
+        // ровно одна — FallCollider внизу уровня, — поэтому смертельное падение приходилось делать
+        // дырой НАСКВОЗЬ ВСЕГО УРОВНЯ. Замер на Level_12: под одним мостом шахта в 72 ряда при
+        // высоте уровня 113, то есть две трети холста уходили в пустоту ради одной смерти. Игрок:
+        // «падение очень далеко в пустоту, ради того чтобы игрок получил смерть».
+        // Теперь под пролётом короткая яма, дно устлано шипами (см. LevelSpec.spikes). Наказание то
+        // же — падение смертельно, — а стоит оно PitDepth рядов вместо всей высоты уровня.
+        // ⚠️ Условие оставлено прежним: когда этаж снизу ЕСТЬ, копать нельзя — яма пробила бы потолок
+        // комнаты под мостом. Там цена ошибки как была: провалился в комнату, вернулся в обход.
+        // ⚠️⚠️ КОПАЕМ СТРОГО ПО КАМНЮ И ОСТАНАВЛИВАЕМСЯ НА ПЕРВОЙ ЧУЖОЙ КЛЕТКЕ — ровно то правило,
+        // что было у старого кода («if (c.At(r, x) == '#') ... else break»). 🐞 Первая версия ямы
+        // рыла вслепую на всю глубину и подкладывала снизу камень: замер на тех же сидах дал
+        // чистых 5 из 10 вместо 8, замурованные карманы на 346, 58 и 41 клетку и недобор ключей.
+        // Причина простая: подложенный камень запечатывал чужую полость, а слепой раскоп вскрывал
+        // потолок тому, что лежало под мостом. Здесь мы ТОЛЬКО убираем камень и ничего не добавляем,
+        // поэтому запечатать что-либо физически нечем.
+        if (!s.hasFloorBelow)
             for (int x = c0; x <= c1; x++)
-            for (int r = floorRow + 1; r < c.Rows; r++)
-                if (c.At(r, x) == '#') c.Set(r, x, ' '); else break;
+            {
+                int dug = 0;
+                for (int r = floorRow + 1; r <= floorRow + MazeCanvas.PitDepth && r < c.Rows; r++)
+                {
+                    if (c.At(r, x) != '#') break;      // упёрлись в чужую полость — дальше не наше
+                    c.Set(r, x, '.'); dug++;
+                }
+                // Дно ямы — последний вынутый ряд. Так шип всегда лежит на том, что было камнем,
+                // и под ним остаётся нетронутая порода: яма читается ямой, а не полоской в воздухе.
+                if (dug > 0) c.Set(floorRow + dug, x, MazeCanvas.Spike);
+            }
 
         bool b1 = c.At(rAir, cLeft) == '.' && c.At(floorRow, cLeft) == '#';
         bool b2 = c.At(rAir, cRight) == '.' && c.At(floorRow, cRight) == '#';
-        if (b1) c.Set(rAir, cLeft, grp);
-        if (b2) c.Set(rAir, cRight, grp);
+        // ⚠️ Обе клетки обязаны ГОДИТЬСЯ и при одной кнопке: ставим одну, но выбирать сторону можно
+        // только когда годны обе. Иначе кнопка уедет за пропасть.
+        bool keepLeft  = MazeCanvas.TwoSidedButtons || s.entryOnLeft != 0;
+        bool keepRight = MazeCanvas.TwoSidedButtons || s.entryOnLeft == 0;
+        if (b1 && keepLeft)  c.SetButton(rAir, cLeft, grp);
+        if (b2 && keepRight) c.SetButton(rAir, cRight, grp);
 
         bool pinched = false;
         for (int r = floorRow - 2; r <= floorRow + 2 && !pinched; r++)
@@ -345,9 +494,9 @@ public class TimedBridgeModule : IMazeModule
         if (!b1 || !b2 || pinched) { c.Rollback(); RolledBackCount++; return null; }
         c.Commit(); StampedCount++;
         var st = new ModuleStamp
-        { moduleName = Name, groupId = grp, inverted = false, gates = "пол сквозного коридора" };
-        st.AddButton(new Vector2Int(cLeft, rAir));
-        st.AddButton(new Vector2Int(cRight, rAir));
+        { moduleName = Name, groupIx = grp, inverted = false, gates = "пол сквозного коридора" };
+        if (keepLeft)  st.AddButton(new Vector2Int(cLeft, rAir));
+        if (keepRight) st.AddButton(new Vector2Int(cRight, rAir));
         return st;
     }
 }
@@ -429,7 +578,7 @@ public class VerticalGateModule : IMazeModule
         bool topLeft = (s.shaftCol0 - col0) <= (col0 + w - 1 - (s.shaftCol0 + s.shaftWidth - 1));
 
         c.Begin();
-        char grp = c.NextGroupId();
+        int grp = c.NextGroup();
 
         // Старую каменную ступеньку под люком убираем: её место занимает зигзаг.
         for (int k = 0; k < s.shaftWidth; k++)
@@ -448,9 +597,9 @@ public class VerticalGateModule : IMazeModule
             {
                 int col = start + k, r = rowsOfLedges[i];
                 char at = c.At(r, col);
-                if (at == '.') { c.Set(r, col, char.ToLower(grp)); cellsHere++; }
+                if (at == '.') { c.SetGroup(r, col, grp); cellsHere++; }
                 else if (at == '#' && c.Bump[r, col])              // декор сносим, настоящий камень — нет
-                { c.Set(r, col, char.ToLower(grp)); c.Bump[r, col] = false; cellsHere++; }
+                { c.SetGroup(r, col, grp); c.Bump[r, col] = false; cellsHere++; }
             }
             if (cellsHere < 2) continue;                           // огрызок уступа никому не нужен
             placedLedges++;
@@ -458,11 +607,12 @@ public class VerticalGateModule : IMazeModule
         }
         if (placedLedges == 0) { c.Rollback(); RolledBackCount++; FailWhy[5]++; return null; }
 
-        c.Set(s.buttonBelow.y, s.buttonBelow.x, grp);             // «открыть»
-        c.Set(s.buttonAbove.y, s.buttonAbove.x, grp);             // «вернуться»
+        c.SetButton(s.buttonBelow.y, s.buttonBelow.x, grp);             // «открыть» — сторона прихода
+        if (MazeCanvas.TwoSidedGateButtons)
+            c.SetButton(s.buttonAbove.y, s.buttonAbove.x, grp);         // «вернуться» — за замком
 
         var st = new ModuleStamp
-        { moduleName = Name, groupId = grp, inverted = false,
+        { moduleName = Name, groupIx = grp, inverted = false,
           gates = "подъём в верхнюю комнату (" + placedLedges + " уступ(ов) через " + step + ")" };
 
         // ── ПОЛКА ПОД ВЛОЖЕННУЮ КНОПКУ ────────────────────────────────────────────────────────
@@ -481,7 +631,7 @@ public class VerticalGateModule : IMazeModule
                 if (len + 1 >= w) continue;                             // уступ занял бы всю ширину
                 if (c.At(topRow, col) != '.') continue;                 // место занято камнем/декором
                 if (c.At(topRow - 1, col) != '.') continue;             // кнопке нужен воздух над полкой
-                c.Set(topRow, col, char.ToLower(grp));
+                c.SetGroup(topRow, col, grp);
                 if (c.MakesPinch(topRow, col)) { c.Set(topRow, col, '.'); continue; }
                 st.shelfCell = new Vector2Int(col, topRow - 1);
             }
@@ -491,7 +641,7 @@ public class VerticalGateModule : IMazeModule
 
         c.Commit(); StampedCount++;
         st.AddButton(s.buttonBelow);
-        st.AddButton(s.buttonAbove);
+        if (MazeCanvas.TwoSidedGateButtons) st.AddButton(s.buttonAbove);
         return st;
     }
 }
@@ -525,16 +675,17 @@ public class InvertedDoorModule : IMazeModule
     public ModuleStamp Stamp(MazeCanvas c, MazeSite s)
     {
         if (!Fits(c, s)) { RolledBackCount++; return null; }
-        char grp = c.NextGroupId();
+        int grp = c.NextGroup();
         c.Begin();
         for (int r = s.doorRowTop; r < s.doorRowTop + s.doorHeight; r++)
-            c.Set(r, s.doorCol, char.ToLower(grp));
+            c.SetGroup(r, s.doorCol, grp);
         // ⭐ В РОЛИ ВЫХОДА кнопка ставится ТОЛЬКО ИЗНУТРИ: снаружи этим путём не войти, и вход в
         // область остаётся единственным — тем, ради которого она и запиралась.
         var inside = s.insideIsBelow ? s.buttonBelow : s.buttonAbove;
         var outside = s.insideIsBelow ? s.buttonAbove : s.buttonBelow;
-        c.Set(inside.y, inside.x, grp);
-        if (!s.exitOnly) c.Set(outside.y, outside.x, grp);        // обычная дверь — на обратный путь
+        c.SetButton(inside.y, inside.x, grp);
+        if (!s.exitOnly && MazeCanvas.TwoSidedButtons)
+            c.SetButton(outside.y, outside.x, grp);                     // возвратная, за дверью
 
         // Заложенный проём не должен породить диагональный зажим с соседним камнем.
         bool pinched = false;
@@ -546,10 +697,10 @@ public class InvertedDoorModule : IMazeModule
         c.Commit(); StampedCount++;
         var st = new ModuleStamp
         { moduleName = s.exitOnly ? Name + ": выход изнутри" : Name,
-          groupId = grp, inverted = true,
+          groupIx = grp, inverted = true,
           gates = s.exitOnly ? "выход из запертой области" : "дверной проём между комнатами" };
         st.AddButton(inside);
-        if (!s.exitOnly) st.AddButton(outside);
+        if (!s.exitOnly && MazeCanvas.TwoSidedButtons) st.AddButton(outside);
         return st;
     }
 }
@@ -632,21 +783,21 @@ public class ExcursionModule
 
         c.Begin();
         foreach (var p in toClear) { c.Set(p.y, p.x, '.'); c.Bump[p.y, p.x] = false; }
-        char launch = c.NextGroupId(), catcher = c.NextGroupId(), exit = c.NextGroupId();
+        int launch = c.NextGroup(), catcher = c.NextGroup(), exit = c.NextGroup();
 
         for (int k = 0; k < HatchWidth; k++)
         {
             int col = hatch0 + k;
             c.Set(ceilRow,   col, '.');                            // ЛЮК в полу верхней комнаты
-            c.Set(launchRow, col, char.ToLower(launch));           // ПУСКОВАЯ площадка над люком
-            c.Set(floorRow,  col, char.ToLower(catcher));          // ЛОВЧАЯ площадка на месте пола
+            c.SetGroup(launchRow, col, launch);           // ПУСКОВАЯ площадка над люком
+            c.SetGroup(floorRow,  col, catcher);          // ЛОВЧАЯ площадка на месте пола
             for (int r = floorRow + 1; r < c.Rows; r++)            // ПРОПАСТЬ под ней: режем оболочку вниз
             { if (c.At(r, col) == '#') c.Set(r, col, ' '); else break; }
         }
         for (int r = s.doorRowTop; r < s.doorRowTop + s.doorHeight; r++)
-            c.Set(r, s.doorCol, char.ToLower(exit));               // ВЫХОД: инверсная стена в проёме
+            c.SetGroup(r, s.doorCol, exit);               // ВЫХОД: инверсная стена в проёме
 
-        c.Set(s.buttonAbove.y, s.buttonAbove.x, launch);           // кнопки пусковой и ловчей — НАВЕРХУ,
+        c.SetButton(s.buttonAbove.y, s.buttonAbove.x, launch);           // кнопки пусковой и ловчей — НАВЕРХУ,
         var catchBtn = new Vector2Int(s.buttonAbove.x, s.buttonAbove.y);
         // ⚠️ Кнопке ловчей нужно СВОЁ место: нажать обе надо ДО прыжка, а две кнопки в одной клетке
         // не поставить. Ищем соседнюю свободную клетку на том же полу.
@@ -658,11 +809,11 @@ public class ExcursionModule
             if (c.At(s.buttonAbove.y, col) != '.') continue;
             if (c.At(s.buttonAbove.y + 1, col) != '#') continue;   // должна стоять на полу
             catchBtn = new Vector2Int(col, s.buttonAbove.y);
-            c.Set(catchBtn.y, catchBtn.x, catcher);
+            c.SetButton(catchBtn.y, catchBtn.x, catcher);
             placed = true;
         }
         if (!placed) { c.Rollback(); RolledBackCount++; return null; }
-        c.Set(s.buttonBelow.y, s.buttonBelow.x, exit);             // кнопка выхода — ТОЛЬКО внутри камеры
+        c.SetButton(s.buttonBelow.y, s.buttonBelow.x, exit);             // кнопка выхода — ТОЛЬКО внутри камеры
 
         bool pinched = false;
         for (int r = ceilRow - 1; r <= floorRow + 1 && !pinched; r++)
@@ -672,13 +823,13 @@ public class ExcursionModule
 
         c.Commit(); StampedCount++;
         var stLaunch = new ModuleStamp
-        { moduleName = Name + ": пусковая", groupId = launch, inverted = false, gates = "прыжок в люк" };
+        { moduleName = Name + ": пусковая", groupIx = launch, inverted = false, gates = "прыжок в люк" };
         stLaunch.AddButton(s.buttonAbove);
         var stCatch = new ModuleStamp
-        { moduleName = Name + ": ловчая", groupId = catcher, inverted = false, gates = "приземление над пропастью" };
+        { moduleName = Name + ": ловчая", groupIx = catcher, inverted = false, gates = "приземление над пропастью" };
         stCatch.AddButton(catchBtn);
         var stExit = new ModuleStamp
-        { moduleName = Name + ": выход", groupId = exit, inverted = true, gates = "выход из камеры (кнопка изнутри)" };
+        { moduleName = Name + ": выход", groupIx = exit, inverted = true, gates = "выход из камеры (кнопка изнутри)" };
         stExit.AddButton(s.buttonBelow);
         return new List<ModuleStamp> { stLaunch, stCatch, stExit };
     }

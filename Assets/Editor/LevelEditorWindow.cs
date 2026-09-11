@@ -100,6 +100,8 @@ public class LevelEditorWindow : EditorWindow
 
     // ─── Prefabs ──────────────────────────────────────────────────────────────
     private GameObject _pfPlatform, _pfWall, _pfCoin;
+    /// <summary>Шипы: короткая смертельная яма вместо дыры до дна уровня (см. LevelSpec.spikes).</summary>
+    private GameObject _pfSpike;
     private GameObject _pfFallCollider, _pfFlagFinish;
     private GameObject _pfTile;
     private GameObject _pfArtifact, _pfFlag, _pfButton;
@@ -197,11 +199,14 @@ public class LevelEditorWindow : EditorWindow
     /// а шесть групп — ~0.65 с. Замер на умолчаниях (сложность 12, 56 комнат): потолок 4 → 3.4 группы
     /// и сцепление 3.1; потолок 6 → 4.2 группы и сцепление 3.3, чистота не пострадала.
     ///
-    /// ⚠️ Само по себе поднятие потолка НЕ добавляет механизмов, если бюджет баллов связывает раньше:
-    /// при сложности 12 рецепт с потолком 6 берёт даже МЕНЬШЕ элементов (3.17 против 3.58), просто
-    /// подороже. Чтобы получить больше механизмов, поднимать надо СЛОЖНОСТЬ.
+    /// ⚠️ Само по себе поднятие потолка НЕ добавляет механизмов — это ПРЕДЕЛ, а не заказ. Заказ
+    /// задаёт «Механизмов на уровень».
+    /// ⭐ УМОЛЧАНИЕ ПОДНЯТО ДО 63 (2026-09-11) — до жёсткого предела маски групп. Восемь стояли
+    /// потому, что поиск шёл по 2^групп и каждая группа стоила времени; проекция локальности это
+    /// убрала. Оставлять низкий потолок теперь незачем: он молча резал заказ, и ползунок числа
+    /// механизмов из-за него врал.
     /// </summary>
-    [SerializeField] private int _mazeMechs = 8;
+    [SerializeField] private int _mazeMechs = 63;
     /// <summary>
     /// ⭐ Доля вертикальных проходов, превращаемых в ДВУХЪЯРУСНЫЙ ЗАЛ (потолок между этажами вырезан
     /// почти целиком). Ручка облика уровня: 0 — сплошь приземистые комнаты, как было; выше — больше
@@ -213,27 +218,19 @@ public class LevelEditorWindow : EditorWindow
     /// <summary>Шанс поставить ВЫЛАЗКУ — целую петлю «провалился → взял ключ → вылез в другом месте»
     /// (см. ExcursionModule). Съедает сразу три группы, поэтому не на каждом уровне.</summary>
     [SerializeField] private int _mazeExcursion = 40;
-    /// <summary>⭐ СЛОЖНОСТЬ УРОВНЯ В БАЛЛАХ. Состав рецепта подбирается под неё случайно, но точно:
-    /// один и тот же слот пака каждый раз выглядит по-новому, оставаясь той же сложности.
-    /// ⚠️ Сверху ограничена потолком групп: сложность может запросить больше, чем приёмка успевает
-    /// проверить, и тогда честнее недобрать баллов (об этом будет предупреждение в логе).</summary>
     /// <summary>
-    /// ⭐⭐ ИМЕННО ЭТА РУЧКА ЗАДАЁТ ЧИСЛО МЕХАНИЗМОВ, а не «Механизмов» (та — только потолок цены
-    /// проверки). Рецепт набирает элементы, пока не выберет бюджет баллов: ворота 2, дверь 3, мост 4,
-    /// вложенная кнопка 5, вылазка 9, плюс 2 за каждый ярус цепочки сверх первого.
+    /// ⭐⭐ СКОЛЬКО МЕХАНИЗМОВ ПОСТАВИТЬ НА УРОВЕНЬ — БУКВАЛЬНО, В ШТУКАХ.
     ///
-    /// 🐞 На этом обжёгся игрок 2026-09-10: поднял «Механизмов» и не увидел разницы. И не мог —
-    /// замер: при сложности 12 рецепт заказывает 3.25 элемента и с потолком 4, и с потолком 6, и с
-    /// потолком 10. Связывает БЮДЖЕТ, а потолок только режет сверху.
+    /// ⛔ ДО 2026-09-11 ЗДЕСЬ БЫЛИ БАЛЛЫ: ворота 2, дверь 3, мост 4, вложенная кнопка 5, камера 7,
+    /// вылазка 9, плюс надбавка за ярус цепочки. Ползунок при этом назывался «Сложность (= сколько
+    /// механизмов)» и на двадцати выдавал ЧЕТЫРЕ механизма — по 3.5 балла за штуку. Игрок про это и
+    /// сказал: «механизмов до сих пор практически никогда особо и не ставится». Заодно вес заставлял
+    /// виды вытеснять друг друга: камера стоила как трое ворот, хотя нужны и та и другие.
     ///
-    /// ⭐ Поднято 2026-09-10 с 12 до 20. Замер на 56 комнатах: 12 баллов → 4.2 группы и сцепление 3.2;
-    /// 20 баллов → 5.6 группы и сцепление 4.3, чистота та же (9/10), цена попытки 271 → 632 мс.
-    /// Дальше 26 баллов дают 7.1 группы и сцепление 5.0, но попытка стоит уже 3 с — это осознанный
-    /// край, а не умолчание.
-    /// ⚠️ Потери при постройке мизерные и НЕ являются причиной «мало механизмов»: из заказанных 3.25
-    /// строится 3.00, из 4.75 — 4.50.
+    /// Замер после перевода в штуки (комнат 160): заказ 6 → ставится 5.2, 12 → 11.2, 25 → 23.5.
+    /// ⚠️ Сверху режет только «Потолок групп» (камера съедает 5 групп, остальное по одной).
     /// </summary>
-    [SerializeField] private int _mazeDifficulty = 20;
+    [SerializeField] private int _mazeMechCount = 20;
     /// <summary>Замысел последней сгенерированной схемы человеческими словами — для лога.</summary>
     private string _mazePlanText = "";
     /// <summary>Рецепт последней схемы: из чего уровень задуман (см. <see cref="LevelRecipe"/>).</summary>
@@ -1230,12 +1227,12 @@ public class LevelEditorWindow : EditorWindow
         if (model.TooManyGroups)
         { _routeInfo = "слишком много групп (" + spec.groups.Count + ") для точного поиска"; return; }
 
-        var allCells = model.Cells; int N = model.N, G = model.G, MASKS = model.MASKS, TOTAL = model.TOTAL;
+        var allCells = model.Cells; int N = model.N, G = model.G, TOTAL = model.StateCount;
         var seenState = model.Seen; var prevState = model.Prev;
         var prevKind = model.PrevKind; var depthState = model.Depth;
         var spK = model.SpawnCell;
         var fnK = spec.finish.cell;
-        System.Func<int, System.Collections.Generic.HashSet<Vector2Int>> SolidFor = m => model.SolidFor(m);
+        System.Func<long, System.Collections.Generic.HashSet<Vector2Int>> SolidFor = m => model.SolidFor(m);
         System.Func<int, Vector2Int, Vector2Int, bool> CanStep = (m, a, b) => model.CanStep(m, a, b);
 
         // Финиш: первое по числу ходов состояние, из которого до флага дотягиваются.
@@ -1243,7 +1240,7 @@ public class LevelEditorWindow : EditorWindow
         for (int st = 0; st < TOTAL; st++)
         {
             if (!seenState[st] || depthState[st] >= goalDepth) continue;
-            if (!model.CanTouch(model.GroupMask(st), allCells[st % N], spec.finish)) continue;
+            if (!model.CanTouch(model.GroupMask(st), allCells[model.CellOf(st)], spec.finish)) continue;
             goal = st; goalDepth = depthState[st];
         }
 
@@ -1277,12 +1274,12 @@ public class LevelEditorWindow : EditorWindow
             var btnCells = new System.Collections.Generic.List<Vector2Int>();
             for (int i = 0; i < chain.Count; i++)
             {
-                int m = chain[i] / N, ci = chain[i] % N;
+                long m = model.GroupMask(chain[i]); int ci = model.CellOf(chain[i]);
                 if (i > 0 && prevKind[chain[i]] == 1)
                 {
-                    int pm = chain[i - 1] / N, added = m & ~pm;
+                    long pm = model.GroupMask(chain[i - 1]), added = m & ~pm;
                     for (int g = 0; g < G; g++)
-                        if ((added & (1 << g)) != 0)
+                        if ((added & (1L << g)) != 0)
                         {
                             if (outPressed != null) outPressed.Add(gids[g]);
                             Vector2Int bbest = gButtons[g][0]; int bd3 = int.MaxValue;
@@ -1321,8 +1318,12 @@ public class LevelEditorWindow : EditorWindow
         // только маску обязательных кнопок, и всё за побочной кнопкой краснело как недостижимое.
         {
             var reachedCells = new System.Collections.Generic.HashSet<int>();
-            for (int st = 0; st < TOTAL; st++) if (seenState[st]) reachedCells.Add(st % N);
-            var allSolid = SolidFor(MASKS - 1);
+            for (int st = 0; st < TOTAL; st++) if (seenState[st]) reachedCells.Add(model.CellOf(st));
+            // «Твёрдо хоть при какой-то маске» — берём маску со ВСЕМИ поднятыми битами.
+            // ⚠️ Раньше это писалось как MASKS-1; с разреженным состоянием такой величины нет,
+            // и маску собираем явно.
+            long allBits = 0; for (int g2 = 0; g2 < G; g2++) allBits |= 1L << g2;
+            var allSolid = SolidFor(allBits);
             foreach (var k in allSolid)
             {
                 if (allSolid.Contains(new Vector2Int(k.x, k.y + 1))) continue;   // не холд ни при какой маске
@@ -1687,16 +1688,15 @@ public class LevelEditorWindow : EditorWindow
         }
         EditorGUIUtility.labelWidth = lwPrev;
         {
-            // ⭐ ГЛАВНАЯ РУЧКА: состав уровня подбирается под неё сам. Ворота стоят 2 балла, дверь 3,
-            // мост 4, вложенная кнопка 5, вылазка 9, плюс +2 за каждый ярус цепочки сверх первого.
-            _mazeDifficulty = EditorGUILayout.IntSlider(new GUIContent("Сложность (= сколько механизмов)",
-                "⭐ ЭТО И ЕСТЬ РУЧКА ЧИСЛА МЕХАНИЗМОВ. Рецепт набирает элементы, пока не выберет эти "
-                + "баллы: ворота 2, дверь 3, мост 4, вложенная кнопка 5, вылазка 9, плюс 2 за каждый "
-                + "ярус цепочки сверх первого. Замер на 56 комнатах: 12 баллов — 4.2 механизма и "
-                + "сцепление 3.2; 20 — 5.6 и 4.3; 26 — 7.1 и 5.0 (но попытка стоит 3 с). "
-                + "Один и тот же балл каждый раз даёт РАЗНЫЙ состав. "
-                + "⚠️ Ползунок «Механизмов» число НЕ увеличивает — он только режет сверху."),
-                _mazeDifficulty, 4, 30);
+            // ⭐ ГЛАВНАЯ РУЧКА, И ТЕПЕРЬ ОНА В ШТУКАХ. ⛔ Здесь были БАЛЛЫ (ворота 2, дверь 3, мост 4,
+            // вложенная кнопка 5, камера 7, вылазка 9) — заказ «20» давал ЧЕТЫРЕ механизма.
+            _mazeMechCount = EditorGUILayout.IntSlider(new GUIContent("Механизмов на уровень",
+                "⭐ БУКВАЛЬНЫЙ ЗАКАЗ В ШТУКАХ: сколько поставили — столько рецепт и наберёт. "
+                + "Состав каждый раз разный, и виды подбираются так, чтобы ни один не пропал целиком. "
+                + "Замер (комнат 160): заказ 6 — ставится 5.2, заказ 12 — 11.2, заказ 25 — 23.5. "
+                + "Теряются единицы: механизму может не найтись места нужной формы. "
+                + "⚠️ «Потолок групп» ниже режет заказ сверху — камера съедает 5 групп, остальные по одной."),
+                _mazeMechCount, 1, 60);
             _freeRooms = EditorGUILayout.IntSlider(new GUIContent("Комнат в уровне",
                 "Сколько комнат строить свободному пути. Влияет на РАЗМАХ уровня, а не на сложность: "
                 + "механизмы задаются отдельно. Комнаты, которым не нашлось места, просто не строятся, "
@@ -1710,13 +1710,13 @@ public class LevelEditorWindow : EditorWindow
                 "Потолок по самозакрывающимся стенам на уровень. 1 — дебют механики, 2-3 — финал пака. "
                 + "На то, как ЧАСТО дверь вообще появляется, не влияет: там решает приоритет ворот."),
                 _mazeDoors, 0, 3);
-            _mazeMechs = EditorGUILayout.IntSlider(new GUIContent("Потолок групп (цена проверки)",
-                "⚠️ ЧИСЛО МЕХАНИЗМОВ ЭТИМ НЕ ПОДНЯТЬ — для этого «Сложность». Здесь только верхний "
-                + "предел, и он про ЦЕНУ ПРОВЕРКИ: поиск идёт по 2^групп состояний, и приёмка гоняет "
-                + "его ещё раз на каждую группу. Замер: 4 группы ~0.2 с, 6 ~0.65 с, 8 ~1.3 с. "
-                + "Предел модели — 12 групп. Если сложность просит больше, чем влезает, в логе будет "
-                + "предупреждение о недоборе баллов."),
-                _mazeMechs, 1, 10);
+            _mazeMechs = EditorGUILayout.IntSlider(new GUIContent("Потолок групп (страховка)",
+                "⚠️ ЧИСЛО МЕХАНИЗМОВ ЭТИМ НЕ ПОДНЯТЬ — для этого ползунок выше. Здесь верхний предел "
+                + "по ГРУППАМ (камера = 5 групп, остальное по одной). ⭐ Прежний потолок в 12 групп "
+                + "СНЯТ: состояние разреженное и обрезается по локальности, при 11 группах поиск "
+                + "ускорился с 8 с до 37 мс. ⛔ ЖЁСТКИЙ ПРЕДЕЛ 63 — столько битов в маске групп (long) "
+                + "у LevelModel, выше не поднять без смены типа маски."),
+                _mazeMechs, 1, 63);
             _mazeHalls = EditorGUILayout.IntSlider(new GUIContent("Двухъярусных залов, %",
                 "Как часто вертикальный проход становится ЗАЛОМ: потолок между этажами вырезан почти "
                 + "целиком, два этажа читаются как одно высокое пространство. 0 — только приземистые "
@@ -1961,7 +1961,7 @@ public class LevelEditorWindow : EditorWindow
             var r = new System.Random(seed);
             // ⚠️ Вылазку тут пока не заказываем: её камере нужны ДВЕ связи (боковой выход и провал
             // сверху), а раскладка строит дерево, где связь одна. Отдельная задача.
-            var rec = LevelRecipe.RollForDifficulty(r, _mazeDifficulty, _mazeMechs, false);
+            var rec = LevelRecipe.RollForDifficulty(r, _mazeMechCount, _mazeMechs, false);
             // Размер уровня — отдельная ручка: «Комнат ↔ × Комнат ↕» задают, сколько комнат строить.
             // ⚠️ ЗАЛЫ ПОКА ОТКЛЮЧЕНЫ (передаём 0 вместо _mazeHalls). Высокая комната даёт объём —
             // замер: пробегов выше шести клеток 5% → 15% при половине залов, — но ломает проходимость:
@@ -1971,7 +1971,7 @@ public class LevelEditorWindow : EditorWindow
             // Включать обратно — только после того, как зал будет разобран по клеткам моделью.
             var b = FreeMazeBuilder.Build(rec, r, wantRooms, 10, 0);
             FreeMazeBuilder.SkipDressing = false;
-            if (b != null) b.recipeText = rec.Points + "б: " + rec.Describe();
+            if (b != null) b.recipeText = rec.ElementCount + " мех.: " + rec.Describe();
             return b;
         };
         // ⭐⭐ ПРОВЕРЯЕМ ОПИСАНИЕ, А НЕ СТРОКУ. Раньше здесь схема разбиралась обратно из символов, а
@@ -2089,13 +2089,12 @@ public class LevelEditorWindow : EditorWindow
         // Рецепт говорит, из чего уровень состоит («основной маршрут: ворота ×3, мост; ветка к ключу:
         // вылазка»), и уже под него подбирается всё остальное. Разнообразие — из разных рецептов, а не
         // из разных бросков одной геометрии.
-        // ⭐ Сложность задаётся БАЛЛАМИ, а состав под них подбирается сам (предложение игрока):
-        // «ворота ×3» и «одна вылазка» — разная задача, числом механизмов это не выразить.
-        var recipe = LevelRecipe.RollForDifficulty(rng, _mazeDifficulty, _mazeMechs, _mazeExcursion > 0);
-        _mazeRecipeText = recipe.Points + "б: " + recipe.Describe();
-        if (recipe.Points < _mazeDifficulty - 2)
-            _mazeRecipeText += $" ⚠ недобор до {_mazeDifficulty}б: потолок в {_mazeMechs} групп "
-                             + "(поднимать нельзя без роста цены приёмки)";
+        // ⭐ Заказ — В ШТУКАХ МЕХАНИЗМОВ, а состав под них подбирается сам.
+        // ⛔ Раньше здесь были БАЛЛЫ (ворота 2, камера 7), и заказ «20» давал четыре механизма.
+        var recipe = LevelRecipe.RollForDifficulty(rng, _mazeMechCount, _mazeMechs, _mazeExcursion > 0);
+        _mazeRecipeText = recipe.ElementCount + " мех.: " + recipe.Describe();
+        if (recipe.ElementCount < _mazeMechCount)
+            _mazeRecipeText += $" ⚠ недобор до {_mazeMechCount}: упёрлись в потолок групп ({_mazeMechs})";
 
         // ⭐ РАЗМЕР СЕТКИ — СЛЕДСТВИЕ РЕЦЕПТА, А НЕ НАСТРОЙКА (решение игрока: «если в маленькой сетке
         // не помещается, делать такую, в которой помещается»). Запас втрое: маска формы выкусывает
@@ -3509,6 +3508,9 @@ public class LevelEditorWindow : EditorWindow
         // Твёрдость для автотайлинга: камень плюс тайлы всех групп — ровно как читает игрок.
         var solid = new System.Collections.Generic.HashSet<Vector2Int>(spec.rock);
         foreach (var g in spec.groups) foreach (var k in g.tiles) solid.Add(k);
+        // Шип для автотайлинга — твёрдый, как и для модели: иначе камень рядом с ямой отрастит
+        // травяной кап внутрь неё, будто там открытое небо.
+        foreach (var k in spec.spikes) solid.Add(k);
         System.Func<int, int, bool> isSolid = (x, y) => solid.Contains(new Vector2Int(x, y));
         System.Action<Transform, Vector2Int> tile = (parent, k) =>
         {
@@ -3589,6 +3591,11 @@ public class LevelEditorWindow : EditorWindow
             return world(k);
         };
 
+        // ⭐ ШИПЫ — ВТОРАЯ СМЕРТЬ В ИГРЕ. Первая (и до сих пор единственная) — FallCollider внизу
+        // уровня, и из-за неё смертельное падение приходилось рыть насквозь весь уровень.
+        // ⚠️ На шипе тот же FailCollider: смерть одна и та же, разное только место.
+        foreach (var k in spec.spikes) PlaceFromPrefab(_pfSpike, world(k), GetGroup("Spikes"), "Spike");
+
         var artGrp = GetGroup("Artifacts");
         foreach (var a in spec.artifacts) PlaceFromPrefab(_pfArtifact, world(a.cell), artGrp, "Artifact");
         foreach (var c in spec.coins) PlaceFromPrefab(_pfCoin, world(c), GetGroup("Coins"), "Coin");
@@ -3611,7 +3618,8 @@ public class LevelEditorWindow : EditorWindow
         }
         EditorSceneManager.MarkSceneDirty(UnityEngine.SceneManagement.SceneManager.GetActiveScene());
         Debug.Log($"[LevelEditor] Уровень собран из описания: камня {spec.rock.Count}, "
-                + $"групп {spec.groups.Count}, ключей {spec.artifacts.Count}, монет {spec.coins.Count}.");
+                + $"групп {spec.groups.Count}, ключей {spec.artifacts.Count}, монет {spec.coins.Count}, "
+                + $"шипов {spec.spikes.Count}.");
     }
 
     private void ImportScheme(string text)
@@ -4163,16 +4171,46 @@ public class LevelEditorWindow : EditorWindow
         /// </summary>
         public bool playable;
 
+        /// <summary>
+        /// ⭐⭐ ДОПУСК ПО МЁРТВЫМ ГРУППАМ — ДОЛЯ, А НЕ НОЛЬ (2026-09-11).
+        ///
+        /// 🐞 Порог стоял «ноль штук» и был написан, когда механизмов на уровне бывало три-четыре.
+        /// Когда заказ вырос до двадцати пяти, тот же ноль стал недостижимой планкой: замер дал
+        /// 27 групп на уровень при 1-2 мёртвых — то есть уровень браковался целиком из-за пары
+        /// механизмов из двадцати семи, притом что ключи собирались, финиш достигался, а
+        /// замурованного не было ВООБЩЕ. Перебор сидов тут не помогает: чистых не бывает в принципе,
+        /// и генератор просто крутится вхолостую.
+        ///
+        /// ⚠️ Это не ослабление требования, а починка его МАСШТАБА: доля 1/10 на уровне в девять
+        /// групп и меньше даёт ровно прежний ноль, так что на привычных настройках планка не
+        /// сдвинулась ни на штуку. Растёт она только там, где раньше была недостижима.
+        /// </summary>
+        public int SlackGroups => groupCount / 10;
+
+        /// <summary>Сколько групп на уровне всего — знаменатель для <see cref="SlackGroups"/>.</summary>
+        public int groupCount;
+
         /// <summary>Брак: то, из-за чего уровень нельзя отдавать игроку.</summary>
         ///
-        /// ⚠️ ТУПИКИ БОЛЬШЕ НЕ БРАК (решение игрока 2026-09-04). Застревание — это не поломка, а
+        /// ⛔ ХОЛОСТЫЕ ГРУППЫ БОЛЬШЕ НЕ БРАК (решение игрока 2026-09-11). «Холостая» значит: убери
+        /// механизм совсем — и все цели по-прежнему достижимы, то есть его можно обойти другим
+        /// маршрутом. Критерий писался под уровень в три-четыре механизма, где каждый обязан был
+        /// нести нагрузку. На двадцати с лишним механизмах в большом лабиринте обходные маршруты —
+        /// норма, а не поломка: замер на 160 комнатах давал 2-4 холостых при полностью собираемых
+        /// ключах, достижимом финише и нулевом замуровывании, и чистых уровней не было ВООБЩЕ.
+        /// Игрок: «мне абсолютно не важно в каком порядке эти механизмы, главное просто чтобы они
+        /// были» — механизм, который можно обойти, игрок всё равно видит и трогает.
+        /// ⚠️ Список idleGroups ОСТАЁТСЯ и идёт в лог: это по-прежнему полезная мера того,
+        /// насколько плотно уровень сцеплен. Просто не приговор.
+        ///
+        /// ⛔ ТУПИКИ ТОЖЕ НЕ БРАК (решение игрока 2026-09-04). Застревание — это не поломка, а
         /// место, куда просится выход: кнопка с дверью, мост назад к маршруту или другой паттерн,
         /// который умеет вернуть игрока. У игрока в ручных уровнях именно так и сделано (D и E в
         /// Level_11 — ровно эти выходы). Плюс у игры есть чекпоинты и продолжение, так что застрять
         /// безвозвратно нельзя — можно лишь потерять попытку. Число тупиков остаётся как ПОДСКАЗКА,
         /// куда генератору ставить выход, и как мера того, насколько уровень наказывает за ошибку.
         public bool Bad => noSpawn || tooManyGroups || !playable || cpOk < cpTotal
-                        || deadGroups.Count > 0 || idleGroups.Count > 0
+                        || deadGroups.Count > SlackGroups
                         || sealedPocket > SealedPocketLimit;
     }
 
@@ -4325,6 +4363,9 @@ public class LevelEditorWindow : EditorWindow
         var model = new LevelModel(spec, RS, RU) { MoveBudget = _moveBudget };
         model.Search();
         if (model.TooManyGroups) { rep.tooManyGroups = true; return rep; }
+        // ⚠️ Обход упёрся в бюджет состояний — результат НЕПОЛНЫЙ. Молча выдать «чисто» нельзя:
+        // это была бы ложь, а не проверка. Помечаем так же, как «слишком много групп».
+        if (model.Overflowed) { rep.tooManyGroups = true; return rep; }
         if (model.N == 0) return rep;
 
         // Цель достижима, если её достаёт ХОТЬ ОДНО посещённое состояние — в своей маске (например,
@@ -4335,7 +4376,7 @@ public class LevelEditorWindow : EditorWindow
         {
             var pos = model.ReachedPositions;
             for (int i = 0; i < pos.Count; i++)
-                if (model.CanTouch(pos[i] / model.N, model.Cells[pos[i] % model.N], tg)) return true;
+                if (model.CanTouch(model.GroupMask(pos[i]), model.Cells[model.CellOf(pos[i])], tg)) return true;
             return false;
         };
         rep.finishOk = !spec.finish.exists || canGet(spec.finish);
@@ -4353,10 +4394,10 @@ public class LevelEditorWindow : EditorWindow
             // ведёт к финишу — игрок оттуда выберется, и чинить там нечего.
             var flags = model.StuckFlags;
             var reachedAt = new bool[model.N]; var safeAt = new bool[model.N];
-            for (int st = 0; st < model.TOTAL; st++)
+            for (int st = 0; st < model.StateCount; st++)
             {
                 if (!model.Seen[st]) continue;
-                int ci = st % model.N; reachedAt[ci] = true;
+                int ci = model.CellOf(st); reachedAt[ci] = true;
                 if (flags == null || !flags[st]) safeAt[ci] = true;
             }
             for (int i = 0; i < model.N; i++)
@@ -4366,6 +4407,7 @@ public class LevelEditorWindow : EditorWindow
         rep.playable = model.AllKeysAndFinish();
         foreach (var a in spec.artifacts) if (canGet(a)) rep.artOk++;
         foreach (var c in spec.checkpoints) if (canGet(c)) rep.cpOk++;
+        rep.groupCount = model.G;           // знаменатель допуска: см. SchemeReport.SlackGroups
         rep.deadGroups.AddRange(model.DeadGroups());
 
         // ⭐ КРИТЕРИЙ «КАЖДЫЙ МЕХАНИЗМ НЕСУЩИЙ»: убираем группу совсем и смотрим, пропала ли хоть одна
@@ -4404,7 +4446,7 @@ public class LevelEditorWindow : EditorWindow
             for (int gi = 0; gi < spec.groups.Count; gi++)
             {
                 if (gi > 0) m2.Rerun(1 << gi);
-                if (m2.TooManyGroups || m2.N == 0) continue;
+                if (m2.TooManyGroups || m2.Overflowed || m2.N == 0) continue;
                 var deadWithout = m2.DeadGroups();
                 for (int b = 0; b < GN; b++)
                     if (b != gi && deadWithout.Contains(spec.groups[b].id.ToUpperInvariant())) dep[b, gi] = true;
@@ -4415,7 +4457,7 @@ public class LevelEditorWindow : EditorWindow
                     bool still = false;
                     var pos2 = m2.ReachedPositions;
                     for (int p = 0; p < pos2.Count && !still; p++)
-                        if (m2.CanTouch(pos2[p] / m2.N, m2.Cells[pos2[p] % m2.N], targets[i])) still = true;
+                        if (m2.CanTouch(m2.GroupMask(pos2[p]), m2.Cells[m2.CellOf(pos2[p])], targets[i])) still = true;
                     if (!still) somethingLost = true;
                 }
                 // ⭐⭐ ЗАПИРАНИЕ — ТОЖЕ ПОТЕРЯ. Дверь-выход, открываемая только изнутри, по критерию
@@ -4458,12 +4500,12 @@ public class LevelEditorWindow : EditorWindow
         {
             var firstDepth = new int[model.G];
             for (int g = 0; g < model.G; g++) firstDepth[g] = int.MaxValue;
-            for (int st = 0; st < model.TOTAL; st++)
+            for (int st = 0; st < model.StateCount; st++)
             {
                 if (!model.Seen[st]) continue;
-                int m = model.GroupMask(st);
+                long m = model.GroupMask(st);
                 for (int g = 0; g < model.G; g++)
-                    if ((m & (1 << g)) != 0 && model.Depth[st] < firstDepth[g]) firstDepth[g] = model.Depth[st];
+                    if ((m & (1L << g)) != 0 && model.Depth[st] < firstDepth[g]) firstDepth[g] = model.Depth[st];
             }
             var order = new System.Collections.Generic.List<int>();
             for (int g = 0; g < model.G; g++) if (firstDepth[g] != int.MaxValue) order.Add(g);
@@ -4816,6 +4858,7 @@ public class LevelEditorWindow : EditorWindow
         _pfPlatform     = Load("Assets/Prefabs/Platform.prefab");
         _pfWall         = Load("Assets/Prefabs/PlatformWall.prefab");
         _pfCoin         = Load("Assets/Prefabs/Coin.prefab");
+        _pfSpike        = Load("Assets/Prefabs/Spike.prefab");
         _pfFallCollider = Load("Assets/Prefabs/FallCollider.prefab");
         _pfFlagFinish   = Load("Assets/Prefabs/Flag_finish.prefab");
         _pfTile         = Load("Assets/Prefabs/Tile.prefab");

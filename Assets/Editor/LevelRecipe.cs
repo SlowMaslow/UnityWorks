@@ -201,20 +201,41 @@ public static class PuzzleVocabulary
     public static bool CanBeExit(PuzzleElement e)
         => e == PuzzleElement.Door || e == PuzzleElement.Bridge;
 
-    public static int Difficulty(PuzzleElement e)
+    /// <summary>
+    /// ⭐⭐ ВО ЧТО ЭЛЕМЕНТ МОЖЕТ ПРЕВРАТИТЬСЯ ПРИ ПОСТРОЙКЕ. Подмены делает FreeMazeBuilder.Furnish,
+    /// когда ребро оказалось не того направления, что просил элемент: дверь на вертикальном ребре
+    /// становится воротами, ворота на боковом — дверью, мост без сквозного коридора — тем или другим.
+    ///
+    /// 🐞 ЗАЧЕМ ЭТО ОБЪЯВЛЕНО. Подмены живут в постройке, а размер комнаты назначается ЗАДОЛГО до
+    /// неё — по требованиям ИСХОДНОГО элемента. Направление ребра к тому моменту ещё не известно,
+    /// его выбирает раскладка. В итоге дверь просила комнату в 3 ряда, на постройке становилась
+    /// воротами, а воротам нужно 4 — и модуль отказывался: «комната ниже 4 рядов».
+    /// Замер при заказе 50 механизмов: из 85 потерянных элементов 72 отказаны ровно по этой причине
+    /// (остальные пять причин отказа ворот дали НОЛЬ). Совпадает и по числу подмен: 37 «дверь →
+    /// ворота» плюс 36 «мост → ворота».
+    ///
+    /// ⭐ Поэтому место заказывается под элемент И ПОД ВСЁ, ЧЕМ ОН МОЖЕТ СТАТЬ (см. вызов в
+    /// FreeMazeBuilder.Requirements). Дописал сюда новую подмену — требования подтянутся сами.
+    /// </summary>
+    public static PuzzleElement[] Substitutes(PuzzleElement e)
     {
         switch (e)
         {
-            case PuzzleElement.Gate:       return 2;
-            case PuzzleElement.Door:       return 3;
-            case PuzzleElement.Bridge:     return 4;
-            case PuzzleElement.NestedGate: return 5;
-            case PuzzleElement.Excursion:  return 9;
-            // Три группы и вложенная кнопка внутри: дороже вложенных ворот, дешевле вылазки.
-            case PuzzleElement.Vault:      return 7;
+            // На вертикальном ребре дверь становится воротами.
+            case PuzzleElement.Door:       return new[] { PuzzleElement.Gate };
+            // Мосту может не достаться сквозной коридор — тогда ворота или дверь по направлению.
+            case PuzzleElement.Bridge:     return new[] { PuzzleElement.Gate, PuzzleElement.Door };
+            // На боковом ребре ворота становятся дверью (дверь скромнее, но пусть будет явно).
+            case PuzzleElement.Gate:       return new[] { PuzzleElement.Door };
+            case PuzzleElement.NestedGate: return new[] { PuzzleElement.Door };
         }
-        return 2;
+        return new PuzzleElement[0];
     }
+
+    // ⛔ ТАБЛИЦА ВЕСОВ СЛОЖНОСТИ УДАЛЕНА 2026-09-11 (ворота 2, дверь 3, мост 4, вложенные 5,
+    // камера 7, вылазка 9). Заказ теперь в ШТУКАХ механизмов, а не в баллах, и весов не осталось
+    // ни одного пользователя. Держать таблицу «на всякий случай» нельзя: она читалась как
+    // действующая шкала и объясняла, почему заказ на 20 давал четыре механизма.
 
     public static string Name(PuzzleElement e)
     {
@@ -305,22 +326,6 @@ public class LevelRecipe
         }
     }
 
-    /// <summary>
-    /// ⭐ СЛОЖНОСТЬ РЕЦЕПТА В БАЛЛАХ = сумма элементов + надбавка за ЦЕПОЧКУ.
-    /// Надбавка обязательна: три механизма вразнобой и три подряд — разная задача, во втором случае
-    /// игрок держит в голове весь порядок. Без неё «сложность» опять свелась бы к количеству.
-    /// </summary>
-    public int Points
-    {
-        get
-        {
-            int p = 0;
-            foreach (var r in routes) foreach (var e in r.elements) p += PuzzleVocabulary.Difficulty(e);
-            p += 2 * Mathf.Max(0, MainChain - 1);
-            return p;
-        }
-    }
-
     /// <summary>Сколько элементов в рецепте (вылазка — ОДИН элемент, хоть и три группы).</summary>
     public int ElementCount
     { get { int n = 0; foreach (var r in routes) n += r.elements.Count; return n; } }
@@ -361,12 +366,22 @@ public class LevelRecipe
     /// попадает в цель. Так один и тот же слот пака каждый раз выглядит по-новому, оставаясь ровно
     /// той же сложности — то, чего нельзя было добиться, задавая «число механизмов».
     ///
+    /// ⭐⭐ <paramref name="wantMechanisms"/> — ЭТО ШТУКИ, А НЕ БАЛЛЫ (2026-09-11).
+    /// 🐞 Раньше сюда ехала «сумма баллов сложности»: ворота 2, дверь 3, мост 4, вложенные 5,
+    /// камера 7. Ползунок при этом назывался «Сложность (= сколько механизмов)» и на двадцати
+    /// выдавал ЧЕТЫРЕ механизма — в среднем 3.5 балла за штуку. Игрок это и увидел: «механизмов
+    /// до сих пор практически никогда особо и не ставится». Хуже того, вес заставлял виды
+    /// вытеснять друг друга: одна камера стоила как трое ворот, хотя игроку нужно и то и другое.
+    /// Теперь заказ буквальный: попросили пятьдесят — набираем пятьдесят.
+    ///
     /// <paramref name="maxGroups"/> — потолок по числу ГРУПП, и он не про дизайн, а про цену
-    /// приёмки: поиск идёт по 2^групп состояний, и на каждую группу гоняется ещё раз. Замер: 4 группы
-    /// — 283 мс на схему, 6 — 752 мс, 8 — больше двадцати секунд. Поэтому сложность может ЗАПРОСИТЬ
-    /// больше, чем мы способны проверить, и тогда честнее недобрать баллов, чем выдать непроверенное.
+    /// приёмки. ⛔ СТАРОЕ ОБОСНОВАНИЕ УСТАРЕЛО: там стояло «4 группы 283 мс, 6 — 752, 8 — больше
+    /// двадцати секунд», потому что поиск шёл по 2^групп состояний. Проекция локальности это
+    /// убрала (бит группы живёт только в клетках, где её тайлы могут что-то решать): замер на
+    /// 11 группах дал ускорение в 190 раз. Потолок остался только как страховка и упирается
+    /// в 63 — ширину маски групп (long) в LevelModel.
     /// </summary>
-    public static LevelRecipe RollForDifficulty(System.Random rng, int targetPoints,
+    public static LevelRecipe RollForDifficulty(System.Random rng, int wantMechanisms,
                                                 int maxGroups, bool allowExcursion)
     {
         var rec = new LevelRecipe();
@@ -376,34 +391,54 @@ public class LevelRecipe
         // Первое звено всегда ворота: это база механики, и следующему может понадобиться хозяин
         // с платформой (вложенная кнопка на дверь не садится).
         main.elements.Add(PuzzleElement.Gate);
-        int groups = 1;
+        int groups = 1, vaults = 0;
 
-        // ── Набираем баллы, пока не дотянем до цели и пока хватает бюджета групп ──
-        // Порядок предпочтений случайный: именно отсюда берётся непохожесть уровней одной сложности.
-        int guard = 0;
-        while (rec.Points < targetPoints && groups < maxGroups && guard++ < 40)
+        // ── Набираем механизмы, пока не наберём заказанное и пока хватает бюджета групп ──
+        // Порядок предпочтений случайный: именно отсюда берётся непохожесть уровней одного заказа.
+        // ⚠️ guard теперь растёт вместе с заказом: при фиксированных сорока итерациях заказ на
+        // пятьдесят механизмов обрывался бы на середине, и ползунок снова врал бы.
+        int guard = 0, guardMax = wantMechanisms * 3 + 40;
+        while (rec.ElementCount < wantMechanisms && groups < maxGroups && guard++ < guardMax)
         {
-            int left = targetPoints - rec.Points;
-            // ⚠️ Куда пойдёт элемент, решаем ДО выбора: на основном маршруте он стоит дороже на
-            // надбавку за цепочку. Без этого подбор систематически перелетал цель на пару баллов.
+            // Куда пойдёт элемент — на основной маршрут или в ветку — решаем ДО выбора: от этого
+            // зависит, можно ли ставить мост (мост в ветке бессмыслен).
             bool toBranchNow = main.elements.Count >= 2 && rng.Next(100) < 35;
-            int chainSurcharge = toBranchNow ? 0 : 2;
-            System.Func<PuzzleElement, int> cost = el =>
-                PuzzleVocabulary.Difficulty(el) + (el == PuzzleElement.Bridge || el == PuzzleElement.Excursion ? 0 : chainSurcharge);
 
             var pick = new List<PuzzleElement>();
-            // Элемент годится, если не перелетает цель больше чем на 2 балла.
-            if (allowExcursion && groups + 3 <= maxGroups && cost(PuzzleElement.Excursion) <= left + 2)
+            // ⭐ Единственный фильтр теперь — БЮДЖЕТ ГРУПП. Балльной «цены» у элемента больше нет:
+            // каждый механизм — одна штука заказа, чем бы он ни был.
+            if (allowExcursion && groups + 3 <= maxGroups)
                 pick.Add(PuzzleElement.Excursion);
             // ⚠️ Камера съедает ПЯТЬ групп разом (пол трассы, полка, две стенки шахты, стенка колодца).
-            if (groups + 5 <= maxGroups && cost(PuzzleElement.Vault) <= left + 2)
+            // ⭐ И ОНА ОДНА НА УРОВЕНЬ. Камера — это палата 22×15 с зарезервированным подвалом, то есть
+            // крупная декорация маршрута, а не рядовой механизм.
+            // 🐞 Замер при заказе в 36 групп: рецепт брал по 3.3 камеры на уровень (20 на шесть),
+            // а вставало ТРИ из двадцати — места под вторую и третью просто нет. Семнадцать заказов
+            // уходили в пустоту и уносили с собой баллы сложности.
+            if (vaults == 0 && groups + 5 <= maxGroups)
                 pick.Add(PuzzleElement.Vault);
-            if (cost(PuzzleElement.NestedGate) <= left + 2) pick.Add(PuzzleElement.NestedGate);
-            if (cost(PuzzleElement.Door)       <= left + 2) pick.Add(PuzzleElement.Door);
-            if (cost(PuzzleElement.Bridge)     <= left + 2) pick.Add(PuzzleElement.Bridge);
-            if (cost(PuzzleElement.Gate)       <= left + 2) pick.Add(PuzzleElement.Gate);
+            pick.Add(PuzzleElement.NestedGate);   // одна группа, как и обычные ворота: вложена КНОПКА
+            pick.Add(PuzzleElement.Door);
+            pick.Add(PuzzleElement.Bridge);
+            pick.Add(PuzzleElement.Gate);
             if (pick.Count == 0) break;                       // ближе к цели уже не подойти
-            var e = pick[rng.Next(pick.Count)];
+
+            // ⭐⭐ РАЗНООБРАЗИЕ НАБОРА — ПРАВИЛО, А НЕ ВЕЗЕНИЕ.
+            // 🐞 Выбор был РАВНОВЕРОЯТНЫМ, и на шести элементах целые виды просто не выпадали. Замер
+            // по 22 принятым уровням: без двери 5, без моста 8, без камеры 11 — то есть на половине
+            // уровней камеры не бывает вовсе. Игрок это и увидел: «дверей и камер я действительно
+            // не увидел на уровне».
+            // Теперь сперва берём из тех видов, которых в рецепте ЕЩЁ НЕТ, и только когда все виды
+            // представлены — из всех подряд. Случайность остаётся, но перестаёт съедать целые виды.
+            var fresh = new List<PuzzleElement>();
+            foreach (var cand in pick)
+            {
+                bool had = false;
+                foreach (var r in rec.routes) foreach (var e2 in r.elements) if (e2 == cand) { had = true; break; }
+                if (!had) fresh.Add(cand);
+            }
+            var from = fresh.Count > 0 ? fresh : pick;
+            var e = from[rng.Next(from.Count)];
 
             // ⭐⭐ КАМЕРА ИДЁТ НА ОСНОВНОЙ МАРШРУТ, а не в ветку. Она ПРОЛЁТ ТРАССЫ: игрок обязан
             // пройти по её коридору, а пол коридора в середине держится на исчезающей платформе.
@@ -413,7 +448,7 @@ public class LevelRecipe
             if (e == PuzzleElement.Vault)
             {
                 main.elements.Add(PuzzleElement.Vault);
-                groups += 5;
+                groups += 5; vaults++;
                 continue;
             }
             if (e == PuzzleElement.Excursion)

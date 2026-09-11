@@ -77,14 +77,14 @@ public class VaultModule : IMazeModule
         int floorRow = c.FloorRow(room), airRow = c.AirRow(room);
         int ceilRow = row0 - 1;
 
-        char gCeil = c.NextGroupId(), gLedge = c.NextGroupId(), gPocket = c.NextGroupId();
+        int gCeil = c.NextGroup(), gLedge = c.NextGroup(), gPocket = c.NextGroup();
 
         c.Begin();
 
         // ── ПОТОЛОК: исчезает по кнопке снаружи, игрок проваливается внутрь ──
         // Края потолка оставляем камнем: комната сверху должна на чём-то держаться.
         int ceilFrom = col0 + 1, ceilTo = col0 + w - 2;
-        for (int x = ceilFrom; x <= ceilTo; x++) c.Set(ceilRow, x, char.ToLower(gCeil));
+        for (int x = ceilFrom; x <= ceilTo; x++) c.SetGroup(ceilRow, x, gCeil);
 
         // ── КАРМАН С КЛЮЧОМ: ниша в стене камеры, запертая стенкой группы ──
         bool pocketLeft = c.Rng.Next(2) == 0;
@@ -102,7 +102,7 @@ public class VaultModule : IMazeModule
         for (int d = 1; d <= pocketDepth; d++)
         for (int r = airRow - 1; r <= airRow; r++)
             c.Set(r, pocketCol + digDir * d, '.');
-        for (int r = airRow - 1; r <= airRow; r++) c.Set(r, pocketCol, char.ToLower(gPocket));
+        for (int r = airRow - 1; r <= airRow; r++) c.SetGroup(r, pocketCol, gPocket);
         // Пол под карманом, иначе ключ висит над пустотой.
         for (int d = 0; d <= pocketDepth; d++) c.Set(airRow + 1, pocketCol + digDir * d, '#');
         keyCell = new Vector2Int(pocketCol + digDir * pocketDepth, airRow);
@@ -112,7 +112,7 @@ public class VaultModule : IMazeModule
         if (ledgeRow <= row0) { return Fail(c, 1); }
         int ledgeLen = Mathf.Clamp(2 + c.Rng.Next(2), 2, w - 3);
         int ledgeCol = pocketLeft ? col0 + w - 1 - ledgeLen : col0 + 1;
-        for (int k = 0; k < ledgeLen; k++) c.Set(ledgeRow, ledgeCol + k, char.ToLower(gLedge));
+        for (int k = 0; k < ledgeLen; k++) c.SetGroup(ledgeRow, ledgeCol + k, gLedge);
 
         // ── КНОПКИ ──
         // Потолка — снаружи, в комнате сверху: только оттуда его и открывают.
@@ -120,16 +120,16 @@ public class VaultModule : IMazeModule
         // без кнопки вовсе: модель честно объявила её мёртвой, а всю камеру — декоративной.
         var btnCeil = s.buttonAbove;
         if (c.At(btnCeil.y, btnCeil.x) != '.') { return Fail(c, 2); }
-        c.Set(btnCeil.y, btnCeil.x, gCeil);
+        c.SetButton(btnCeil.y, btnCeil.x, gCeil);
         // Полки — на полу камеры: игрок падает внутрь и первым делом видит её.
         int btnLedgeCol = pocketLeft ? col0 + w - 2 : col0 + 1;
         if (c.At(airRow, btnLedgeCol) != '.') { return Fail(c, 3); }
-        c.Set(airRow, btnLedgeCol, gLedge);
+        c.SetButton(airRow, btnLedgeCol, gLedge);
         // ⭐ Кнопка кармана СТОИТ НА ПОЛКЕ — ровно как в оригинале, где триггер C припаркован к
         // платформе B. Пока полки нет, до кнопки не дотянуться: это и есть вложенность.
         int btnPocketCol = ledgeCol + ledgeLen / 2;
         if (c.At(ledgeRow - 1, btnPocketCol) != '.') { return Fail(c, 4); }
-        c.Set(ledgeRow - 1, btnPocketCol, gPocket);
+        c.SetButton(ledgeRow - 1, btnPocketCol, gPocket);
 
         // ⚠️ ВЫХОДА ЗДЕСЬ НЕТ, И ЭТО НАМЕРЕННО. Камера лишь ОБЪЯВЛЯЕТ, что запирает игрока
         // (SpaceNeed.needsExit), а выход ставится ОТДЕЛЬНЫМ элементом на ребре назад — тем, который
@@ -152,17 +152,17 @@ public class VaultModule : IMazeModule
         // кнопка кармана была доступна сразу, никакой вложенности не возникало — и модель справедливо
         // объявила ВСЮ камеру декоративной. Поправлено игроком, он автор оригинального паттерна.
         var stCeil = new ModuleStamp
-        { moduleName = Name + ": потолок", groupId = gCeil, inverted = true,
+        { moduleName = Name + ": потолок", groupIx = gCeil, inverted = true,
           gates = "провал в камеру" };
         stCeil.AddButton(btnCeil);
 
         var stLedge = new ModuleStamp
-        { moduleName = Name + ": полка", groupId = gLedge, inverted = false,
+        { moduleName = Name + ": полка", groupIx = gLedge, inverted = false,
           gates = "подъём к кнопке кармана" };
         stLedge.AddButton(new Vector2Int(btnLedgeCol, airRow));
 
         var stPocket = new ModuleStamp
-        { moduleName = Name + ": карман", groupId = gPocket, inverted = true,
+        { moduleName = Name + ": карман", groupIx = gPocket, inverted = true,
           gates = "ниша с ключом" };
         // Хозяин кнопки — полка: без неё до кнопки не добраться.
         stPocket.AddButton(new Vector2Int(btnPocketCol, ledgeRow - 1), gLedge);
