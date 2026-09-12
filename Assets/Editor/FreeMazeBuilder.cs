@@ -808,7 +808,10 @@ public static class FreeMazeBuilder
             // 🐞 Замер: камере 20×3 требование ширины уезжало и на соседнюю комнату, а у той потолок
             // ширины восемь — раскладка не сошлась НИ РАЗУ из шестидесяти.
             bool pinned = need.maxWidth > 0 || need.maxHeight > 0;
-            foreach (int id in pinned ? new[] { nd.id } : new[] { nd.id, nd.parent })
+            // ⭐ КОМНАТА ПОД КАРТИНКУ — у подъёма это РОДИТЕЛЬ (см. SpaceNeed.patternInParent):
+            // игрок приходит снизу, и лестница обязана стоять на его стороне люка.
+            int pinRoom = need.patternInParent && nd.parent >= 0 ? nd.parent : nd.id;
+            foreach (int id in pinned ? new[] { pinRoom } : new[] { nd.id, nd.parent })
             {
                 if (id < 0) continue;
                 req[id].minW = Mathf.Max(req[id].minW, need.minWidth);
@@ -841,8 +844,8 @@ public static class FreeMazeBuilder
             }
             // ⚠️ ПОТОЛОК РАЗМЕРА — ТОЛЬКО КОМНАТЕ САМОГО ЭЛЕМЕНТА, не соседней: трафарет рисует
             // себя в одной комнате, а вторая нужна ему лишь как место для кнопки снаружи.
-            if (need.maxWidth > 0)  req[nd.id].maxW = Mathf.Max(need.minWidth, need.maxWidth);
-            if (need.maxHeight > 0) req[nd.id].maxH = Mathf.Max(need.minHeight, need.maxHeight);
+            if (need.maxWidth > 0)  req[pinRoom].maxW = Mathf.Max(need.minWidth, need.maxWidth);
+            if (need.maxHeight > 0) req[pinRoom].maxH = Mathf.Max(need.minHeight, need.maxHeight);
             // ⚠️ ХОЗЯИНУ ВЛОЖЕННОЙ КНОПКИ НУЖНА ЛИШНЯЯ ШИРИНА. Полка — это пристройка сбоку к верхнему
             // уступу зигзага, и она не строится, если уступ вместе с ней занял бы всю ширину комнаты
             // (иначе комната запечатывается). 🐞 Замер: из шести ворот-хозяев полка вышла у трёх.
@@ -1701,6 +1704,7 @@ public static class FreeMazeBuilder
                     }
                     st = new TimedBridgeModule().Stamp(canvas, site);
                     break;
+                case PuzzleElement.LootPit:
                 case PuzzleElement.Vault:
                 {
                     // ⚠️ ПРОВЕРЯЕМ СКВОЗНОСТЬ, а не декларируем — тот же урок, что с мостом: комната
@@ -1741,6 +1745,29 @@ public static class FreeMazeBuilder
                     story.Append(PuzzleVocabulary.Name(nd.element.Value)).Append(" (трафарет) на ")
                          .Append(chamber).Append("; ");
                     continue;                                  // штампы уже добавлены
+                }
+                case PuzzleElement.Ladder:
+                {
+                    // ⭐ ЛЕСТНИЦА НА ТАЙМЕРЕ (группа D ручного Level_09) живёт внутри ОДНОЙ комнаты и
+                    // от соседей не требует ничего: ни сквозного коридора, ни подвала. Поэтому и
+                    // проверок здесь нет — только выбрать комнату и позвать штамповщик.
+                    // ⚠️⚠️ ШТАМПУЕМ В РОДИТЕЛЯ — В НИЖНЮЮ КОМНАТУ. Ребро вертикальное, игрок приходит
+                    // снизу, и подъём обязан стоять на его стороне люка.
+                    // 🐞 Сперва я штамповал в комнату ребра (верхнюю), и ступени оказывались уже ЗА
+                    // люком: непроходимыми становились 9 уровней из 10 при достижимом финише и
+                    // собранных ключах. У работающих вертикальных ворот зигзаг строится ровно в
+                    // нижней комнате (VerticalGateModule берёт s.roomId = родитель).
+                    if (!link.vertical || nd.parent < 0) break;
+                    var ladder = StencilLibrary.For(nd.element.Value);
+                    if (ladder == null) break;
+                    Vector2Int noKey;
+                    var madeL = StencilStamper.Stamp(canvas, nd.parent, ladder, rng, out noKey, -1);
+                    if (madeL == null) break;
+                    foreach (var one in madeL) stamps.Add(one);
+                    stampOf[nd.id] = madeL[0];
+                    story.Append(PuzzleVocabulary.Name(nd.element.Value)).Append(" (трафарет) на ")
+                         .Append(nd.parent).Append("; ");
+                    continue;
                 }
             }
             if (st == null) { story.Append("не встал ").Append(PuzzleVocabulary.Name(element))
@@ -1912,12 +1939,38 @@ public static class FreeMazeBuilder
         // ДЕРЕВОМ заново, то есть друг друга они не видели. Два ребра, поодиночке безобидных, вместе
         // замыкали крюк вокруг замка (в одном обходе их набралось три, через полкарты). Поэтому
         // кандидат добавляется в граф НАЧЕРНО и проверяется вместе со всем, что уже открыто.
+        // ⭐⭐ РЕБРУ ВОЗВРАТА ДОЗВОЛЕН ОДИН ОБОЙДЁННЫЙ ЗАМОК, ЛИШНИМ РЁБРАМ — НИ ОДНОГО.
+        //
+        // Почему не поровну. Ветка отрывается от комнаты A и возвращается на трассу в комнату B
+        // дальше по ходу — в этом весь замысел петли. Между A и B почти всегда стоит механизм
+        // трассы, и ребро возврата его обходит: замер по 20 уровням дал 27 кандидатов, из них
+        // с нулём замков между — ПЯТЬ, ровно с одним — ТРИНАДЦАТЬ. То есть строгий запрет режет
+        // петли не по вине геометрии, а по самому их устройству.
+        //
+        // ⚠️ Обойдённый механизм — это ХОЛОСТАЯ группа, а холостые группы решением игрока
+        // (2026-09-11) браком больше не считаются: «мне абсолютно не важно, в каком порядке эти
+        // механизмы, главное просто чтобы они были». Значит для клапана это правило было строже,
+        // чем сама приёмка. Один замок разрешаем, больше — нет: петля обязана оставаться коротким
+        // витком рядом с точкой отрыва, а не срезать полмаршрута.
+        // ⭐ ДВОЙКА ПОДОБРАНА ЗАМЕРОМ, И ОНА РАБОТАЕТ ТОЛЬКО В ПАРЕ С ГУСТОЙ ВЫБОРКОЙ.
+        // 🐞 Сперва допуск 2 вышел ИНЕРТНЫМ (те же 25 клапанов, те же 15/20): кандидатов с двумя
+        // замками между отрывом и целью до дела просто не доходило. Когда звену, тянущемуся к цели,
+        // дали вчетверо больше бросков (RoomLayout, «гуще выборка»), пул кандидатов изменился —
+        // их стало 44 вместо 36, но возвращаются они дальше по трассе. И тогда двойка окупилась:
+        //   допуск 1: клапанов 24, чистых 16/20, поставка 20.55, зарублено 12;
+        //   допуск 2: клапанов 26, чистых 18/20, поставка 20.70, зарублено 4, холостых 8.5%;
+        //   допуск 3: то же самое, но холостых 9.2% — чистая переплата.
+        // ⚠️ Две правки взаимные: порознь каждая почти ничего не даёт. Менять одну, не перемерив
+        // другую, нельзя.
+        const int ReturnEdgeSlack = 2;
         System.Func<RoomLayout.RoomLink, bool> tryOpen = c =>
         {
             lay.links.Add(c);
             if (SkipBypassCheck) return true;
+            int allowed = c.returnEdge ? ReturnEdgeSlack : 0, bypassed = 0;
             foreach (var e in locked)
-                if (lockBypassed(lay.links, e)) { lay.links.RemoveAt(lay.links.Count - 1); return false; }
+                if (lockBypassed(lay.links, e) && ++bypassed > allowed)
+                { lay.links.RemoveAt(lay.links.Count - 1); return false; }
             return true;
         };
 
