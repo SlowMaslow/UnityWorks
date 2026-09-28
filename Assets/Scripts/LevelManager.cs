@@ -198,9 +198,18 @@ public class LevelManager : MonoBehaviour
         int bestMask = oldMask | runMask;
 
         SaveSystem.TrySetLevelBestTime(_currentLevelIndex, ElapsedTime);
-        // Артефакты банкуются в картинку-мир ТОЛЬКО при прохождении (best-kept)
+        // ⭐ Артефакты банкуются в картинку-мир ТОЛЬКО при прохождении (best-kept).
+        // ⚠️ ПРИБАВКУ СЧИТАЕМ ДО ЗАПИСИ: TrySetLevelArtifacts хранит РЕКОРД, поэтому повторный
+        // проход того же уровня даёт ноль новых кусочков мозаики — и финалка обязана честно
+        // сказать «+0», а не «+3». Иначе картинка «наполнялась» бы фармом одного уровня.
+        int bankedBefore   = SaveSystem.GetLevelArtifacts(_currentLevelIndex);
+        int artifactsAdded = Mathf.Max(0, ArtifactsCollected - bankedBefore);
+        bool packWasDone   = ArtifactCatalog.PackComplete;
         SaveSystem.TrySetLevelArtifacts(_currentLevelIndex, ArtifactsCollected);
         SaveSystem.UnlockNextLevel(_currentLevelIndex, total);
+
+        bool packNowDone = ArtifactCatalog.PackComplete;
+        if (packNowDone) SaveSystem.SecretPackUnlocked = true;
 
         var result = new LevelResult
         {
@@ -210,7 +219,14 @@ public class LevelManager : MonoBehaviour
             taskMask       = bestMask,
             newTasksMask   = runMask & ~oldMask,               // впервые выполнено в этом заходе
             time           = ElapsedTime,
-            coinsCollected = CoinsThisRun
+            coinsCollected = CoinsThisRun,
+
+            artifactsCollected     = ArtifactsCollected,
+            artifactsTotal         = ArtifactsTotal,
+            artifactsBanked        = artifactsAdded,
+            packCollected          = ArtifactCatalog.PackCollected,
+            packTotal              = ArtifactCatalog.PackTotal,
+            secretPackJustUnlocked = packNowDone && !packWasDone
         };
 
         GameManager.Instance?.SetState(GameState.Win);

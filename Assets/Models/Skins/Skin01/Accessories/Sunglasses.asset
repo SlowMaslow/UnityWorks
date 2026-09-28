@@ -1,0 +1,24 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d707b59a933be4b40be18c79a92bbde6, type: 3}
+  m_Name: Sunglasses
+  m_EditorClassIdentifier: 
+  accessoryId: accessory_sunglasses
+  displayName: Sunglasses
+  price: 0
+  previewSprite: {fileID: 21300000, guid: 7bbd16549a845a74498f06c092a4cfde, type: 3}
+  slot: 5
+  mesh: {fileID: 4300000, guid: a5eff64aee61c224f9fe6058a6171745, type: 2}
+  materials:
+  - {fileID: 2100000, guid: d6349f827370e3d4083ba4d7938b0e4e, type: 2}
+  - {fileID: 2100000, guid: 0de3c1c75675a7f4abad7fcb70222a0b, type: 2}
+  bodyRegion: -1

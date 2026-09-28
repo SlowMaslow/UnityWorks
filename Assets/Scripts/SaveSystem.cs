@@ -120,6 +120,20 @@ public static class SaveSystem
         return sum;
     }
 
+    // ─── Секретный пак ───────────────────────────────────────────────────────
+    private const string KEY_SECRET_PACK = "SecretPackUnlocked";
+
+    /// <summary>
+    /// ⭐ Секретный пак открыт СБОРКОЙ КАРТИНКИ, а не звёздами: звёзды гейтят основной путь,
+    /// артефакты — бонусную ветку. Флаг ЛИПКИЙ (однажды открыт — навсегда): знаменатель пака растёт
+    /// вместе с контентом, и без липкости добавление 13-го уровня отобрало бы уже открытый пак.
+    /// </summary>
+    public static bool SecretPackUnlocked
+    {
+        get => PlayerPrefs.GetInt(KEY_SECRET_PACK, 0) == 1;
+        set { if (value) { PlayerPrefs.SetInt(KEY_SECRET_PACK, 1); PlayerPrefs.Save(); } }
+    }
+
     // ─── Апгрейды ────────────────────────────────────────────────────────────
     public static int UpgradeCost
     {
@@ -158,6 +172,30 @@ public static class SaveSystem
     public static void UnlockSkin(string skinId)
     {
         PlayerPrefs.SetInt($"SkinUnlocked_{skinId}", 1);
+        PlayerPrefs.Save();
+    }
+
+    // Six independent slots; empty restores the canonical base part, or removes an overlay.
+    public static event System.Action AccessoriesChanged;
+
+    public static string GetSelectedAccessory(SkinAccessorySlot slot)
+        => PlayerPrefs.GetString($"AccessorySlot_{slot}", "");
+
+    public static void SetSelectedAccessory(SkinAccessorySlot slot, string accessoryId)
+    {
+        if ((int)slot < 0 || (int)slot >= SkinWardrobe.SlotCount) return;
+        PlayerPrefs.SetString($"AccessorySlot_{slot}", accessoryId ?? "");
+        PlayerPrefs.Save();
+        AccessoriesChanged?.Invoke();
+    }
+
+    public static bool IsAccessoryUnlocked(string id)
+        => !string.IsNullOrEmpty(id) && PlayerPrefs.GetInt($"AccessoryUnlocked_{id}", 0) == 1;
+
+    public static void UnlockAccessory(string id)
+    {
+        if (string.IsNullOrEmpty(id)) return;
+        PlayerPrefs.SetInt($"AccessoryUnlocked_{id}", 1);
         PlayerPrefs.Save();
     }
 

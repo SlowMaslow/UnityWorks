@@ -1,0 +1,26 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f0dc404035290bd4ab39eed765873ee8, type: 3}
+  m_Name: SkinAccessoryDatabase
+  m_EditorClassIdentifier: 
+  accessories:
+  - {fileID: 11400000, guid: d4b523257a10a5941924f9b85097a61e, type: 2}
+  - {fileID: 11400000, guid: e39fb4f5d2bc0ee4c9dcc452dd5a13b1, type: 2}
+  - {fileID: 11400000, guid: ed0f7810f52d48b45b2fb769106be789, type: 2}
+  emptySlotPreview: {fileID: 0}
+  baseSlotPreviews:
+  - {fileID: 21300000, guid: a84dd947f8a403445bbd8f4a86823ccd, type: 3}
+  - {fileID: 21300000, guid: 9e5c6caac72903e4fa5868aa4b5726d3, type: 3}
+  - {fileID: 21300000, guid: 37330cd4d65ed3448957a8174446fe9f, type: 3}
+  - {fileID: 21300000, guid: 11af812c265fba548b48c89df74b99b1, type: 3}
+  - {fileID: 21300000, guid: 2db0f12def7d02f4a8059ba2fd733b42, type: 3}
+  - {fileID: 21300000, guid: 19817760c7d20d844ac63a13fb145cb2, type: 3}

@@ -25,6 +25,7 @@ public class SkinDatabase : ScriptableObject
     /// <summary>Найти скин по skinId.</summary>
     public SkinDefinition Get(string skinId)
     {
+        if (skins == null) return null;
         foreach (var s in skins)
             if (s != null && s.skinId == skinId) return s;
         return skins != null && skins.Length > 0 ? skins[0] : null;

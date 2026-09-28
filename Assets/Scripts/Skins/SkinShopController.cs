@@ -2,110 +2,171 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 
-/// <summary>
-/// Шоп скинов в главном меню. Строит карточки из SkinDatabase, покупка за монеты
-/// (GameManager.TrySpendCoins + SaveSystem.UnlockSkin), выбор через SaveSystem.SelectedSkinId.
-/// UI элементы назначаются в инспекторе; логика без прямой завязки на конкретную вёрстку.
-/// </summary>
+/// <summary>Independent module selection in six wardrobe slots.</summary>
 public class SkinShopController : MonoBehaviour
 {
-    [Header("UI")]
-    [SerializeField] private GameObject   panelRoot;     // корень панели шопа (вкл/выкл)
-    [SerializeField] private Transform    cardContainer; // контейнер с layout под карточки
-    [SerializeField] private SkinCardView cardTemplate;  // шаблон карточки (выключен, клонируется)
-    [SerializeField] private Text         coinsLabel;    // баланс монет в шопе
+    [SerializeField] private GameObject panelRoot;
+    [SerializeField] private Transform cardContainer;
+    [SerializeField] private SkinCardView cardTemplate;
+    [SerializeField] private Text coinsLabel;
+    private readonly List<(SkinAccessory item, SkinCardView card)> cards = new();
+    private readonly Button[] tabs = new Button[SkinWardrobe.SlotCount];
+    private readonly string[] labels = { "HAIR / HATS", "HEAD", "GLASSES", "TORSO", "LEGS", "FEET" };
+    private readonly SkinAccessorySlot[] slotOrder = { SkinAccessorySlot.Headwear, SkinAccessorySlot.Head, SkinAccessorySlot.Glasses, SkinAccessorySlot.Outerwear, SkinAccessorySlot.Pants, SkinAccessorySlot.Footwear };
+    private SkinAccessorySlot activeSlot;
+    private Text statusLabel;
+    private ScrollRect scroll;
+    private bool built;
 
-    private readonly List<(SkinDefinition def, SkinCardView card)> _cards = new();
-    private bool _built;
-
-    private void Awake()
+    private void Awake() { if (panelRoot != null) panelRoot.SetActive(false); }
+    private void OnEnable()
     {
-        if (panelRoot != null) panelRoot.SetActive(false);
+        SaveSystem.AccessoriesChanged += Refresh;
+        GameManager.OnCoinsChanged += OnCoinsChanged;
     }
-
-    /// <summary>Открыть шоп (кнопка Skins в меню).</summary>
+    private void OnDisable()
+    {
+        SaveSystem.AccessoriesChanged -= Refresh;
+        GameManager.OnCoinsChanged -= OnCoinsChanged;
+    }
+    private void OnCoinsChanged(int _) => Refresh();
     public void Open()
     {
         Build();
         Refresh();
         if (panelRoot != null) panelRoot.SetActive(true);
     }
-
-    /// <summary>Закрыть шоп (кнопка назад).</summary>
-    public void Close()
-    {
-        if (panelRoot != null) panelRoot.SetActive(false);
-    }
+    public void Close() { if (panelRoot != null) panelRoot.SetActive(false); }
 
     private void Build()
     {
-        if (_built) return;
-        var db = SkinDatabase.Instance;
-        if (db == null || cardTemplate == null || cardContainer == null)
+        if (built) return;
+        if (SkinAccessoryDatabase.Instance == null || panelRoot == null || cardTemplate == null || cardContainer == null)
         {
-            Debug.LogWarning("[SkinShop] Не назначены SkinDatabase/cardTemplate/cardContainer");
+            Debug.LogWarning("[SkinShop] Missing accessory catalog or UI references.", this);
             return;
         }
-
         cardTemplate.gameObject.SetActive(false);
-        foreach (var def in db.skins)
+        var title = panelRoot.transform.Find("Title")?.GetComponent<Text>();
+        if (title != null) title.text = "WARDROBE";
+        var bar = new GameObject("AccessoryCategories", typeof(RectTransform)).GetComponent<RectTransform>();
+        bar.SetParent(panelRoot.transform, false);
+        bar.anchorMin = bar.anchorMax = new Vector2(.5f, 1);
+        bar.pivot = new Vector2(.5f, 1); bar.sizeDelta = new Vector2(580, 44);
+        bar.anchoredPosition = new Vector2(0, -94);
+        for (int i = 0; i < tabs.Length; i++)
         {
-            if (def == null) continue;
-            var card = Instantiate(cardTemplate, cardContainer);
-            card.gameObject.SetActive(true);
-            if (card.preview != null)   card.preview.sprite = def.previewSprite;
-            if (card.nameLabel != null) card.nameLabel.text = def.displayName;
-
-            var d = def; var c = card;
-            if (card.actionButton != null)
-                card.actionButton.onClick.AddListener(() => OnCardClicked(d, c));
-
-            _cards.Add((def, card));
+            int index = i;
+            var button = Instantiate(cardTemplate.actionButton, bar);
+            button.name = labels[i]; button.gameObject.SetActive(true);
+            button.onClick = new Button.ButtonClickedEvent();
+            button.onClick.AddListener(() => SelectSlot(slotOrder[index]));
+            var rect = (RectTransform)button.transform;
+            rect.anchorMin = new Vector2(i / 6f, 0); rect.anchorMax = new Vector2((i + 1) / 6f, 1);
+            rect.offsetMin = new Vector2(4, 0); rect.offsetMax = new Vector2(-4, 0);
+            var text = button.GetComponentInChildren<Text>(true);
+            text.text = labels[i]; text.fontSize = 17; text.resizeTextForBestFit = true;
+            text.resizeTextMinSize = 12; text.resizeTextMaxSize = 17;
+            tabs[i] = button;
         }
-        _built = true;
+        var content = (RectTransform)cardContainer;
+        var viewport = new GameObject("AccessoryViewport", typeof(RectTransform), typeof(RectMask2D), typeof(ScrollRect)).GetComponent<RectTransform>();
+        viewport.SetParent(panelRoot.transform, false);
+        viewport.anchorMin = viewport.anchorMax = new Vector2(.5f, .5f);
+        viewport.sizeDelta = new Vector2(580, 270); viewport.anchoredPosition = new Vector2(0, -46);
+        content.SetParent(viewport, false); content.anchorMin = new Vector2(0, 1); content.anchorMax = new Vector2(1, 1);
+        content.pivot = new Vector2(.5f, 1); content.anchoredPosition = Vector2.zero; content.sizeDelta = Vector2.zero;
+        var grid = content.GetComponent<GridLayoutGroup>();
+        if (grid == null) grid = content.gameObject.AddComponent<GridLayoutGroup>();
+        grid.cellSize = new Vector2(180, 250); grid.spacing = new Vector2(10, 10);
+        grid.padding = new RectOffset(10, 10, 10, 10); grid.constraint = GridLayoutGroup.Constraint.FixedColumnCount; grid.constraintCount = 3;
+        grid.childAlignment = TextAnchor.UpperCenter;
+        var fitter = content.GetComponent<ContentSizeFitter>();
+        if (fitter == null) fitter = content.gameObject.AddComponent<ContentSizeFitter>();
+        fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+        scroll = viewport.GetComponent<ScrollRect>(); scroll.content = content; scroll.viewport = viewport;
+        scroll.horizontal = false; scroll.vertical = true; scroll.movementType = ScrollRect.MovementType.Clamped;
+        scroll.scrollSensitivity = 25;
+        var status = new GameObject("WardrobeStatus", typeof(RectTransform), typeof(CanvasRenderer), typeof(Text));
+        status.transform.SetParent(panelRoot.transform, false); statusLabel = status.GetComponent<Text>();
+        statusLabel.font = cardTemplate.actionLabel.font; statusLabel.fontSize = 17;
+        statusLabel.alignment = TextAnchor.MiddleCenter; statusLabel.color = Color.white; statusLabel.raycastTarget = false;
+        var statusRect = (RectTransform)status.transform;
+        statusRect.anchorMin = statusRect.anchorMax = new Vector2(.5f, 0); statusRect.pivot = new Vector2(.5f, 0);
+        statusRect.sizeDelta = new Vector2(580, 30); statusRect.anchoredPosition = new Vector2(0, 18);
+        built = true;
+        SelectSlot(SkinAccessorySlot.Headwear);
     }
 
-    private void OnCardClicked(SkinDefinition def, SkinCardView card)
+    public void SelectSlot(SkinAccessorySlot slot)
     {
-        bool owned = IsOwned(def);
-
-        if (!owned)
+        if (!built || (int)slot < 0 || (int)slot >= SkinWardrobe.SlotCount) return;
+        activeSlot = slot;
+        foreach (var entry in cards)
         {
-            // Покупка: списываем монеты только если хватает
-            if (GameManager.Instance == null || !GameManager.Instance.TrySpendCoins(def.price))
-                return;
-            SaveSystem.UnlockSkin(def.skinId);
+            entry.card.gameObject.SetActive(false);
+            if (Application.isPlaying) Destroy(entry.card.gameObject); else DestroyImmediate(entry.card.gameObject);
         }
-
-        // Выбор (на этот момент скин уже куплен/бесплатен)
-        SaveSystem.SelectedSkinId = def.skinId;
+        cards.Clear();
+        AddCard(null);
+        foreach (var item in SkinAccessoryDatabase.Instance.GetSlot(slot)) AddCard(item);
+        if (statusLabel != null) statusLabel.text = "Choose an item for this slot. Other slots stay equipped.";
+        if (scroll != null) scroll.verticalNormalizedPosition = 1;
         Refresh();
     }
 
-    private static bool IsOwned(SkinDefinition def)
-        => def.isDefault || def.price <= 0 || SaveSystem.IsSkinUnlocked(def.skinId);
+    private void AddCard(SkinAccessory item)
+    {
+        var card = Instantiate(cardTemplate, cardContainer); card.gameObject.SetActive(true);
+        card.name = item == null ? "EmptySlot" : item.accessoryId;
+        if (card.preview != null)
+        {
+            card.preview.sprite = item != null ? item.previewSprite : SkinAccessoryDatabase.Instance.GetBasePreview(activeSlot);
+            card.preview.preserveAspect = true; card.preview.raycastTarget = false;
+        }
+        if (card.nameLabel != null) card.nameLabel.text = item != null ? item.displayName : SkinWardrobe.RegionForSlot(activeSlot)>=0 ? "Base" : "None";
+        if (card.selectedFrame != null)
+            foreach (var graphic in card.selectedFrame.GetComponentsInChildren<Graphic>()) graphic.raycastTarget = false;
+        if (card.actionButton != null)
+        {
+            card.actionButton.onClick = new Button.ButtonClickedEvent();
+            card.actionButton.onClick.AddListener(() => OnCardClicked(item));
+        }
+        cards.Add((item, card));
+    }
+
+    private void OnCardClicked(SkinAccessory item)
+    {
+        if (item == null)
+        {
+            AccessoryShop.Clear(activeSlot);
+            statusLabel.text = SkinWardrobe.RegionForSlot(activeSlot)>=0 ? "Base module restored." : "Slot cleared.";
+        }
+        else if (AccessoryShop.TrySelect(item, out var error)) statusLabel.text = item.displayName + " equipped.";
+        else statusLabel.text = error;
+        Refresh();
+    }
 
     private void Refresh()
     {
         if (coinsLabel != null) coinsLabel.text = SaveSystem.Coins.ToString();
-
-        var db = SkinDatabase.Instance;
-        string selected = string.IsNullOrEmpty(SaveSystem.SelectedSkinId)
-            ? (db != null ? db.GetAt(0)?.skinId : null)
-            : SaveSystem.SelectedSkinId;
-
-        foreach (var (def, card) in _cards)
+        if (!built) return;
+        var selected = SkinAccessoryDatabase.Instance.Get(SaveSystem.GetSelectedAccessory(activeSlot));
+        if (selected != null && (selected.slot != activeSlot || !AccessoryShop.IsOwned(selected))) selected = null;
+        for (int i = 0; i < tabs.Length; i++)
         {
-            bool owned = IsOwned(def);
-            bool isSel = def.skinId == selected;
-
-            if (card.selectedFrame != null) card.selectedFrame.SetActive(isSel);
-            if (card.actionLabel != null)
-                card.actionLabel.text = isSel ? "SELECTED"
-                                      : owned ? "SELECT"
-                                      : $"BUY {def.price}";
-            if (card.actionButton != null)
-                card.actionButton.interactable = !isSel;
+            tabs[i].interactable = slotOrder[i] != activeSlot;
+            var text = tabs[i].GetComponentInChildren<Text>();
+            bool hasItem = SkinAccessoryDatabase.Instance.Get(SaveSystem.GetSelectedAccessory(slotOrder[i])) != null;
+            text.text = labels[i] + (hasItem ? " *" : "");
+        }
+        foreach (var (item, card) in cards)
+        {
+            bool isSelected = selected == item;
+            bool owned = item == null || AccessoryShop.IsOwned(item);
+            if (card.selectedFrame != null) card.selectedFrame.SetActive(isSelected);
+            if (card.actionLabel != null) card.actionLabel.text = isSelected ? "SELECTED" : item == null ? (SkinWardrobe.RegionForSlot(activeSlot)>=0 ? "RESTORE" : "REMOVE") : owned ? "EQUIP" : $"BUY {item.price}";
+            if (card.actionButton != null) card.actionButton.interactable = !isSelected;
         }
     }
 }

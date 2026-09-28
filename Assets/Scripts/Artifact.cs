@@ -19,7 +19,7 @@ public class Artifact : MonoBehaviour
         if (_collected) return;
         _collected = true;
 
-        VFXManager.Instance?.PlayStarVFX(transform.position); // TODO: отдельная VFX артефакта
+        VFXManager.Instance?.PlayArtifactVFX(transform.position);
         LevelManager.Instance?.RegisterArtifact();
         gameObject.SetActive(false);
     }

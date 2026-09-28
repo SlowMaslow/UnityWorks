@@ -83,9 +83,75 @@ public class WinScreenController : MonoBehaviour
             timeText.text = $"{m:00}:{s:00}";
         }
 
+        ShowArtifacts(result);
+
         StartCoroutine(SlideIn());
         // Запускаем конфетти после того как панель доедет (~0.95s)
         StartCoroutine(DelayedWinVFX());
+    }
+
+    // ─── Артефакты: строка «ключи X/N» и «+N в коллекцию» ────────────────────
+    // ⚠️ СТРОКА СТРОИТСЯ КОДОМ, А НЕ ПОЛЕМ В ИНСПЕКТОРЕ. Панель финалки собрана в сцене, и новое
+    // поле пришлось бы вешать руками в двух местах (сцена + префаб). Весь остальной новый UI проекта
+    // (сайдбар, continue, карточка уровня) тоже рисуется кодом — см. память ui-tech-debt-prefabs,
+    // там же план вынести всё это в префабы отдельной фазой. Держимся того же чернового курса.
+    // Кириллица: Bangers её не содержит, поэтому LegacyRuntime.
+    private static readonly Color ColKey     = new Color(0.25f, 0.90f, 0.85f);
+    private static readonly Color ColKeyDim  = new Color(1f, 1f, 1f, 0.55f);
+    private static readonly Color ColSecret  = new Color(1f, 0.85f, 0.25f);
+
+    private Text _artifactText;
+
+    private void ShowArtifacts(LevelResult result)
+    {
+        if (panelRT == null) return;
+        if (result.artifactsTotal <= 0 && result.packTotal <= 0) return;
+
+        if (_artifactText == null)
+        {
+            var go = new GameObject("ArtifactLine", typeof(RectTransform));
+            go.transform.SetParent(panelRT, false);
+            var rt = go.GetComponent<RectTransform>();
+            // Под статистикой, у нижнего края панели — выше кнопок не лезем.
+            rt.anchorMin = new Vector2(0.5f, 0f);
+            rt.anchorMax = new Vector2(0.5f, 0f);
+            rt.pivot     = new Vector2(0.5f, 0f);
+            rt.anchoredPosition = new Vector2(0f, 118f);
+            rt.sizeDelta        = new Vector2(460f, 34f);
+
+            _artifactText = go.AddComponent<Text>();
+            _artifactText.font      = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            _artifactText.fontSize  = 22;
+            _artifactText.alignment = TextAnchor.MiddleCenter;
+            _artifactText.raycastTarget = false;         // не перехватывать клики по кнопкам панели
+            // 🐞 Строка ОБРЕЗАЛАСЬ: «КАРТИНКА СОБРАНА — СЕКРЕТНЫЙ ПАК|ОТКРЫТ» — у баннера текст длиннее
+            // обычной строки, а ширина панели фиксированная. Подгонка кегля дешевле, чем подбирать
+            // формулировки под ширину: длинные варианты просто ужимаются.
+            _artifactText.resizeTextForBestFit = true;
+            _artifactText.resizeTextMinSize    = 12;
+            _artifactText.resizeTextMaxSize    = 22;
+        }
+
+        string line = $"Ключи {result.artifactsCollected}/{result.artifactsTotal}";
+        if (result.artifactsBanked > 0)
+        {
+            // ⭐ Главное звено петли: забег видно В КОЛЛЕКЦИИ, а не только на своём уровне.
+            line += $"   +{result.artifactsBanked} в коллекцию  ({result.packCollected}/{result.packTotal})";
+            _artifactText.color = ColKey;
+        }
+        else
+        {
+            // Повтор уже собранного: честно говорим, что картинке это ничего не добавило.
+            line += $"   в коллекции {result.packCollected}/{result.packTotal}";
+            _artifactText.color = ColKeyDim;
+        }
+        _artifactText.text = line;
+
+        if (result.secretPackJustUnlocked)
+        {
+            _artifactText.text  = "КАРТИНКА СОБРАНА — СЕКРЕТНЫЙ ПАК ОТКРЫТ";
+            _artifactText.color = ColSecret;
+        }
     }
 
     private IEnumerator DelayedWinVFX()

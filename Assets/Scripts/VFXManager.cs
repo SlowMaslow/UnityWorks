@@ -76,6 +76,32 @@ public class VFXManager : MonoBehaviour
         Destroy(ps.gameObject, 2.5f);
     }
 
+    /// <summary>
+    /// ⭐ ЭФФЕКТ АРТЕФАКТА-КЛЮЧА — СВОЙ, НЕ ЗВЁЗДНЫЙ. Раньше ключ подбирался под
+    /// <see cref="PlayStarVFX"/>, и это путало: звёзды в игре — отдельная сущность (пороги
+    /// прогрессии, выдаются на финале за задачи), а ключ — коллектибл, который идёт в картинку-мир.
+    /// Один и тот же жёлтый всплеск на две разные валюты читался как «взял звезду».
+    /// Отличаем ЦВЕТОМ (бирюза ключа против золота звезды) и характером: медленнее, легче, с
+    /// подъёмом вверх — «улетело в коллекцию», а не «рассыпалось».
+    /// </summary>
+    public void PlayArtifactVFX(Vector3 pos)
+    {
+        var ps = MakeBurst("ArtifactVFX", pos,
+            count: 26, speedMin: 2f, speedMax: 6f,
+            sizeMin: 0.10f, sizeMax: 0.26f,
+            lifetime: 1.1f, gravity: -0.35f, radius: 0.3f,
+            material: _matAdditive);
+
+        SetColor(ps, new Color(0.65f, 1f, 0.98f), new Color(0.15f, 0.75f, 0.85f));
+
+        var rot = ps.rotationOverLifetime;
+        rot.enabled = true;
+        rot.z = new ParticleSystem.MinMaxCurve(-1.5f, 1.5f);
+
+        ps.Play();
+        Destroy(ps.gameObject, 2.5f);
+    }
+
     public void PlayWinVFX()
     {
         // Canvas поверх ВСЕГО UI — UI Images всегда рендерятся правильно

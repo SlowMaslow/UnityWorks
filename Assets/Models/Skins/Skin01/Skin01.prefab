@@ -502,7 +502,13 @@ SkinnedMeshRenderer:
   m_RenderingLayerMask: 1
   m_RendererPriority: 0
   m_Materials:
-  - {fileID: 2100000, guid: ba2c46e15b5858548a1d24a27e624421, type: 2}
+  - {fileID: 2100000, guid: f6dcafcee5f8b4d4397bc722eec1e6e6, type: 2}
+  - {fileID: 2100000, guid: 96c416bc676a70b49bbd06caed0802c5, type: 2}
+  - {fileID: 2100000, guid: d1fedb2fa0bc0e84fa81c57e6a3c009e, type: 2}
+  - {fileID: 2100000, guid: ed2712d1daac7104ab442704ef7e9d6a, type: 2}
+  - {fileID: 2100000, guid: 8ff04e003917b6c4b80e4e55679ffc17, type: 2}
+  - {fileID: 2100000, guid: 28da3d9174eb1c4449828b1bc5b75413, type: 2}
+  - {fileID: 2100000, guid: 151db996bdd8b9d4e840737520226776, type: 2}
   m_StaticBatchInfo:
     firstSubMesh: 0
     subMeshCount: 0
@@ -527,7 +533,7 @@ SkinnedMeshRenderer:
   m_Quality: 0
   m_UpdateWhenOffscreen: 0
   m_SkinnedMotionVectors: 1
-  m_Mesh: {fileID: 5461320835613783329, guid: 4a185c43d192ef84cb71440c989a230b, type: 3}
+  m_Mesh: {fileID: 4300000, guid: b3b08e5aad99b2e4c987765ccc89ce95, type: 2}
   m_Bones:
   - {fileID: 3490151936812868896}
   - {fileID: 3412533042151114262}
@@ -1092,6 +1098,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 8710777494362414593}
+  - component: {fileID: 1935578628749781792}
   m_Layer: 0
   m_Name: Skin01
   m_TagString: Untagged
@@ -1116,6 +1123,27 @@ Transform:
   - {fileID: 6463197904742370104}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1935578628749781792
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 7461938579877222498}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9c98e493f69572448971692832b086ab, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  body: {fileID: 8052998052731069068}
+  baseBodyMesh: {fileID: 4300000, guid: b3b08e5aad99b2e4c987765ccc89ce95, type: 2}
+  useSavedLoadout: 1
+  headwear: {fileID: 0}
+  outerwear: {fileID: 0}
+  pants: {fileID: 0}
+  footwear: {fileID: 0}
+  head: {fileID: 0}
+  glasses: {fileID: 0}
 --- !u!1 &7553757005419690723
 GameObject:
   m_ObjectHideFlags: 0
