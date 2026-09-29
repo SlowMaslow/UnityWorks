@@ -83,8 +83,12 @@ MonoBehaviour:
   rigOffset: {x: 0, y: -1.224, z: -0.49}
   rigScale: 2.7
   hideCapsule: 1
+  allowFacingTurn: 1
+  turnSeparation: 0.25
+  turnHoldTime: 0.12
+  turnSpeed: 480
   hidePadVisual: 1
-  handBallLocalPos: {x: 0, y: 0.07, z: 0.09}
+  handBallLocalPos: {x: 0, y: 0.025, z: 0.08}
   handBallSize: 0.36
   startSnapRange: 0.36
   grabTolerance: 0.15

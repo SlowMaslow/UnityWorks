@@ -74,6 +74,7 @@ public static class Skin01AssetBuilder
             }
             mesh.vertices=positions; mesh.normals=normals; mesh.uv=uv;mesh.uv2=regions;
             mesh.boneWeights=weights; mesh.bindposes=binds;
+            SkinForearmRigBuilder.Distribute(mesh,bones);
             var mats = data["materials"].Select(t => materials[(string)t]).ToArray();
             mesh.subMeshCount=mats.Length;
             for (int s=0;s<mats.Length;s++)

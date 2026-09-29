@@ -73,6 +73,6 @@ public class LegSwing : MonoBehaviour
         Vector3 localAxis = bone.parent != null
             ? bone.parent.InverseTransformDirection(worldAxis)
             : worldAxis;
-        bone.localRotation = rest * Quaternion.AngleAxis(angle, localAxis.normalized);
+        bone.localRotation = Quaternion.AngleAxis(angle, localAxis.normalized) * rest;
     }
 }

@@ -88,6 +88,15 @@ public class ClimbController : MonoBehaviour
     [Tooltip("Скрыть меш капсулы (оставить только риг).")]
     public bool hideCapsule = true;
 
+    [Header("Разворот по расположению рук")]
+    public bool allowFacingTurn = true;
+    [Tooltip("Разница положения рук по оси тела, необходимая для разворота (в долях смещения плеча).")]
+    [Min(0.1f)] public float turnSeparation = 0.5f;
+    [Min(0f)] public float turnHoldTime = 0.12f;
+    [Tooltip("Скорость разворота визуального тела, градусов в секунду.")]
+    [Min(1f)] public float turnSpeed = 240f;
+    private readonly ClimbFacing facing = new ClimbFacing();
+
     [Header("Шар в руке (декор вместо визуала пэда)")]
     [Tooltip("Скрыть реальный пэд и показать декоративный шар в кисти.")]
     public bool hidePadVisual = true;
@@ -194,6 +203,8 @@ public class ClimbController : MonoBehaviour
     /// </summary>
     public void MoveTo(Vector3 worldPos)
     {
+        facing.Reset();
+        foreach (var ik in _armIK) if (ik != null) ik.ResetSolveHistory();
         transform.position = worldPos;
         if (bodyRb != null)
         {
@@ -346,6 +357,7 @@ public class ClimbController : MonoBehaviour
             ik.target  = _ikTarget[i];
             // Знак сгиба фиксирован: левая рука (i=0) в одну сторону, правая (i=1) в другую.
             ik.bendSign = (i == 0) ? 1f : -1f;
+            ik.bendReference = visualRig;
             ik.Init();
 
             // Шар = КОНТРОЛЛЕР: самостоятельный объект ровно в позиции пэда (жёстко, без люфта).
@@ -410,6 +422,8 @@ public class ClimbController : MonoBehaviour
     private Vector3 ShoulderFor(int padIndex)
     {
         float x = (padIndex == 0) ? -shoulderOffsetX : shoulderOffsetX;
+        // Physics remains in XY; shoulder identities follow the visual half-turn.
+        if (allowFacingTurn) x *= Mathf.Cos(facing.Yaw * Mathf.Deg2Rad);
         return bodyRb.transform.TransformPoint(new Vector3(x, shoulderLocalY, 0f));
     }
 
@@ -542,6 +556,14 @@ public class ClimbController : MonoBehaviour
     private void FixedUpdate()
     {
         if (broken) return;
+
+        if (allowFacingTurn)
+        {
+            float separation = (Quaternion.Inverse(bodyRb.rotation) * (padRb[1].position - padRb[0].position)).x;
+            facing.Step(separation, state[0] != PadState.Dangling && state[1] != PadState.Dangling,
+                shoulderOffsetX * turnSeparation, turnHoldTime, turnSpeed, Time.fixedDeltaTime);
+        }
+        else facing.Reset();
 
         // #7 Срыв при исчезновении платформы: пэд был Gripped, а его платформа деактивировалась
         // (исчезающая платформа ушла в preview) → отпускаем в Dangling. Дальше — обычная физика:
@@ -728,7 +750,7 @@ public class ClimbController : MonoBehaviour
 
         // Визуальный риг следует за капсулой-телом (позиция + наклон/свинг)
         visualRig.position = bodyRb.transform.TransformPoint(rigOffset);
-        visualRig.rotation = bodyRb.transform.rotation;
+        visualRig.rotation = bodyRb.transform.rotation * Quaternion.Euler(0f, facing.Yaw, 0f);
 
         // Palm-IK: каждый кадр ставим IK-таргет так, чтобы ЛАДОНЬ (точка handBallLocalPos на кисти)
         // села на КОНТРОЛЛЕР (пэд). Feed-forward 3 итерации = полная сходимость В КАДРЕ (плавно,
@@ -744,6 +766,10 @@ public class ClimbController : MonoBehaviour
                 // кости в bind ПЕРЕД Solve → доснап применяется РАЗ от чистой позы → результат =
                 // детерминированная функция геометрии (старт и оживление дают одинаковую руку).
                 ik.ResetPose();
+                ik.bendReference = allowFacingTurn ? visualRig : null;
+                // Turn the grip frame with the character, rather than forcing a
+                // world-fixed palm through a half-turn relative to its own arm.
+                ik.palmWorldFacing = allowFacingTurn ? visualRig.forward : Vector3.forward;
                 Vector3 G = padRb[i].position;
                 // СТАБИЛЬНОЕ размещение запястья БЕЗ петли обратной связи (она и давала дрожь у предела
                 // руки): направление руки берём из ГЕОМЕТРИИ — плечо→контроллер — и отводим запястье на
@@ -758,7 +784,13 @@ public class ClimbController : MonoBehaviour
                 // Растяжение РАЗМАЗЫВАЕМ по руке (stretchy IK): часть в локоть, часть в запястье →
                 // деформация на сустав вдвое меньше, почти незаметна.
                 Vector3 grip = handBallLocalPos; if (i == 1) grip.x = -grip.x;
-                Vector3 snap = G - ik.hand.TransformPoint(grip);
+                // XY locates the palm centre on the hand. Depth belongs to the
+                // wall frame (+Z), not the rotating hand: keep contact on the
+                // camera side of the sphere even when the character faces back.
+                float depth = ik.hand.TransformVector(Vector3.forward).magnitude * grip.z;
+                grip.z = 0f;
+                Vector3 palmContact = G - Vector3.forward * depth;
+                Vector3 snap = palmContact - ik.hand.TransformPoint(grip);
                 if (ik.lower != null) ik.lower.position += snap * stretchToElbow; // локоть+кисть → тянет плечо-локоть
                 ik.hand.position += snap * (1f - stretchToElbow);                 // остаток → предплечье
             }
