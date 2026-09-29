@@ -569,6 +569,102 @@ Mesh:
     e31: 0
     e32: 0
     e33: 1
+  - e00: 1.3363458
+    e01: 4.049453
+    e02: 99.90904
+    e03: 0.0042912383
+    e10: -99.92765
+    e11: 3.6120436
+    e12: 1.1901935
+    e13: -0.27906585
+    e20: -3.5605621
+    e21: -99.85268
+    e22: 4.0947924
+    e23: 0.71243334
+    e30: 0
+    e31: 0
+    e32: 0
+    e33: 1
+  - e00: 1.3363458
+    e01: 4.049453
+    e02: 99.90904
+    e03: 0.0042912383
+    e10: -99.92765
+    e11: 3.6120436
+    e12: 1.1901935
+    e13: -0.27906585
+    e20: -3.5605621
+    e21: -99.85268
+    e22: 4.0947924
+    e23: 0.71243334
+    e30: 0
+    e31: 0
+    e32: 0
+    e33: 1
+  - e00: 1.3363458
+    e01: 4.049453
+    e02: 99.90904
+    e03: 0.0042912383
+    e10: -99.92765
+    e11: 3.6120436
+    e12: 1.1901935
+    e13: -0.27906585
+    e20: -3.5605621
+    e21: -99.85268
+    e22: 4.0947924
+    e23: 0.71243334
+    e30: 0
+    e31: 0
+    e32: 0
+    e33: 1
+  - e00: -0.96073586
+    e01: -4.6609526
+    e02: -99.88669
+    e03: 0.0098172715
+    e10: 99.92835
+    e11: 3.6120777
+    e12: -1.1296848
+    e13: -0.27972335
+    e20: 3.660639
+    e21: -99.826
+    e22: 4.622911
+    e23: 0.71196735
+    e30: 0
+    e31: 0
+    e32: 0
+    e33: 1
+  - e00: -0.96073586
+    e01: -4.6609526
+    e02: -99.88669
+    e03: 0.0098172715
+    e10: 99.92835
+    e11: 3.6120777
+    e12: -1.1296848
+    e13: -0.27972335
+    e20: 3.660639
+    e21: -99.826
+    e22: 4.622911
+    e23: 0.71196735
+    e30: 0
+    e31: 0
+    e32: 0
+    e33: 1
+  - e00: -0.96073586
+    e01: -4.6609526
+    e02: -99.88669
+    e03: 0.0098172715
+    e10: 99.92835
+    e11: 3.6120777
+    e12: -1.1296848
+    e13: -0.27972335
+    e20: 3.660639
+    e21: -99.826
+    e22: 4.622911
+    e23: 0.71196735
+    e30: 0
+    e31: 0
+    e32: 0
+    e33: 1
   m_BoneNameHashes: 
   m_RootBoneNameHash: 0
   m_BonesAABB:
@@ -640,6 +736,18 @@ Mesh:
     m_Max: {x: -Infinity, y: -Infinity, z: -Infinity}
   - m_Min: {x: -0.06027802, y: 0.06901622, z: -0.013958152}
     m_Max: {x: 0.06027802, y: 0.0933516, z: 0.07335904}
+  - m_Min: {x: Infinity, y: Infinity, z: Infinity}
+    m_Max: {x: -Infinity, y: -Infinity, z: -Infinity}
+  - m_Min: {x: Infinity, y: Infinity, z: Infinity}
+    m_Max: {x: -Infinity, y: -Infinity, z: -Infinity}
+  - m_Min: {x: Infinity, y: Infinity, z: Infinity}
+    m_Max: {x: -Infinity, y: -Infinity, z: -Infinity}
+  - m_Min: {x: Infinity, y: Infinity, z: Infinity}
+    m_Max: {x: -Infinity, y: -Infinity, z: -Infinity}
+  - m_Min: {x: Infinity, y: Infinity, z: Infinity}
+    m_Max: {x: -Infinity, y: -Infinity, z: -Infinity}
+  - m_Min: {x: Infinity, y: Infinity, z: Infinity}
+    m_Max: {x: -Infinity, y: -Infinity, z: -Infinity}
   m_VariableBoneCountWeights:
     m_Data: 
   m_MeshCompression: 0
