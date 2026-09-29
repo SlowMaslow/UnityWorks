@@ -70,3 +70,16 @@ crashlytics-build.properties
 # Temporary auto-generated Android Assets
 /[Aa]ssets/[Ss]treamingAssets/aa.meta
 /[Aa]ssets/[Ss]treamingAssets/aa/*
+# Blender source and iteration history stay local; export is versioned.
+/SourceAssets/Skins/*
+!/SourceAssets/Skins/Export/
+!/SourceAssets/Skins/README.md
+/SourceAssets/Skins/Export/export-report.json
+/Tools/Skins/*
+!/Tools/Skins/export_character.py
+# Local material experiment tool, retained for reference.
+/Assets/Editor/SkinMaterialPreview.cs
+/Assets/Editor/SkinMaterialPreview.cs.meta
+/.claude/settings.local.json
+*.blend1
+*.blend2
