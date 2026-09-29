@@ -84,9 +84,9 @@ MonoBehaviour:
   rigScale: 2.7
   hideCapsule: 1
   allowFacingTurn: 1
-  turnSeparation: 0.25
-  turnHoldTime: 0.12
-  turnSpeed: 480
+  turnSeparation: 0.1
+  turnHoldTime: 0.01
+  turnSpeed: 640
   hidePadVisual: 1
   handBallLocalPos: {x: 0, y: 0.025, z: 0.08}
   handBallSize: 0.36
