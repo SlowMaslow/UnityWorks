@@ -129,6 +129,10 @@ public class ClimbController : MonoBehaviour
     // Отдельный визуальный IK-таргет: каждый кадр ставим его так, чтобы ЛАДОНЬ кисти села на контроллер.
     private readonly Transform[] _ikTarget = new Transform[2];
     private LegSwing _legSwing;
+    [Header("Рэгдол при срыве")]
+    public bool enableFallRagdoll = true;
+    [Range(0f, 1f)] public float ragdollSpinScale = .45f;
+    private ClimbRagdoll _ragdoll;
     private LineRenderer[] armLines = new LineRenderer[2];
     private Renderer[] padRend = new Renderer[2];
 
@@ -143,7 +147,7 @@ public class ClimbController : MonoBehaviour
     private Coroutine _failRoutine;   // корутина FailWhenFallen — останавливаем при оживлении
 
     /// <summary>Мировая позиция тела (для трекинга чекпоинтов в LevelManager).</summary>
-    public Vector3 BodyPosition => bodyRb != null ? bodyRb.position : transform.position;
+    public Vector3 BodyPosition => _ragdoll != null && _ragdoll.Active ? _ragdoll.TrackingPosition : bodyRb != null ? bodyRb.position : transform.position;
 
     private readonly Vector3[] _padAuthoredLocal = new Vector3[2]; // авторские локальные позиции пэдов (сброс при спавне)
     [Tooltip("Полуразброс пэдов по X при спавне (уже плеч — чтобы оба сели на платформу под маркером, без свиса с края).")]
@@ -203,6 +207,10 @@ public class ClimbController : MonoBehaviour
     /// </summary>
     public void MoveTo(Vector3 worldPos)
     {
+        if (_failRoutine != null) { StopCoroutine(_failRoutine); _failRoutine = null; }
+        if (_ragdoll != null) _ragdoll.Restore();
+        broken = false;
+        breakTimer = 0f;
         facing.Reset();
         foreach (var ik in _armIK) if (ik != null) ik.ResetSolveHistory();
         transform.position = worldPos;
@@ -383,6 +391,8 @@ public class ClimbController : MonoBehaviour
         map.TryGetValue("mixamorig:RightLeg",   out _legSwing.rightLeg);
         _legSwing.bodyRb = bodyRb;
         _legSwing.Init();
+        if (_ragdoll == null) _ragdoll = gameObject.AddComponent<ClimbRagdoll>();
+        _ragdoll.Initialize(visualRig, bodyRb);
     }
 
     /// <summary>
@@ -733,6 +743,13 @@ public class ClimbController : MonoBehaviour
     private void LateUpdate()
     {
         if (visualRig == null) return;
+        if (_ragdoll != null && _ragdoll.Active)
+        {
+            _ragdoll.ApplyPose();
+            for (int i = 0; i < 2; i++)
+                if (_handBalls[i] != null) _handBalls[i].position = padRb[i].position;
+            return; // Neither arm IK nor procedural leg swing may overwrite physics.
+        }
 
         // Перелинковка ссылок (после пересоздания рига / domain-reload): шар — самостоятельный объект,
         // IK-компонент и таргет восстанавливаем по той же причине (иначе Solve молча не вызывается).
@@ -840,6 +857,8 @@ public class ClimbController : MonoBehaviour
         // подброс + толчок В СТОРОНУ РАЗРЫВА + закрутка туда же → кувырок в направлении натяжения
         bodyRb.linearVelocity  += new Vector3(dir * Random.Range(0.8f, 2f), 1.5f, 0f);
         bodyRb.angularVelocity  = new Vector3(0f, 0f, -dir * Random.Range(4f, 7f));
+        if (enableFallRagdoll && _ragdoll != null)
+            _ragdoll.Begin(bodyRb.linearVelocity, bodyRb.angularVelocity * ragdollSpinScale);
         for (int i = 0; i < 2; i++)
         {
             padRb[i].isKinematic = false;
@@ -862,6 +881,7 @@ public class ClimbController : MonoBehaviour
     /// </summary>
     public void Revive(Vector3 spawnPos)
     {
+        if (_ragdoll != null) _ragdoll.Restore();
         if (_failRoutine != null) { StopCoroutine(_failRoutine); _failRoutine = null; }
         broken      = false;
         breakTimer  = 0f;
@@ -897,7 +917,7 @@ public class ClimbController : MonoBehaviour
             if (zone != null)
             {
                 var b = zone.bounds;
-                Vector3 bp = bodyRb.position;
+                Vector3 bp = BodyPosition;
                 if (bp.y <= b.max.y && bp.x >= b.min.x && bp.x <= b.max.x)
                     break;   // тело вошло в зону смерти
             }
